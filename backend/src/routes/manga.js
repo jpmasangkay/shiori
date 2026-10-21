@@ -9,11 +9,11 @@ import {
 
 const router = express.Router();
 
-// GET /api/manga/search?q=...&type=manga|manhwa|manhua&order=popular|latest|rating|new&page=1&limit=24
+// GET /api/manga/search?q=...&type=manga|manhwa|manhua&order=popular|latest|rating|new&page=1&limit=24&lang=en
 router.get('/search', async (req, res) => {
   try {
-    const { q, type, order, page, limit, tag } = req.query;
-    const results = await searchManga({ q, type, order, page, limit, tag });
+    const { q, type, order, page, limit, tag, lang } = req.query;
+    const results = await searchManga({ q, type, order, page, limit, tag, lang });
     res.json(results);
   } catch (err) {
     const status = err instanceof UpstreamError ? err.status : 500;

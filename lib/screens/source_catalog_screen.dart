@@ -166,46 +166,45 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           ),
 
           // Types
-          if (widget.sourceId == 'mangadex')
-            SizedBox(
-              height: 38,
-              child: ListView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                children: [
-                  for (final (typeKey, typeLabel) in _types)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: ChoiceChip(
-                        label: Text(typeLabel),
-                        selected: _selectedType == typeKey,
-                        onSelected: (sel) {
-                          if (sel) {
-                            setState(() {
-                              _selectedType = typeKey;
-                              _page = 1;
-                            });
-                            _fetch();
-                          }
-                        },
-                        backgroundColor: AppColors.surface,
-                        selectedColor: AppColors.active,
-                        labelStyle: GoogleFonts.inter(
-                          fontSize: 12,
-                          color: _selectedType == typeKey ? AppColors.primary : AppColors.muted,
-                          fontWeight: _selectedType == typeKey ? FontWeight.w600 : FontWeight.normal,
-                        ),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(20),
-                          side: BorderSide(
-                            color: _selectedType == typeKey ? AppColors.primary : Colors.transparent,
-                          ),
+          SizedBox(
+            height: 38,
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              children: [
+                for (final (typeKey, typeLabel) in _types)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(typeLabel),
+                      selected: _selectedType == typeKey,
+                      onSelected: (sel) {
+                        if (sel) {
+                          setState(() {
+                            _selectedType = typeKey;
+                            _page = 1;
+                          });
+                          _fetch();
+                        }
+                      },
+                      backgroundColor: AppColors.surface,
+                      selectedColor: AppColors.active,
+                      labelStyle: GoogleFonts.inter(
+                        fontSize: 12,
+                        color: _selectedType == typeKey ? AppColors.primary : AppColors.muted,
+                        fontWeight: _selectedType == typeKey ? FontWeight.w600 : FontWeight.normal,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        side: BorderSide(
+                          color: _selectedType == typeKey ? AppColors.primary : Colors.transparent,
                         ),
                       ),
                     ),
-                ],
-              ),
+                  ),
+              ],
             ),
+          ),
 
           const SizedBox(height: 6),
           Expanded(
@@ -222,62 +221,6 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   Widget _buildGrid() {
     if (_loading && _items.isEmpty) {
       return const MangaGridSkeleton(key: ValueKey('catalog_skeleton'), count: 9);
-    }
-
-    final isDirect = widget.sourceId.toLowerCase().contains('mangadex') || widget.sourceId.toLowerCase().contains('asura');
-
-    if (!isDirect && _items.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 60,
-                height: 60,
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceHigh,
-                  borderRadius: BorderRadius.circular(16),
-                ),
-                child: const Icon(Icons.extension_rounded, size: 30, color: AppColors.primary),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                '${widget.sourceName} Extension',
-                style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'This source is an external Keiyoushi APK package for Android.\n\nTo read directly in Shiori on any device, use MangaDex (100k+ titles) or Asura Scans.',
-                textAlign: TextAlign.center,
-                style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.45),
-              ),
-              const SizedBox(height: 20),
-              FilledButton.icon(
-                onPressed: () {
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(
-                      builder: (_) => const SourceCatalogScreen(
-                        sourceId: 'mangadex',
-                        sourceName: 'MangaDex',
-                        sourceLang: 'ALL',
-                      ),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.auto_stories_rounded, size: 18),
-                label: const Text('Browse MangaDex Catalog'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: AppColors.onPrimary,
-                  padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 11),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
     }
 
     if (_error != null && _items.isEmpty) {

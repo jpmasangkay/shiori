@@ -1,3 +1,15 @@
+String _resolveSource(String id, String? explicit) {
+  if (explicit != null && explicit.isNotEmpty) return explicit;
+  if (id.startsWith('asura:')) return 'asura';
+  if (id.startsWith('flame:')) return 'flamecomics';
+  if (id.startsWith('weeb:')) return 'weebcentral';
+  if (id.startsWith('ext:')) {
+    final parts = id.split(':');
+    if (parts.length > 1 && parts[1].isNotEmpty) return parts[1];
+  }
+  return 'mangadex';
+}
+
 class MangaItem {
   final String id;
   final String title;
@@ -38,7 +50,7 @@ class MangaItem {
       tags: (json['tags'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? const [],
       year: json['year']?.toString(),
       lastChapter: json['lastChapter']?.toString(),
-      source: json['source'] as String? ?? (id.startsWith('asura:') ? 'asura' : 'mangadex'),
+      source: _resolveSource(id, json['source'] as String?),
     );
   }
 
@@ -88,7 +100,7 @@ class ChapterItem {
       pages: (json['pages'] as num?)?.toInt() ?? 0,
       group: json['group'] as String? ?? '',
       publishAt: json['publishAt'] as String?,
-      source: json['source'] as String? ?? (id.startsWith('asura:') ? 'asura' : 'mangadex'),
+      source: _resolveSource(id, json['source'] as String?),
     );
   }
 

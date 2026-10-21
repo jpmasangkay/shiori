@@ -199,7 +199,7 @@ export function dedupeChapters(chapters) {
 // ---- public api --------------------------------------------------------
 const MIN = 60 * 1000;
 
-export async function searchManga({ q, type, order = 'popular', page = 1, limit = 24, tag }) {
+export async function searchManga({ q, type, order = 'popular', page = 1, limit = 24, tag, lang }) {
   const lim = Math.min(Math.max(Number(limit) || 24, 1), 50);
   const pg = Math.max(Number(page) || 1, 1);
   const sort = {
@@ -218,7 +218,7 @@ export async function searchManga({ q, type, order = 'popular', page = 1, limit 
       limit: lim,
       offset: (pg - 1) * lim,
       originalLanguage: typeToLanguages(type),
-      availableTranslatedLanguage: ['en'],
+      availableTranslatedLanguage: lang && lang.toLowerCase() !== 'all' ? [lang.toLowerCase()] : ['en'],
       hasAvailableChapters: 'true',
       contentRating: CONTENT_RATINGS,
       includes: ['cover_art', 'author', 'artist'],

@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/extension_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/skeleton.dart';
@@ -242,9 +243,29 @@ class _DetailScreenState extends State<DetailScreen> {
 
   Widget _hero(double top) {
     final m = _manga;
-    final isAsura = m.id.startsWith('asura:') || m.source == 'asura';
-    final sourceName = isAsura ? 'ASURA SCANS' : 'MANGADEX';
-    final sourceColor = isAsura ? const Color(0xFF6366F1) : const Color(0xFFFF6740);
+    final s = m.source.toLowerCase();
+    final id = m.id.toLowerCase();
+
+    String sourceName;
+    Color sourceColor;
+
+    if (id.startsWith('asura:') || s.contains('asura')) {
+      sourceName = 'ASURA SCANS';
+      sourceColor = const Color(0xFF6366F1);
+    } else if (id.startsWith('flame:') || s.contains('flame')) {
+      sourceName = 'FLAME COMICS';
+      sourceColor = const Color(0xFFFF5722);
+    } else if (id.startsWith('weeb:') || s.contains('weeb')) {
+      sourceName = 'WEEB CENTRAL';
+      sourceColor = const Color(0xFF00BCD4);
+    } else if (id.startsWith('ext:') || (s.isNotEmpty && s != 'mangadex')) {
+      final ext = ExtensionService.instance.getExtensionByPkg(m.source);
+      sourceName = (ext?.name ?? m.source).toUpperCase();
+      sourceColor = const Color(0xFF10B981);
+    } else {
+      sourceName = 'MANGADEX';
+      sourceColor = const Color(0xFFFF6740);
+    }
 
     final title = m.title;
     final authors = m.authors.isNotEmpty ? m.authors.join(' · ') : 'Unknown Author';

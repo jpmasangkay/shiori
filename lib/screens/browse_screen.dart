@@ -31,6 +31,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   bool _searching = false;
   List<MangaItem> _asuraResults = [];
   List<MangaItem> _mangaDexResults = [];
+  Map<String, List<MangaItem>> _communityResults = {};
 
   @override
   void initState() {
@@ -67,14 +68,21 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     setState(() => _searching = true);
     final hasAsura = _extService.hasAsura;
     final hasMangaDex = _extService.hasMangaDex;
+    final installedExts = _extService.installedExtensions;
+    final extraExts = installedExts.where((e) =>
+        !e.pkg.toLowerCase().contains('mangadex') &&
+        !e.pkg.toLowerCase().contains('asura') &&
+        !e.name.toLowerCase().contains('mangadex') &&
+        !e.name.toLowerCase().contains('asura')).toList();
 
     final shouldSearchAsura = hasAsura && (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == 'asura');
     final shouldSearchMangaDex = hasMangaDex && (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == 'mangadex');
 
     List<MangaItem> asuraList = [];
     List<MangaItem> mangaDexList = [];
+    final Map<String, List<MangaItem>> communityMap = {};
 
-    await Future.wait([
+    final List<Future<void>> tasks = [
       if (shouldSearchAsura)
         ApiService.instance
             .searchManga(query: query, source: 'asura')
@@ -85,12 +93,30 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             .searchManga(query: query, source: 'mangadex')
             .then((res) => mangaDexList = res)
             .catchError((_) => <MangaItem>[]),
-    ]);
+    ];
+
+    for (final ext in extraExts) {
+      if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) {
+        tasks.add(
+          ApiService.instance
+              .searchManga(query: query, source: ext.pkg)
+              .then((res) {
+                if (res.isNotEmpty) {
+                  communityMap[ext.pkg] = res;
+                }
+              })
+              .catchError((_) {}),
+        );
+      }
+    }
+
+    await Future.wait(tasks);
 
     if (mounted) {
       setState(() {
         _asuraResults = asuraList;
         _mangaDexResults = mangaDexList;
+        _communityResults = communityMap;
         _searching = false;
       });
     }
@@ -134,9 +160,16 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     // Detect which active sources are actually installed by user
     final hasMangaDex = _extService.hasMangaDex;
     final hasAsura = _extService.hasAsura;
+    final installedExts = _extService.installedExtensions;
+    final extraExts = installedExts.where((e) =>
+        !e.pkg.toLowerCase().contains('mangadex') &&
+        !e.pkg.toLowerCase().contains('asura') &&
+        !e.name.toLowerCase().contains('mangadex') &&
+        !e.name.toLowerCase().contains('asura')).toList();
+    final allInstalledCount = (hasMangaDex ? 1 : 0) + (hasAsura ? 1 : 0) + extraExts.length;
 
     // Zero extensions installed state
-    if (!hasMangaDex && !hasAsura) {
+    if (allInstalledCount == 0) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -181,14 +214,6 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       );
     }
 
-    final installedExts = _extService.installedExtensions;
-    final extraExts = installedExts.where((e) =>
-        !e.pkg.toLowerCase().contains('mangadex') &&
-        !e.pkg.toLowerCase().contains('asura') &&
-        !e.name.toLowerCase().contains('mangadex') &&
-        !e.name.toLowerCase().contains('asura')).toList();
-    final allInstalledCount = (hasMangaDex ? 1 : 0) + (hasAsura ? 1 : 0) + extraExts.length;
-
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
@@ -211,15 +236,19 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   onChanged: _onSearchChanged,
                   style: GoogleFonts.inter(fontSize: 13, color: AppColors.text),
                   decoration: InputDecoration(
-                    hintText: _selectedSourceFilter == 'asura'
-                        ? 'Search Asura Scans...'
-                        : _selectedSourceFilter == 'mangadex'
-                            ? 'Search MangaDex...'
-                            : (hasMangaDex && hasAsura)
-                                ? 'Search across installed sources...'
-                                : hasAsura
-                                    ? 'Search Asura Scans...'
-                                    : 'Search MangaDex...',
+                    hintText: () {
+                      if (_selectedSourceFilter == 'asura') return 'Search Asura Scans...';
+                      if (_selectedSourceFilter == 'mangadex') return 'Search MangaDex...';
+                      if (_selectedSourceFilter != 'ALL') {
+                        final ext = _extService.getExtensionByPkg(_selectedSourceFilter);
+                        return 'Search ${ext?.name ?? _selectedSourceFilter}...';
+                      }
+                      if (allInstalledCount > 1) return 'Search across installed sources...';
+                      if (hasAsura) return 'Search Asura Scans...';
+                      if (hasMangaDex) return 'Search MangaDex...';
+                      if (extraExts.isNotEmpty) return 'Search ${extraExts.first.name}...';
+                      return 'Search manga...';
+                    }(),
                     hintStyle: const TextStyle(color: AppColors.muted, fontSize: 13),
                     border: InputBorder.none,
                     isDense: true,
@@ -400,13 +429,16 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
 
     final showAsura = (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == 'asura') && _asuraResults.isNotEmpty;
     final showMangaDex = (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == 'mangadex') && _mangaDexResults.isNotEmpty;
+    final hasCommunityResults = _communityResults.values.any((list) => list.isNotEmpty);
 
-    if (!showAsura && !showMangaDex) {
+    if (!showAsura && !showMangaDex && !hasCommunityResults) {
       final filterName = _selectedSourceFilter == 'asura'
           ? ' on Asura Scans'
           : _selectedSourceFilter == 'mangadex'
               ? ' on MangaDex'
-              : '';
+              : (_selectedSourceFilter != 'ALL'
+                  ? ' on ${_extService.getExtensionByPkg(_selectedSourceFilter)?.name ?? _selectedSourceFilter}'
+                  : '');
       return Padding(
         padding: const EdgeInsets.all(32),
         child: Center(
@@ -442,7 +474,17 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             badgeColor: const Color(0xFFFF6740),
             items: _mangaDexResults,
           ),
+          if (hasCommunityResults) const SizedBox(height: 16),
         ],
+        for (final entry in _communityResults.entries)
+          if (entry.value.isNotEmpty) ...[
+            _sourceResultSection(
+              sourceName: _extService.getExtensionByPkg(entry.key)?.name ?? entry.key,
+              badgeColor: const Color(0xFF10B981),
+              items: entry.value,
+            ),
+            const SizedBox(height: 16),
+          ],
       ],
     );
   }

@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
+import 'package:manga_reader/services/extension_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class KeiyoushiExtension {
   final String name;
@@ -255,7 +257,18 @@ extension _ListExt<T> on List<T> {
   void pushOrAdd(T val) => add(val);
 }
 
+class _AllowHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    return super.createHttpClient(context)
+      ..badCertificateCallback = (X509Certificate cert, String host, int port) => true;
+  }
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  HttpOverrides.global = _AllowHttpOverrides();
+
   test('Keiyoushi index.pb parser test', () async {
     final res = await http.get(Uri.parse('https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb'));
     expect(res.statusCode, 200);
@@ -266,5 +279,39 @@ void main() {
     final asura = exts.firstWhere((e) => e.pkg.contains('asurascans'));
     expect(asura.apkUrl.isNotEmpty, true);
     expect(asura.iconUrl.isNotEmpty, true);
+  });
+
+  test('ExtensionService in-app download and installation test', () async {
+    SharedPreferences.setMockInitialValues({});
+    final service = ExtensionService.instance;
+
+    final testExt = MangaExtension(
+      id: 'eu.kanade.tachiyomi.extension.en.testextension',
+      name: 'Test Extension',
+      pkg: 'eu.kanade.tachiyomi.extension.en.testextension',
+      version: '1.4.0',
+      versionCode: 140,
+      apkUrl: '', // empty to test instant in-app fallback
+      iconUrl: 'https://example.com/icon.png',
+      lang: 'EN',
+      isNsfw: false,
+      sourceNames: ['Test Source'],
+    );
+
+    expect(testExt.isInstalled, false);
+    expect(service.isPackageInstalled(testExt.pkg), false);
+
+    // Perform in-app download and install
+    final success = await service.downloadAndInstallExtension(testExt);
+    expect(success, true);
+    expect(testExt.isInstalled, true);
+    expect(service.isPackageInstalled(testExt.pkg), true);
+    expect(service.installedExtensions.any((e) => e.pkg == testExt.pkg), true);
+
+    // Uninstall
+    await service.uninstallExtension(testExt);
+    expect(testExt.isInstalled, false);
+    expect(service.isPackageInstalled(testExt.pkg), false);
+    expect(service.installedExtensions.any((e) => e.pkg == testExt.pkg), false);
   });
 }

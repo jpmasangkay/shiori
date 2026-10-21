@@ -191,7 +191,7 @@ class _ApiUpdateRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final mangaTitle = item['mangaTitle'] ?? 'Untitled';
     final chNum = item['chapterNumber'] != null ? 'Chapter ${item['chapterNumber']}' : 'New Chapter';
-    final group = item['group'] ?? 'MangaDex';
+    final group = item['group'] ?? item['source'] ?? 'Update';
     final subtitle = '$chNum · $group';
 
     return InkWell(

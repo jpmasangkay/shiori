@@ -298,7 +298,7 @@ class ApiService extends ChangeNotifier {
     int limit = 24,
     String source = 'mangadex',
   }) async {
-    final s = source.toLowerCase();
+    final s = source.toLowerCase().trim();
 
     // 1. Flame Comics Extension
     if (s.contains('flame')) {
@@ -315,28 +315,47 @@ class ApiService extends ChangeNotifier {
       return _searchAsura(query: query, page: page);
     }
 
-    // 4. MangaDex Extension
-    if (s.contains('mangadex')) {
-      final uri = Uri.parse('$_baseUrl/manga/search').replace(queryParameters: {
-        if (query != null && query.isNotEmpty) 'q': query,
-        if (type != null && type.isNotEmpty && type != 'all') 'type': type,
-        'order': order,
-        'page': page.toString(),
-        'limit': limit.toString(),
-      });
-
-      final res = await http.get(uri, headers: _headers(withAuth: false));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final list = (data['items'] as List<dynamic>?) ?? [];
-        return list.map((e) => MangaItem.fromJson(e as Map<String, dynamic>)).toList();
-      }
-      return [];
+    // 4. MangaDex Extension ONLY
+    if (s == 'mangadex' || s.contains('mangadex')) {
+      return _searchMangaCatalog(
+        query: query,
+        type: type,
+        order: order,
+        page: page,
+        limit: limit,
+      );
     }
 
-    // Unhandled community extension:
-    // DO NOT silently fall back to MangaDex! Return empty so that the UI can
-    // present the dedicated extension view with options to launch in Mihon or open the official site.
+    // 5. ANY Installed Community Extension (No exceptions, no redirects, NO fallback to MangaDex!)
+    final ext = ExtensionService.instance.getExtensionByPkg(source);
+    if (ext != null) {
+      final extName = ext.name.toLowerCase();
+      if (extName.contains('flame')) {
+        return _searchFlameComics(query: query, page: page, limit: limit);
+      }
+      if (extName.contains('weeb')) {
+        return _searchWeebCentral(query: query, page: page, limit: limit);
+      }
+      if (extName.contains('asura')) {
+        return _searchAsura(query: query, page: page);
+      }
+      if (extName.contains('mangadex')) {
+        return _searchMangaCatalog(
+          query: query,
+          type: type,
+          order: order,
+          page: page,
+          limit: limit,
+          lang: (ext.lang.isNotEmpty && ext.lang != 'ALL') ? ext.lang.toLowerCase() : null,
+          isNsfw: ext.isNsfw,
+        );
+      }
+      if (ext.homeUrl.isNotEmpty) {
+        return _searchWebManga(ext, query: query, page: page, limit: limit);
+      }
+    }
+
+    // Never fallback to MangaDex if source is non-MangaDex! Return empty list.
     return [];
   }
 
@@ -345,11 +364,48 @@ class ApiService extends ChangeNotifier {
     if (id.startsWith('flame:')) return _getFlameManga(id);
     if (id.startsWith('weeb:')) return _getWeebManga(id);
 
-    final res = await http.get(Uri.parse('$_baseUrl/manga/$id'), headers: _headers(withAuth: false));
-    if (res.statusCode == 200) {
-      return MangaItem.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    if (id.startsWith('ext:')) {
+      final firstColon = id.indexOf(':');
+      final secondColon = id.indexOf(':', firstColon + 1);
+      final pkg = secondColon != -1 ? id.substring(firstColon + 1, secondColon) : id.substring(firstColon + 1);
+      final actualId = secondColon != -1 ? id.substring(secondColon + 1) : id;
+      final pkgLower = pkg.toLowerCase();
+
+      if (pkgLower.contains('asura')) {
+        return _getAsuraManga('asura:$actualId');
+      }
+      if (pkgLower.contains('flame')) {
+        return _getFlameManga('flame:$actualId');
+      }
+      if (pkgLower.contains('weeb')) {
+        return _getWeebManga('weeb:$actualId');
+      }
+      if (pkgLower.contains('mangadex')) {
+        final baseManga = await _getMangaById(actualId);
+        return MangaItem(
+          id: id,
+          title: baseManga.title,
+          description: baseManga.description,
+          cover: baseManga.cover,
+          authors: baseManga.authors,
+          status: baseManga.status,
+          type: baseManga.type,
+          tags: baseManga.tags,
+          year: baseManga.year,
+          lastChapter: baseManga.lastChapter,
+          source: pkg,
+        );
+      }
+
+      final ext = ExtensionService.instance.getExtensionByPkg(pkg);
+      if (ext != null && ext.homeUrl.isNotEmpty) {
+        return _getWebManga(pkg, actualId, ext: ext);
+      }
+
+      throw Exception('Source details not available for $pkg');
     }
-    throw Exception('Failed to load manga details');
+
+    return _getMangaById(id);
   }
 
   Future<List<ChapterItem>> getChapters(String mangaId, {String lang = 'en'}) async {
@@ -357,14 +413,57 @@ class ApiService extends ChangeNotifier {
     if (mangaId.startsWith('flame:')) return _getFlameChapters(mangaId);
     if (mangaId.startsWith('weeb:')) return _getWeebChapters(mangaId);
 
-    final uri = Uri.parse('$_baseUrl/manga/$mangaId/chapters').replace(queryParameters: {'lang': lang});
-    final res = await http.get(uri, headers: _headers(withAuth: false));
-    if (res.statusCode == 200) {
-      final data = jsonDecode(res.body) as Map<String, dynamic>;
-      final list = (data['chapters'] as List<dynamic>?) ?? [];
-      return list.map((e) => ChapterItem.fromJson(e as Map<String, dynamic>)).toList();
+    if (mangaId.startsWith('ext:')) {
+      final firstColon = mangaId.indexOf(':');
+      final secondColon = mangaId.indexOf(':', firstColon + 1);
+      final pkg = secondColon != -1 ? mangaId.substring(firstColon + 1, secondColon) : mangaId.substring(firstColon + 1);
+      final actualId = secondColon != -1 ? mangaId.substring(secondColon + 1) : mangaId;
+      final pkgLower = pkg.toLowerCase();
+
+      if (pkgLower.contains('asura')) {
+        return _getAsuraChapters('asura:$actualId');
+      }
+      if (pkgLower.contains('flame')) {
+        return _getFlameChapters('flame:$actualId');
+      }
+      if (pkgLower.contains('weeb')) {
+        return _getWeebChapters('weeb:$actualId');
+      }
+      if (pkgLower.contains('mangadex')) {
+        final ext = ExtensionService.instance.getExtensionByPkg(pkg);
+        final targetLang = (ext != null && ext.lang.isNotEmpty && ext.lang != 'ALL')
+            ? ext.lang.toLowerCase()
+            : lang;
+
+        var chapters = await _getChaptersById(actualId, lang: targetLang);
+        if (chapters.isEmpty && targetLang != 'en') {
+          chapters = await _getChaptersById(actualId, lang: 'en');
+        }
+        if (chapters.isEmpty) {
+          chapters = await _getChaptersById(actualId, lang: '');
+        }
+
+        return chapters.map((c) => ChapterItem(
+          id: 'ext:$pkg:${c.id}',
+          number: c.number,
+          volume: c.volume,
+          title: c.title,
+          pages: c.pages,
+          group: c.group.isNotEmpty ? c.group : (ext?.name ?? 'MangaDex'),
+          publishAt: c.publishAt,
+          source: pkg,
+        )).toList();
+      }
+
+      final ext = ExtensionService.instance.getExtensionByPkg(pkg);
+      if (ext != null && ext.homeUrl.isNotEmpty) {
+        return _getWebChapters(pkg, actualId, ext: ext);
+      }
+
+      return [];
     }
-    throw Exception('Failed to load chapters');
+
+    return _getChaptersById(mangaId, lang: lang);
   }
 
   Future<ChapterPages> getChapterPages(String chapterId) async {
@@ -372,11 +471,286 @@ class ApiService extends ChangeNotifier {
     if (chapterId.startsWith('flame:')) return _getFlameChapterPages(chapterId);
     if (chapterId.startsWith('weeb:')) return _getWeebChapterPages(chapterId);
 
-    final res = await http.get(Uri.parse('$_baseUrl/manga/chapter/$chapterId/pages'), headers: _headers(withAuth: false));
-    if (res.statusCode == 200) {
-      return ChapterPages.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    if (chapterId.startsWith('ext:')) {
+      final firstColon = chapterId.indexOf(':');
+      final secondColon = chapterId.indexOf(':', firstColon + 1);
+      final pkg = secondColon != -1 ? chapterId.substring(firstColon + 1, secondColon) : '';
+      final actualChapterId = secondColon != -1 ? chapterId.substring(secondColon + 1) : chapterId;
+      final pkgLower = pkg.toLowerCase();
+
+      if (pkgLower.contains('asura')) {
+        return _getAsuraChapterPages('asura:$actualChapterId');
+      }
+      if (pkgLower.contains('flame')) {
+        return _getFlameChapterPages('flame:$actualChapterId');
+      }
+      if (pkgLower.contains('weeb')) {
+        return _getWeebChapterPages('weeb:$actualChapterId');
+      }
+      if (pkgLower.contains('mangadex')) {
+        final res = await _getChapterPagesById(actualChapterId);
+        return ChapterPages(
+          chapterId: chapterId,
+          pages: res.pages,
+          dataSaver: res.dataSaver,
+        );
+      }
+
+      final ext = ExtensionService.instance.getExtensionByPkg(pkg);
+      if (ext != null && ext.homeUrl.isNotEmpty) {
+        return _getWebChapterPages(pkg, actualChapterId, ext: ext);
+      }
+
+      throw Exception('Chapter reader not available for $pkg');
     }
+
+    return _getChapterPagesById(chapterId);
+  }
+
+  Future<List<MangaItem>> _searchMangaCatalog({
+    String? query,
+    String? type,
+    String order = 'popular',
+    int page = 1,
+    int limit = 24,
+    String? lang,
+    bool isNsfw = false,
+  }) async {
+    // 1. Try Backend
+    try {
+      final qParams = <String, String>{
+        if (query != null && query.isNotEmpty) 'q': query,
+        if (type != null && type.isNotEmpty && type != 'all') 'type': type,
+        'order': order,
+        'page': page.toString(),
+        'limit': limit.toString(),
+        if (lang != null && lang.isNotEmpty && lang.toLowerCase() != 'all') 'lang': lang.toLowerCase(),
+      };
+      final uri = Uri.parse('$_baseUrl/manga/search').replace(queryParameters: qParams);
+      final res = await http.get(uri, headers: _headers(withAuth: false)).timeout(const Duration(seconds: 7));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final list = (data['items'] as List<dynamic>?) ?? [];
+        if (list.isNotEmpty) {
+          return list.map((e) => MangaItem.fromJson(e as Map<String, dynamic>)).toList();
+        }
+      }
+    } catch (_) {}
+
+    // 2. Direct Fallback to MangaDex API with User-Agent
+    try {
+      final qParams = <String, String>{
+        'limit': limit.clamp(1, 50).toString(),
+        'offset': ((page - 1) * limit).toString(),
+        'includes[]': 'cover_art',
+        'hasAvailableChapters': 'true',
+      };
+      if (query != null && query.isNotEmpty) {
+        qParams['title'] = query;
+        qParams['order[relevance]'] = 'desc';
+      } else if (order == 'popular') {
+        qParams['order[followedCount]'] = 'desc';
+      } else if (order == 'latest') {
+        qParams['order[latestUploadedChapter]'] = 'desc';
+      } else if (order == 'rating') {
+        qParams['order[rating]'] = 'desc';
+      } else {
+        qParams['order[createdAt]'] = 'desc';
+      }
+
+      if (type == 'manhwa') {
+        qParams['originalLanguage[]'] = 'ko';
+      } else if (type == 'manhua') {
+        qParams['originalLanguage[]'] = 'zh';
+      } else if (type == 'manga') {
+        qParams['originalLanguage[]'] = 'ja';
+      }
+
+      if (lang != null && lang.isNotEmpty && lang.toLowerCase() != 'all') {
+        qParams['availableTranslatedLanguage[]'] = lang.toLowerCase();
+      }
+
+      final uri = Uri.parse('https://api.mangadex.org/manga').replace(queryParameters: qParams);
+      final res = await http.get(
+        uri,
+        headers: {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final list = (data['data'] as List<dynamic>?) ?? [];
+        return list.map((m) => _normalizeDirectManga(m as Map<String, dynamic>)).toList();
+      }
+    } catch (e) {
+      debugPrint('_searchMangaCatalog direct fallback error: $e');
+    }
+
+    return [];
+  }
+
+  Future<MangaItem> _getMangaById(String actualId) async {
+    // 1. Try Backend
+    try {
+      final res = await http.get(Uri.parse('$_baseUrl/manga/$actualId'), headers: _headers(withAuth: false)).timeout(const Duration(seconds: 7));
+      if (res.statusCode == 200) {
+        return MangaItem.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+      }
+    } catch (_) {}
+
+    // 2. Direct Fallback
+    try {
+      final res = await http.get(
+        Uri.parse('https://api.mangadex.org/manga/$actualId?includes[]=cover_art&includes[]=author&includes[]=artist'),
+        headers: {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final m = data['data'] as Map<String, dynamic>? ?? {};
+        return _normalizeDirectManga(m);
+      }
+    } catch (_) {}
+
+    throw Exception('Failed to load manga details');
+  }
+
+  Future<List<ChapterItem>> _getChaptersById(String actualId, {String lang = 'en'}) async {
+    // 1. Try Backend
+    try {
+      final uri = Uri.parse('$_baseUrl/manga/$actualId/chapters').replace(queryParameters: {
+        if (lang.isNotEmpty) 'lang': lang,
+      });
+      final res = await http.get(uri, headers: _headers(withAuth: false)).timeout(const Duration(seconds: 7));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final list = (data['chapters'] as List<dynamic>?) ?? [];
+        return list.map((e) => ChapterItem.fromJson(e as Map<String, dynamic>)).toList();
+      }
+    } catch (_) {}
+
+    // 2. Direct Fallback
+    try {
+      final qParams = <String, String>{
+        'limit': '100',
+        'order[chapter]': 'desc',
+        'contentRating[]': 'safe',
+        'includes[]': 'scanlation_group',
+      };
+      if (lang.isNotEmpty && lang != 'all') {
+        qParams['translatedLanguage[]'] = lang;
+      }
+      final uri = Uri.parse('https://api.mangadex.org/manga/$actualId/feed').replace(queryParameters: qParams);
+      final res = await http.get(
+        uri,
+        headers: {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final list = (data['data'] as List<dynamic>?) ?? [];
+        return list.map((c) {
+          final a = c['attributes'] as Map<String, dynamic>? ?? {};
+          final rels = (c['relationships'] as List<dynamic>?) ?? [];
+          final grpRel = rels.firstWhere((r) => r['type'] == 'scanlation_group', orElse: () => null);
+          final groupName = grpRel != null && grpRel['attributes'] != null ? grpRel['attributes']['name']?.toString() ?? '' : '';
+          return ChapterItem(
+            id: c['id']?.toString() ?? '',
+            number: a['chapter']?.toString(),
+            volume: a['volume']?.toString(),
+            title: a['title']?.toString() ?? '',
+            pages: (a['pages'] as num?)?.toInt() ?? 0,
+            group: groupName,
+            publishAt: a['publishAt']?.toString() ?? a['readableAt']?.toString(),
+            source: 'mangadex',
+          );
+        }).toList();
+      }
+    } catch (_) {}
+
+    return [];
+  }
+
+  Future<ChapterPages> _getChapterPagesById(String actualChapterId) async {
+    // 1. Try Backend
+    try {
+      final res = await http.get(Uri.parse('$_baseUrl/manga/chapter/$actualChapterId/pages'), headers: _headers(withAuth: false)).timeout(const Duration(seconds: 7));
+      if (res.statusCode == 200) {
+        return ChapterPages.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+      }
+    } catch (_) {}
+
+    // 2. Direct Fallback
+    try {
+      final res = await http.get(
+        Uri.parse('https://api.mangadex.org/at-home/server/$actualChapterId'),
+        headers: {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final baseUrl = data['baseUrl']?.toString() ?? 'https://uploads.mangadex.org';
+        final chapterObj = data['chapter'] as Map<String, dynamic>? ?? {};
+        final hash = chapterObj['hash']?.toString() ?? '';
+        final dataList = (chapterObj['data'] as List<dynamic>?) ?? [];
+        final dataSaverList = (chapterObj['dataSaver'] as List<dynamic>?) ?? [];
+        final pages = dataList.map((fn) => '$baseUrl/data/$hash/$fn').toList();
+        final saver = dataSaverList.map((fn) => '$baseUrl/data-saver/$hash/$fn').toList();
+        return ChapterPages(chapterId: actualChapterId, pages: pages, dataSaver: saver);
+      }
+    } catch (_) {}
+
     throw Exception('Failed to load chapter pages');
+  }
+
+  MangaItem _normalizeDirectManga(Map<String, dynamic> m) {
+    final a = m['attributes'] as Map<String, dynamic>? ?? {};
+    final rels = (m['relationships'] as List<dynamic>?) ?? [];
+    final coverRel = rels.firstWhere((r) => r['type'] == 'cover_art', orElse: () => null);
+    final fileName = coverRel != null && coverRel['attributes'] != null ? coverRel['attributes']['fileName']?.toString() : null;
+    final id = m['id']?.toString() ?? '';
+
+    String title = '';
+    final titleMap = a['title'];
+    if (titleMap is Map) {
+      title = titleMap['en']?.toString() ?? (titleMap.isNotEmpty ? titleMap.values.first.toString() : '');
+    }
+    if (title.isEmpty) {
+      final alt = (a['altTitles'] as List<dynamic>?) ?? [];
+      for (final t in alt) {
+        if (t is Map && t['en'] != null) {
+          title = t['en'].toString();
+          break;
+        }
+      }
+    }
+    if (title.isEmpty) title = 'Untitled';
+
+    String desc = '';
+    final descMap = a['description'];
+    if (descMap is Map) {
+      desc = descMap['en']?.toString() ?? (descMap.isNotEmpty ? descMap.values.first.toString() : '');
+    }
+
+    final origLang = a['originalLanguage']?.toString() ?? '';
+    final type = origLang == 'ko' ? 'manhwa' : (origLang.startsWith('zh') ? 'manhua' : 'manga');
+    final coverUrl = (fileName != null && fileName.isNotEmpty)
+        ? 'https://uploads.mangadex.org/covers/$id/$fileName.512.jpg'
+        : '';
+
+    final authors = rels
+        .where((r) => r['type'] == 'author' || r['type'] == 'artist')
+        .map((r) => (r['attributes'] as Map<String, dynamic>?)?['name']?.toString() ?? '')
+        .where((n) => n.isNotEmpty)
+        .toList();
+
+    return MangaItem(
+      id: id,
+      title: title,
+      description: desc,
+      cover: coverUrl,
+      authors: authors,
+      status: a['status']?.toString() ?? '',
+      type: type,
+      lastChapter: a['lastChapter']?.toString(),
+      source: 'mangadex',
+    );
   }
 
   Future<List<MangaItem>> _searchAsura({String? query, int page = 1}) async {
@@ -1181,7 +1555,11 @@ class ApiService extends ChangeNotifier {
               'cover': manga.cover,
               'chapterNumber': ch.number,
               'chapterTitle': ch.title,
-              'group': ch.group.isNotEmpty ? ch.group : 'MangaDex',
+              'group': ch.group.isNotEmpty
+                  ? ch.group
+                  : (manga.source.isNotEmpty && manga.source != 'mangadex'
+                      ? (ExtensionService.instance.getExtensionByPkg(manga.source)?.name ?? manga.source)
+                      : 'MangaDex'),
               'publishAt': ch.publishAt,
               'pages': ch.pages,
             });
@@ -1221,5 +1599,228 @@ class ApiService extends ChangeNotifier {
       'items': allChapters,
       'total': allChapters.length,
     };
+  }
+
+  // ---- Generic Web Manga Scraper for Community Extensions ----
+
+  Future<List<MangaItem>> _searchWebManga(
+    MangaExtension ext, {
+    String? query,
+    int page = 1,
+    int limit = 24,
+  }) async {
+    try {
+      final base = ext.homeUrl.endsWith('/') ? ext.homeUrl.substring(0, ext.homeUrl.length - 1) : ext.homeUrl;
+      final String url;
+      if (query != null && query.trim().isNotEmpty) {
+        url = '$base/?s=${Uri.encodeComponent(query.trim())}';
+      } else {
+        url = base;
+      }
+
+      final res = await http.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final html = res.body;
+        final items = <MangaItem>[];
+
+        final linkImgRegex = RegExp(
+          r"""<a\s+[^>]*href=["']([^"']+)["'][^>]*>[\s\S]*?<img\s+[^>]*src=["']([^"']+)["'][^>]*(?:alt=["']([^"']*)["'])?[\s\S]*?</a>""",
+          caseSensitive: false,
+        );
+
+        final matches = linkImgRegex.allMatches(html);
+        final seenUrls = <String>{};
+
+        for (final m in matches) {
+          var itemUrl = m.group(1) ?? '';
+          var coverUrl = m.group(2) ?? '';
+          var title = m.group(3)?.trim() ?? '';
+
+          if (itemUrl.isEmpty || itemUrl == '#' || itemUrl == base || itemUrl == '$base/') continue;
+          if (coverUrl.contains('.svg') || coverUrl.contains('logo') || coverUrl.contains('avatar') || coverUrl.contains('icon')) continue;
+
+          if (!itemUrl.startsWith('http')) {
+            itemUrl = itemUrl.startsWith('/') ? '$base$itemUrl' : '$base/$itemUrl';
+          }
+          if (!coverUrl.startsWith('http')) {
+            coverUrl = coverUrl.startsWith('/') ? '$base$coverUrl' : '$base/$coverUrl';
+          }
+
+          if (seenUrls.contains(itemUrl)) continue;
+          seenUrls.add(itemUrl);
+
+          if (title.isEmpty) {
+            final slug = Uri.tryParse(itemUrl)?.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? '';
+            title = slug.replaceAll('-', ' ').replaceAll('_', ' ');
+          }
+
+          if (title.isNotEmpty) {
+            items.add(MangaItem(
+              id: 'ext:${ext.pkg}:${Uri.encodeComponent(itemUrl)}',
+              title: title,
+              cover: coverUrl,
+              source: ext.pkg,
+            ));
+          }
+          if (items.length >= limit) break;
+        }
+
+        return items;
+      }
+    } catch (e) {
+      debugPrint('WebExtension search error for ${ext.pkg}: $e');
+    }
+    return [];
+  }
+
+  Future<MangaItem> _getWebManga(String pkg, String actualId, {MangaExtension? ext}) async {
+    final seriesUrl = Uri.decodeComponent(actualId);
+    try {
+      final res = await http.get(
+        Uri.parse(seriesUrl),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final html = res.body;
+
+        final h1Match = RegExp(r'<h1[^>]*>([^<]+)</h1>', caseSensitive: false).firstMatch(html);
+        final title = h1Match?.group(1)?.trim() ?? ext?.name ?? 'Series';
+
+        final descMatch = RegExp(r"""<div[^>]*class=["'][^"']*(?:description|synopsis|summary)[^"']*["'][^>]*>([\s\S]*?)</div>""", caseSensitive: false).firstMatch(html) ??
+            RegExp(r"""<p[^>]*class=["'][^"']*(?:description|synopsis|summary)[^"']*["'][^>]*>([\s\S]*?)</p>""", caseSensitive: false).firstMatch(html);
+        final desc = descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
+
+        final coverMatch = RegExp(r'<img[^>]*class=["''][^"'']*(?:thumb|cover|poster)[^"'']*["''][^>]*src=["'']([^"'']+)["'']', caseSensitive: false).firstMatch(html) ??
+            RegExp(r'<img[^>]*src=["'']([^"'']+)["''][^>]*class=["''][^"'']*(?:thumb|cover|poster)[^"'']*["'']', caseSensitive: false).firstMatch(html);
+        var coverUrl = coverMatch?.group(1) ?? '';
+        if (coverUrl.isNotEmpty && !coverUrl.startsWith('http')) {
+          final uri = Uri.parse(seriesUrl);
+          coverUrl = '${uri.scheme}://${uri.host}$coverUrl';
+        }
+
+        return MangaItem(
+          id: 'ext:$pkg:$actualId',
+          title: title,
+          description: desc,
+          cover: coverUrl,
+          source: pkg,
+        );
+      }
+    } catch (e) {
+      debugPrint('WebExtension getManga error: $e');
+    }
+
+    return MangaItem(
+      id: 'ext:$pkg:$actualId',
+      title: ext?.name ?? 'Series',
+      source: pkg,
+    );
+  }
+
+  Future<List<ChapterItem>> _getWebChapters(String pkg, String actualId, {MangaExtension? ext}) async {
+    final seriesUrl = Uri.decodeComponent(actualId);
+    try {
+      final res = await http.get(
+        Uri.parse(seriesUrl),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final html = res.body;
+        final chapterRegex = RegExp(
+          r"""<a\s+[^>]*href=["']([^"']*(?:chapter|ch-)[^"']*)["'][^>]*>([\s\S]*?)</a>""",
+          caseSensitive: false,
+        );
+        final matches = chapterRegex.allMatches(html);
+        final list = <ChapterItem>[];
+        final seen = <String>{};
+
+        for (final m in matches) {
+          var chUrl = m.group(1) ?? '';
+          final rawText = (m.group(2) ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim();
+
+          if (chUrl.isEmpty || seen.contains(chUrl)) continue;
+          seen.add(chUrl);
+
+          if (!chUrl.startsWith('http')) {
+            final uri = Uri.parse(seriesUrl);
+            chUrl = chUrl.startsWith('/') ? '${uri.scheme}://${uri.host}$chUrl' : '${uri.scheme}://${uri.host}/$chUrl';
+          }
+
+          final numMatch = RegExp(r'(?:chapter|ch\.?)\s*([\d\.]+)', caseSensitive: false).firstMatch(rawText);
+          final chNum = numMatch?.group(1);
+
+          list.add(ChapterItem(
+            id: 'ext:$pkg:${Uri.encodeComponent(chUrl)}',
+            number: chNum,
+            title: rawText.isNotEmpty ? rawText : (chNum != null ? 'Chapter $chNum' : 'Chapter'),
+            group: ext?.name ?? 'Web',
+            source: pkg,
+          ));
+        }
+
+        return list;
+      }
+    } catch (e) {
+      debugPrint('WebExtension getChapters error: $e');
+    }
+    return [];
+  }
+
+  Future<ChapterPages> _getWebChapterPages(String pkg, String actualChapterId, {MangaExtension? ext}) async {
+    final chapterUrl = Uri.decodeComponent(actualChapterId);
+    try {
+      final res = await http.get(
+        Uri.parse(chapterUrl),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      ).timeout(const Duration(seconds: 10));
+
+      if (res.statusCode == 200) {
+        final html = res.body;
+        final imgMatches = RegExp(r'<img[^>]+src=["'']([^"'']+)["'']', caseSensitive: false).allMatches(html);
+        final pagesList = <String>[];
+        final seen = <String>{};
+
+        for (final m in imgMatches) {
+          var u = m.group(1)?.trim() ?? '';
+          if (u.isEmpty || u.contains('.svg') || u.contains('logo') || u.contains('banner') || u.contains('avatar') || u.contains('icon')) {
+            continue;
+          }
+          if (!u.startsWith('http')) {
+            final uri = Uri.parse(chapterUrl);
+            u = u.startsWith('/') ? '${uri.scheme}://${uri.host}$u' : '${uri.scheme}://${uri.host}/$u';
+          }
+          if (seen.add(u)) {
+            pagesList.add(u);
+          }
+        }
+
+        return ChapterPages(
+          chapterId: 'ext:$pkg:$actualChapterId',
+          pages: pagesList,
+          dataSaver: pagesList,
+        );
+      }
+    } catch (e) {
+      debugPrint('WebExtension getChapterPages error: $e');
+    }
+    throw Exception('Failed to load chapter pages from $pkg');
   }
 }

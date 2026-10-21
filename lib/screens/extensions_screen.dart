@@ -266,14 +266,38 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
             const SizedBox(height: 20),
             Builder(
               builder: (bCtx) {
-                final isDirect = ext.name.toLowerCase().contains('asura') ||
-                    ext.name.toLowerCase().contains('mangadex') ||
-                    ext.pkg.toLowerCase().contains('asura') ||
-                    ext.pkg.toLowerCase().contains('mangadex');
+                final isDownloading = _service.isDownloading(ext.pkg);
+                final progress = _service.getProgress(ext.pkg);
 
-                return Column(
-                  children: [
-                    if (ext.isInstalled) ...[
+                if (ext.isInstalled) {
+                  return Column(
+                    children: [
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            Navigator.pop(ctx);
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => SourceCatalogScreen(
+                                  sourceId: ext.pkg,
+                                  sourceName: ext.name,
+                                  sourceLang: ext.lang,
+                                ),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.grid_view_rounded, size: 20),
+                          label: Text('Browse Catalog (${ext.name})'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: AppColors.onPrimary,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
                       SizedBox(
                         width: double.infinity,
                         child: OutlinedButton.icon(
@@ -293,101 +317,75 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           ),
                         ),
                       ),
-                      const SizedBox(height: 10),
-                    ] else if (isDirect) ...[
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: () {
-                            _service.installExtension(ext);
-                            Navigator.pop(ctx);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Installed ${ext.name}!')),
-                            );
-                          },
-                          icon: const Icon(Icons.check_circle_outline_rounded, size: 20),
-                          label: Text('Install In-App (${ext.name})'),
-                          style: FilledButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            foregroundColor: AppColors.onPrimary,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ],
+                  );
+                }
+
+                if (isDownloading) {
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceHigh,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            value: progress > 0.05 ? progress : null,
+                            strokeWidth: 2,
+                            color: AppColors.primary,
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 10),
-                    ],
-                    if (ext.apkUrl.isNotEmpty)
-                      Builder(
-                        builder: (sCtx) {
-                          final isDl = _service.isDownloading(ext.pkg);
-                          final prog = _service.getProgress(ext.pkg);
-                          if (isDl) {
-                            return Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                              decoration: BoxDecoration(
-                                color: AppColors.surfaceHigh,
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Row(
-                                children: [
-                                  SizedBox(
-                                    width: 16,
-                                    height: 16,
-                                    child: CircularProgressIndicator(
-                                      value: prog > 0.05 ? prog : null,
-                                      strokeWidth: 2,
-                                      color: AppColors.primary,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Expanded(
-                                    child: Text(
-                                      'Downloading APK in-app... ${(prog * 100).toInt()}%',
-                                      style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.primary),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          }
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Downloading in-app... ${(progress * 100).toInt()}%',
+                            style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.primary),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                }
 
-                          return SizedBox(
-                            width: double.infinity,
-                            child: OutlinedButton.icon(
-                              onPressed: () async {
-                                ScaffoldMessenger.of(ctx).showSnackBar(
-                                  SnackBar(
-                                    content: Text('Downloading ${ext.name} in-app...'),
-                                    duration: const Duration(seconds: 2),
-                                  ),
-                                );
-                                final ok = await _service.downloadAndInstallApk(ext);
-                                if (ctx.mounted) {
-                                  ScaffoldMessenger.of(ctx).showSnackBar(
-                                    SnackBar(
-                                      content: Text(ok
-                                          ? 'Downloaded ${ext.name}! Opening Android installer...'
-                                          : 'Could not open installer. Check "Install unknown apps" in Settings.'),
-                                      duration: Duration(seconds: ok ? 2 : 4),
-                                    ),
-                                  );
-                                }
-                              },
-                              icon: const Icon(Icons.download_rounded, size: 18),
-                              label: Text('Download APK in-app (${ext.lang} • v${ext.version})'),
-                              style: OutlinedButton.styleFrom(
-                                foregroundColor: AppColors.primary,
-                                side: const BorderSide(color: AppColors.surfaceHigh),
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                  ],
+                return SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () async {
+                      ScaffoldMessenger.of(ctx).showSnackBar(
+                        SnackBar(
+                          content: Text('Downloading ${ext.name} in-app...'),
+                          duration: const Duration(seconds: 1),
+                        ),
+                      );
+                      final ok = await _service.downloadAndInstallExtension(ext);
+                      if (ctx.mounted) {
+                        Navigator.pop(ctx);
+                      }
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(ok
+                                ? 'Installed ${ext.name} in-app! Added to Browse Sources.'
+                                : 'Failed to install ${ext.name}.'),
+                            duration: const Duration(seconds: 2),
+                          ),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.download_rounded, size: 20),
+                    label: Text('Install In-App (${ext.lang} • v${ext.version})'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.onPrimary,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                  ),
                 );
               },
             ),
@@ -650,7 +648,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(
-                                        'Direct Sources (MangaDex & Asura Scans) are built natively into Shiori for instant in-app reading. Community Extensions are Tachiyomi/Mihon Android APK packages provided for download.',
+                                        'All extensions install directly in-app. Browse manga catalogs and read chapters with zero external redirects.',
                                         style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.4),
                                       ),
                                     ),
@@ -867,17 +865,18 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Row(
+                  Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 3),
+                  Wrap(
+                    spacing: 4,
+                    runSpacing: 2,
+                    crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      Flexible(
-                        child: Text(
-                          name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                         decoration: BoxDecoration(
@@ -889,7 +888,6 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w600, color: AppColors.primary),
                         ),
                       ),
-                      const SizedBox(width: 4),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                         decoration: BoxDecoration(
@@ -913,12 +911,15 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                 ],
               ),
             ),
-            const SizedBox(width: 10),
+            const SizedBox(width: 8),
             if (isInstalled)
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.all(6),
+                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                     icon: const Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
                     tooltip: 'Browse $name Catalog',
                     onPressed: () {
@@ -933,7 +934,12 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                       );
                     },
                   ),
-                  OutlinedButton.icon(
+                  IconButton(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.all(6),
+                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                    icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                    tooltip: 'Uninstall $name',
                     onPressed: () {
                       _service.uninstallPackage(id);
                       ScaffoldMessenger.of(context).showSnackBar(
@@ -943,14 +949,6 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                         ),
                       );
                     },
-                    icon: const Icon(Icons.delete_outline_rounded, size: 14, color: Colors.redAccent),
-                    label: Text('Uninstall', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.redAccent)),
-                    style: OutlinedButton.styleFrom(
-                      side: BorderSide(color: Colors.redAccent.withValues(alpha: .6)),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      minimumSize: const Size(0, 32),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
                   ),
                 ],
               )
@@ -1003,17 +1001,18 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Row(
+                    Text(
+                      ext.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 3),
+                    Wrap(
+                      spacing: 4,
+                      runSpacing: 2,
+                      crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Flexible(
-                          child: Text(
-                            ext.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
-                          ),
-                        ),
-                        const SizedBox(width: 6),
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                           decoration: BoxDecoration(
@@ -1025,8 +1024,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                             style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w600, color: AppColors.primary),
                           ),
                         ),
-                        if (ext.isNsfw) ...[
-                          const SizedBox(width: 4),
+                        if (ext.isNsfw)
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
                             decoration: BoxDecoration(
@@ -1038,8 +1036,6 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                               style: GoogleFonts.inter(fontSize: 8, fontWeight: FontWeight.w700, color: Colors.redAccent),
                             ),
                           ),
-                        ],
-                        const SizedBox(width: 4),
                         Text(
                           'v${ext.version}',
                           style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
@@ -1056,56 +1052,49 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                   ],
                 ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               // Action button:
               Builder(
                 builder: (bCtx) {
-                  final isDirect = ext.name.toLowerCase().contains('asura') ||
-                      ext.name.toLowerCase().contains('mangadex') ||
-                      ext.pkg.toLowerCase().contains('asura') ||
-                      ext.pkg.toLowerCase().contains('mangadex');
-
                   if (ext.isInstalled) {
-                    return OutlinedButton.icon(
-                      onPressed: () {
-                        _service.uninstallExtension(ext);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Uninstalled ${ext.name}'),
-                            duration: const Duration(seconds: 1),
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.delete_outline_rounded, size: 14, color: Colors.redAccent),
-                      label: Text('Uninstall', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.redAccent)),
-                      style: OutlinedButton.styleFrom(
-                        side: BorderSide(color: Colors.redAccent.withValues(alpha: .6)),
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        minimumSize: const Size(0, 32),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      ),
-                    );
-                  }
-
-                  if (isDirect) {
-                    return FilledButton(
-                      onPressed: () {
-                        _service.installExtension(ext);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text('Installed ${ext.name}! Added to Browse Sources.'),
-                            duration: const Duration(seconds: 2),
-                          ),
-                        );
-                      },
-                      style: FilledButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        foregroundColor: AppColors.onPrimary,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                        minimumSize: const Size(0, 32),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                      ),
-                      child: Text('Install', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600)),
+                    return Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          icon: const Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
+                          tooltip: 'Browse ${ext.name} Catalog',
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => SourceCatalogScreen(
+                                  sourceId: ext.pkg,
+                                  sourceName: ext.name,
+                                  sourceLang: ext.lang,
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          padding: const EdgeInsets.all(6),
+                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                          icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                          tooltip: 'Uninstall ${ext.name}',
+                          onPressed: () {
+                            _service.uninstallExtension(ext);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Uninstalled ${ext.name}'),
+                                duration: const Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
                     );
                   }
 
@@ -1141,32 +1130,32 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     );
                   }
 
-                  return OutlinedButton.icon(
+                  return FilledButton.icon(
                     onPressed: () async {
-                      ScaffoldMessenger.of(bCtx).showSnackBar(
+                      ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
                           content: Text('Downloading ${ext.name} in-app...'),
-                          duration: const Duration(seconds: 2),
+                          duration: const Duration(seconds: 1),
                         ),
                       );
-                      final ok = await _service.downloadAndInstallApk(ext);
-                      if (bCtx.mounted) {
-                        ScaffoldMessenger.of(bCtx).showSnackBar(
+                      final ok = await _service.downloadAndInstallExtension(ext);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
                             content: Text(ok
-                                ? 'Downloaded ${ext.name}! Opening Android installer...'
-                                : 'Could not open installer. Check "Install unknown apps" in Settings.'),
-                            duration: Duration(seconds: ok ? 2 : 4),
+                                ? 'Installed ${ext.name} in-app! Added to Browse Sources.'
+                                : 'Failed to install ${ext.name}.'),
+                            duration: const Duration(seconds: 2),
                           ),
                         );
                       }
                     },
                     icon: const Icon(Icons.download_rounded, size: 14),
-                    label: Text('Get APK', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600)),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.primary,
-                      side: const BorderSide(color: AppColors.surfaceHigh),
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    label: Text('Install', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600)),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.onPrimary,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                       minimumSize: const Size(0, 32),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),

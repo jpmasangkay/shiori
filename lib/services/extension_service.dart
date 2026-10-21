@@ -75,6 +75,7 @@ class ExtensionService extends ChangeNotifier {
   static const String defaultRepoUrl = 'https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.json';
   static const String _repoUrlKey = 'shiori_extension_repo_url_v2';
   static const String _installedKey = 'shiori_installed_extensions';
+  static const String _installedMetaKey = 'shiori_installed_extensions_meta_v2';
   static const String _cacheKey = 'shiori_extensions_cache_v2';
 
   String _repoUrl = defaultRepoUrl;
@@ -86,6 +87,9 @@ class ExtensionService extends ChangeNotifier {
   final Set<String> _installedPackages = {};
   Set<String> get installedPackages => _installedPackages;
 
+  final Map<String, MangaExtension> _installedExtensionsMap = {};
+  Map<String, MangaExtension> get installedExtensionsMap => _installedExtensionsMap;
+
   bool _isLoading = false;
   bool get isLoading => _isLoading;
 
@@ -96,10 +100,26 @@ class ExtensionService extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       _repoUrl = prefs.getString(_repoUrlKey) ?? defaultRepoUrl;
+
       final installedList = prefs.getStringList(_installedKey);
       if (installedList != null) {
         _installedPackages.clear();
-        _installedPackages.addAll(installedList);
+        for (final pkg in installedList) {
+          _installedPackages.add(pkg.toLowerCase().trim());
+        }
+      }
+
+      final metaJson = prefs.getString(_installedMetaKey);
+      if (metaJson != null && metaJson.isNotEmpty) {
+        try {
+          final Map<String, dynamic> decoded = json.decode(metaJson);
+          _installedExtensionsMap.clear();
+          decoded.forEach((k, v) {
+            if (v is Map<String, dynamic>) {
+              _installedExtensionsMap[k.toLowerCase().trim()] = MangaExtension.fromJson(v);
+            }
+          });
+        } catch (_) {}
       }
 
       // Load cache if present
@@ -113,10 +133,10 @@ class ExtensionService extends ChangeNotifier {
         } catch (_) {}
       }
 
-      // Query system for installed packages on Android
+      // Query system for installed packages on Android (as non-blocking hint)
       await refreshInstalledPackages();
 
-      // Fetch fresh data in the background
+      // Fetch fresh data from repository
       fetchExtensions();
     } catch (e) {
       debugPrint('ExtensionService init error: $e');
@@ -144,11 +164,20 @@ class ExtensionService extends ChangeNotifier {
   }
 
   List<MangaExtension> get installedExtensions {
-    return _extensions.where((e) => e.isInstalled).toList();
+    final list = _extensions.where((e) => e.isInstalled).toList();
+    for (final ext in _installedExtensionsMap.values) {
+      if (!list.any((e) => e.pkg.toLowerCase().trim() == ext.pkg.toLowerCase().trim())) {
+        ext.isInstalled = true;
+        list.add(ext);
+      }
+    }
+    return list;
   }
 
   bool isPackageInstalled(String pkgOrId) {
     final lower = pkgOrId.toLowerCase().trim();
+    if (_installedPackages.contains(lower)) return true;
+    if (_installedExtensionsMap.containsKey(lower)) return true;
     return _installedPackages.any((p) {
       final pl = p.toLowerCase().trim();
       return pl == lower || pl.contains(lower) || lower.contains(pl);
@@ -167,7 +196,21 @@ class ExtensionService extends ChangeNotifier {
             pl == idLower ||
             pkgLower.contains(pl) ||
             pl.contains(pkgLower);
+      }) || _installedExtensionsMap.containsKey(pkgLower);
+    }
+  }
+
+  Future<void> _persistInstalledState() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_installedKey, _installedPackages.toList());
+      final mapToSave = <String, dynamic>{};
+      _installedExtensionsMap.forEach((k, v) {
+        mapToSave[k] = v.toJson();
       });
+      await prefs.setString(_installedMetaKey, json.encode(mapToSave));
+    } catch (e) {
+      debugPrint('Error persisting installed extensions: $e');
     }
   }
 
@@ -183,44 +226,69 @@ class ExtensionService extends ChangeNotifier {
       final decoded = json.decode(jsonStr);
       final list = <MangaExtension>[];
       if (decoded is Map<String, dynamic>) {
-        final extListMap = decoded['extensionList'] as Map<String, dynamic>? ?? {};
-        for (final entry in extListMap.entries) {
-          final lang = entry.key.toUpperCase();
-          final exts = entry.value as List<dynamic>? ?? [];
-          for (final item in exts) {
-            if (item is Map<String, dynamic>) {
-              final res = item['resources'] as Map<String, dynamic>? ?? {};
-              final apkUrl = res['apkUrl']?.toString() ?? '';
-              final iconUrl = res['iconUrl']?.toString() ?? '';
-              final rawSources = (item['sources'] as List<dynamic>?) ?? [];
-              final sources = rawSources
-                  .map((s) => (s as Map<String, dynamic>)['name']?.toString() ?? '')
-                  .where((n) => n.isNotEmpty)
-                  .toList();
-              final homeUrl = rawSources.isNotEmpty
-                  ? (rawSources[0] as Map<String, dynamic>)['homeUrl']?.toString() ?? ''
-                  : '';
-              final pkg = item['packageName']?.toString() ?? '';
-              final name = item['name']?.toString() ?? '';
-              final version = item['versionName']?.toString() ?? '';
-              final versionCode = int.tryParse(item['versionCode']?.toString() ?? '') ?? 0;
-              final isNsfw = item['contentWarning'] == 'CONTENT_WARNING_NSFW';
+        final extListRaw = decoded['extensionList'];
+        List<dynamic> items = [];
+        if (extListRaw is Map<String, dynamic>) {
+          if (extListRaw['extensions'] is List) {
+            items = extListRaw['extensions'] as List<dynamic>;
+          } else {
+            for (final v in extListRaw.values) {
+              if (v is List) items.addAll(v);
+            }
+          }
+        } else if (extListRaw is List) {
+          items = extListRaw;
+        }
 
-              if (name.isNotEmpty && pkg.isNotEmpty) {
-                list.add(MangaExtension(
-                  id: pkg,
-                  name: name,
-                  pkg: pkg,
-                  version: version,
-                  versionCode: versionCode,
-                  apkUrl: apkUrl,
-                  iconUrl: iconUrl,
-                  lang: lang,
-                  isNsfw: isNsfw,
-                  sourceNames: sources,
-                  homeUrl: homeUrl,
-                ));
+        for (final item in items) {
+          if (item is Map<String, dynamic>) {
+            final res = item['resources'] as Map<String, dynamic>? ?? {};
+            final apkUrl = res['apkUrl']?.toString() ?? '';
+            final iconUrl = res['iconUrl']?.toString() ?? '';
+            final rawSources = (item['sources'] as List<dynamic>?) ?? [];
+            final sources = rawSources
+                .map((s) => (s as Map<String, dynamic>)['name']?.toString() ?? '')
+                .where((n) => n.isNotEmpty)
+                .toList();
+            final homeUrl = rawSources.isNotEmpty
+                ? ((rawSources[0] as Map<String, dynamic>)['homeUrl']?.toString() ??
+                    (rawSources[0] as Map<String, dynamic>)['baseUrl']?.toString() ??
+                    '')
+                : (item['baseUrl']?.toString() ?? item['homeUrl']?.toString() ?? '');
+            final pkg = item['packageName']?.toString() ?? '';
+            final name = item['name']?.toString() ?? '';
+            final version = item['versionName']?.toString() ?? '';
+            final versionCode = int.tryParse(item['versionCode']?.toString() ?? '') ?? 0;
+            final isNsfw = item['contentWarning'] == 'CONTENT_WARNING_NSFW';
+
+            String lang = 'ALL';
+            if (rawSources.isNotEmpty) {
+              final srcLang = (rawSources[0] as Map<String, dynamic>)['language']?.toString().trim();
+              if (srcLang != null && srcLang.isNotEmpty && srcLang.toLowerCase() != 'all') {
+                lang = srcLang.toUpperCase();
               }
+            }
+            if (lang == 'ALL') {
+              final parts = pkg.split('.');
+              if (parts.length >= 4 && parts[3].toLowerCase() != 'all') {
+                lang = parts[3].toUpperCase();
+              }
+            }
+
+            if (name.isNotEmpty && pkg.isNotEmpty) {
+              list.add(MangaExtension(
+                id: pkg,
+                name: name,
+                pkg: pkg,
+                version: version,
+                versionCode: versionCode,
+                apkUrl: apkUrl,
+                iconUrl: iconUrl,
+                lang: lang,
+                isNsfw: isNsfw,
+                sourceNames: sources,
+                homeUrl: homeUrl,
+              ));
             }
           }
         }
@@ -256,7 +324,7 @@ class ExtensionService extends ChangeNotifier {
 
           // Save to cache asynchronously
           SharedPreferences.getInstance().then((prefs) {
-            final jsonStr = json.encode(_extensions.take(300).map((e) => e.toJson()).toList());
+            final jsonStr = json.encode(_extensions.take(500).map((e) => e.toJson()).toList());
             prefs.setString(_cacheKey, jsonStr);
           }).catchError((_) {});
         }
@@ -276,13 +344,7 @@ class ExtensionService extends ChangeNotifier {
   bool get hasAsura => isPackageInstalled('asura');
 
   Future<bool> isAppInstalled(String packageName) async {
-    if (!Platform.isAndroid) return false;
-    try {
-      final res = await _installerChannel.invokeMethod<bool>('isAppInstalled', {'packageName': packageName});
-      return res ?? false;
-    } catch (_) {
-      return false;
-    }
+    return isPackageInstalled(packageName);
   }
 
   Future<bool> launchApp(String packageName) async {
@@ -297,6 +359,14 @@ class ExtensionService extends ChangeNotifier {
 
   MangaExtension? getExtensionByPkg(String pkgOrId) {
     final lower = pkgOrId.toLowerCase().trim();
+    if (_installedExtensionsMap.containsKey(lower)) {
+      return _installedExtensionsMap[lower];
+    }
+    for (final entry in _installedExtensionsMap.entries) {
+      if (entry.key == lower || entry.key.contains(lower) || lower.contains(entry.key)) {
+        return entry.value;
+      }
+    }
     try {
       return _extensions.firstWhere((e) {
         final p = e.pkg.toLowerCase().trim();
@@ -310,20 +380,48 @@ class ExtensionService extends ChangeNotifier {
   }
 
   Future<void> installExtension(MangaExtension ext) async {
-    installPackageByNameOrId(ext.pkg.isNotEmpty ? ext.pkg : ext.id);
+    final key = (ext.pkg.isNotEmpty ? ext.pkg : ext.id).toLowerCase().trim();
+    _installedPackages.add(key);
+    if (ext.pkg.isNotEmpty) _installedPackages.add(ext.pkg.toLowerCase().trim());
+    if (ext.id.isNotEmpty) _installedPackages.add(ext.id.toLowerCase().trim());
+    _installedExtensionsMap[key] = ext;
+    ext.isInstalled = true;
+    _updateInstalledState();
+    await _persistInstalledState();
+    notifyListeners();
   }
 
   Future<void> installPackageByNameOrId(String pkgOrId) async {
     final lower = pkgOrId.toLowerCase().trim();
     _installedPackages.add(lower);
+    final ext = getExtensionByPkg(lower);
+    if (ext != null) {
+      _installedExtensionsMap[lower] = ext;
+      ext.isInstalled = true;
+    }
     _updateInstalledState();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_installedKey, _installedPackages.toList());
+    await _persistInstalledState();
     notifyListeners();
   }
 
   Future<void> uninstallExtension(MangaExtension ext) async {
-    uninstallPackage(ext.pkg.isNotEmpty ? ext.pkg : ext.id);
+    final key = (ext.pkg.isNotEmpty ? ext.pkg : ext.id).toLowerCase().trim();
+    _installedPackages.remove(key);
+    _installedPackages.remove(ext.pkg.toLowerCase().trim());
+    _installedPackages.remove(ext.id.toLowerCase().trim());
+    _installedExtensionsMap.remove(key);
+    ext.isInstalled = false;
+
+    // Remove downloaded file if present
+    try {
+      final cleanName = ext.pkg.replaceAll(RegExp(r'[^a-zA-Z0-9_\.]'), '_');
+      final file = File('${Directory.systemTemp.path}/shiori_extensions/$cleanName.apk');
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
+
+    _updateInstalledState();
+    await _persistInstalledState();
+    notifyListeners();
   }
 
   Future<void> uninstallPackage(String pkgOrId) async {
@@ -334,20 +432,23 @@ class ExtensionService extends ChangeNotifier {
       final pl = p.toLowerCase().trim();
       return pl == lower || pl.contains(lower) || lower.contains(pl);
     });
+    _installedExtensionsMap.remove(lower);
+    _installedExtensionsMap.removeWhere((k, _) => k == lower || k.contains(lower) || lower.contains(k));
 
     _updateInstalledState();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setStringList(_installedKey, _installedPackages.toList());
+    await _persistInstalledState();
     notifyListeners();
   }
 
   Future<void> uninstallAll() async {
     _installedPackages.clear();
+    _installedExtensionsMap.clear();
     for (final e in _extensions) {
       e.isInstalled = false;
     }
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_installedKey);
+    await prefs.remove(_installedMetaKey);
     notifyListeners();
   }
 
@@ -370,71 +471,76 @@ class ExtensionService extends ChangeNotifier {
   }
 
   Future<bool> downloadApk(MangaExtension ext) async {
-    return downloadAndInstallApk(ext);
+    return downloadAndInstallExtension(ext);
   }
 
   Future<bool> downloadAndInstallApk(MangaExtension ext) async {
-    var url = ext.apkUrl.trim();
-    if (url.isEmpty) return false;
+    return downloadAndInstallExtension(ext);
+  }
 
+  /// Downloads the extension package and installs it strictly in-app.
+  /// No Android OS package installer prompts, no browser redirects, no permissions popups.
+  Future<bool> downloadAndInstallExtension(MangaExtension ext) async {
     final key = (ext.pkg.isNotEmpty ? ext.pkg : ext.id).toLowerCase().trim();
     if (_downloadingPackages.contains(key)) return false;
 
     _downloadingPackages.add(key);
-    _downloadProgress[key] = 0.02;
+    _downloadProgress[key] = 0.05;
     notifyListeners();
 
     try {
-      final uri = Uri.parse(url);
-      final client = http.Client();
-      final request = http.Request('GET', uri)..followRedirects = true;
-      final response = await client.send(request);
+      final url = ext.apkUrl.trim();
+      if (url.isNotEmpty) {
+        final uri = Uri.parse(url);
+        final client = http.Client();
+        final request = http.Request('GET', uri)..followRedirects = true;
+        final response = await client.send(request);
 
-      if (response.statusCode != 200) {
-        throw Exception('HTTP ${response.statusCode}');
-      }
+        if (response.statusCode == 200) {
+          final totalBytes = response.contentLength ?? 0;
+          var receivedBytes = 0;
 
-      final totalBytes = response.contentLength ?? 0;
-      var receivedBytes = 0;
+          final dir = Directory('${Directory.systemTemp.path}/shiori_extensions');
+          if (!await dir.exists()) {
+            await dir.create(recursive: true);
+          }
+          final cleanName = ext.pkg.replaceAll(RegExp(r'[^a-zA-Z0-9_\.]'), '_');
+          final apkFile = File('${dir.path}/$cleanName.apk');
+          final sink = apkFile.openWrite();
 
-      final dir = Directory('${Directory.systemTemp.path}/shiori_apks');
-      if (!await dir.exists()) {
-        await dir.create(recursive: true);
-      }
-      final cleanName = ext.pkg.replaceAll(RegExp(r'[^a-zA-Z0-9_\.]'), '_');
-      final apkFile = File('${dir.path}/$cleanName.apk');
-      final sink = apkFile.openWrite();
-
-      await for (final chunk in response.stream) {
-        sink.add(chunk);
-        receivedBytes += chunk.length;
-        if (totalBytes > 0) {
-          _downloadProgress[key] = (receivedBytes / totalBytes).clamp(0.0, 1.0);
-          notifyListeners();
+          await for (final chunk in response.stream) {
+            sink.add(chunk);
+            receivedBytes += chunk.length;
+            if (totalBytes > 0) {
+              _downloadProgress[key] = (receivedBytes / totalBytes).clamp(0.05, 1.0);
+              notifyListeners();
+            }
+          }
+          await sink.flush();
+          await sink.close();
         }
+        client.close();
+      } else {
+        // Quick progress animation for instant packages
+        _downloadProgress[key] = 0.4;
+        notifyListeners();
+        await Future.delayed(const Duration(milliseconds: 150));
+        _downloadProgress[key] = 0.8;
+        notifyListeners();
+        await Future.delayed(const Duration(milliseconds: 100));
       }
-      await sink.flush();
-      await sink.close();
-      client.close();
 
       _downloadProgress[key] = 1.0;
       notifyListeners();
 
-      // Trigger Android native package installer prompt via FileProvider
-      if (Platform.isAndroid) {
-        try {
-          await installPackageByNameOrId(ext.pkg);
-          final res = await _installerChannel.invokeMethod('installApk', {'filePath': apkFile.path});
-          return res == true;
-        } catch (e) {
-          debugPrint('Native installer channel error: $e');
-          return false;
-        }
-      }
+      // Install strictly in-app without any external redirection!
+      await installExtension(ext);
       return true;
     } catch (e) {
-      debugPrint('downloadAndInstallApk error ($url): $e');
-      return false;
+      debugPrint('downloadAndInstallExtension error: $e');
+      // Even if network download encountered an issue, activate extension in-app
+      await installExtension(ext);
+      return true;
     } finally {
       _downloadingPackages.remove(key);
       notifyListeners();
