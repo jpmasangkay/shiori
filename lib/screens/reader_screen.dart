@@ -8,23 +8,41 @@ import '../services/api_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
-enum ReaderMode { webtoon, paged }
+enum ReaderMode {
+  rightToLeft, // 🇯🇵 Standard Manga: Right to Left
+  webtoon,     // 🇰🇷 Manhwa / Webtoon: Continuous vertical scroll
+  leftToRight, // 🇨🇳 Manhua / Western: Left to Right
+}
+
+extension ReaderModeInfo on ReaderMode {
+  String get label => switch (this) {
+        ReaderMode.rightToLeft => 'RTL (Manga)',
+        ReaderMode.webtoon => 'Webtoon',
+        ReaderMode.leftToRight => 'Left-to-Right',
+      };
+
+  IconData get icon => switch (this) {
+        ReaderMode.rightToLeft => Icons.arrow_back_rounded,
+        ReaderMode.webtoon => Icons.swap_vert_rounded,
+        ReaderMode.leftToRight => Icons.arrow_forward_rounded,
+      };
+}
 
 class ReaderScreen extends StatefulWidget {
   const ReaderScreen({
     super.key,
-    this.chapter = 142,
-    this.chapterId,
-    this.mangaId,
-    this.mangaTitle = 'The Breaker: Eternal Force',
+    required this.chapterId,
+    required this.mangaId,
+    required this.mangaTitle,
+    this.chapterNumber,
     this.chapterTitle,
     this.coverUrl,
   });
 
-  final int chapter;
-  final String? chapterId;
-  final String? mangaId;
+  final String chapterId;
+  final String mangaId;
   final String mangaTitle;
+  final String? chapterNumber;
   final String? chapterTitle;
   final String? coverUrl;
 
@@ -33,27 +51,30 @@ class ReaderScreen extends StatefulWidget {
 }
 
 class _ReaderScreenState extends State<ReaderScreen> {
-  int _totalPages = 24;
+  int _totalPages = 1;
   int _page = 1;
   bool _chrome = true;
-  bool _loading = false;
+  bool _loading = true;
   String? _error;
   List<String> _pageUrls = [];
-  ReaderMode _mode = ReaderMode.webtoon;
+  // Default to Japanese Manga Right-to-Left
+  ReaderMode _mode = ReaderMode.rightToLeft;
+  BoxFit _fitMode = BoxFit.contain;
 
   final _scrollController = ScrollController();
-  final _pageController = PageController();
+  late PageController _pageController;
+
+  String get _chapterLabel {
+    final n = widget.chapterNumber;
+    return (n != null && n.isNotEmpty) ? 'Chapter $n' : (widget.chapterTitle ?? 'Chapter');
+  }
 
   @override
   void initState() {
     super.initState();
+    _pageController = PageController();
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
-    if (widget.chapterId != null) {
-      _loadPages();
-    } else {
-      _totalPages = 24;
-      _page = 8;
-    }
+    _loadPages();
   }
 
   @override
@@ -64,13 +85,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   Future<void> _loadPages() async {
+    if (widget.chapterId.isEmpty) {
+      setState(() {
+        _loading = false;
+        _error = 'This chapter is not available.';
+      });
+      return;
+    }
     setState(() {
       _loading = true;
       _error = null;
     });
 
     try {
-      final res = await ApiService.instance.getChapterPages(widget.chapterId!);
+      final res = await ApiService.instance.getChapterPages(widget.chapterId);
       if (mounted) {
         setState(() {
           _pageUrls = res.pages;
@@ -91,20 +119,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _syncProgress(int currentPage) {
-    if (widget.mangaId != null && widget.chapterId != null) {
-      final completed = currentPage >= _totalPages && _totalPages > 0;
-      ApiService.instance.saveProgress(
-        mangaId: widget.mangaId!,
-        chapterId: widget.chapterId!,
-        mangaTitle: widget.mangaTitle,
-        cover: widget.coverUrl,
-        chapterNumber: widget.chapter.toString(),
-        chapterTitle: widget.chapterTitle,
-        page: currentPage,
-        totalPages: _totalPages,
-        completed: completed,
-      );
-    }
+    if (widget.mangaId.isEmpty || _pageUrls.isEmpty) return;
+    final completed = currentPage >= _totalPages && _totalPages > 0;
+    ApiService.instance.saveProgress(
+      mangaId: widget.mangaId,
+      chapterId: widget.chapterId,
+      mangaTitle: widget.mangaTitle,
+      cover: widget.coverUrl,
+      chapterNumber: widget.chapterNumber,
+      chapterTitle: widget.chapterTitle,
+      page: currentPage,
+      totalPages: _totalPages,
+      completed: completed,
+    );
   }
 
   void _go(int p) {
@@ -112,7 +139,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     setState(() => _page = target);
     _syncProgress(target);
 
-    if (_mode == ReaderMode.paged && _pageController.hasClients) {
+    if (_mode != ReaderMode.webtoon && _pageController.hasClients) {
       _pageController.jumpToPage(target - 1);
     } else if (_mode == ReaderMode.webtoon && _scrollController.hasClients) {
       final max = _scrollController.position.maxScrollExtent;
@@ -125,14 +152,94 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  void _toggleReaderMode() {
+  void _setMode(ReaderMode mode) {
     setState(() {
-      _mode = _mode == ReaderMode.webtoon ? ReaderMode.paged : ReaderMode.webtoon;
+      _mode = mode;
+      _pageController.dispose();
+      _pageController = PageController(initialPage: _page - 1);
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(_mode == ReaderMode.webtoon ? 'Mode: Vertical Webtoon' : 'Mode: Horizontal Paged'),
+        content: Text('Reading Mode: ${mode.label}'),
         duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  void _showModeSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Text(
+                  'READING DIRECTION',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.arrow_back_rounded,
+                  color: _mode == ReaderMode.rightToLeft ? AppColors.primary : AppColors.muted,
+                ),
+                title: const Text('Right to Left (Standard Manga 🇯🇵)'),
+                subtitle: const Text('Swipe left for next page, true to Japanese manga direction'),
+                trailing: _mode == ReaderMode.rightToLeft
+                    ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                    : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  _setMode(ReaderMode.rightToLeft);
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.swap_vert_rounded,
+                  color: _mode == ReaderMode.webtoon ? AppColors.primary : AppColors.muted,
+                ),
+                title: const Text('Webtoon (Vertical continuous scroll 🇰🇷)'),
+                subtitle: const Text('Smooth vertical strip for manhwa and webtoons'),
+                trailing: _mode == ReaderMode.webtoon
+                    ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                    : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  _setMode(ReaderMode.webtoon);
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.arrow_forward_rounded,
+                  color: _mode == ReaderMode.leftToRight ? AppColors.primary : AppColors.muted,
+                ),
+                title: const Text('Left to Right (Western comics 🇨🇳)'),
+                subtitle: const Text('Standard Western comics and manhua'),
+                trailing: _mode == ReaderMode.leftToRight
+                    ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                    : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  _setMode(ReaderMode.leftToRight);
+                },
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -212,7 +319,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
       );
     }
 
-    // Real MangaDex pages
     if (_pageUrls.isNotEmpty) {
       if (_mode == ReaderMode.webtoon) {
         return NotificationListener<ScrollNotification>(
@@ -257,9 +363,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
           ),
         );
       } else {
-        // Paged horizontal mode
+        // Paged mode: reverse: true for Right-To-Left Japanese Manga!
+        final isRtl = _mode == ReaderMode.rightToLeft;
         return PageView.builder(
           controller: _pageController,
+          reverse: isRtl,
           itemCount: _pageUrls.length,
           onPageChanged: (idx) {
             setState(() => _page = idx + 1);
@@ -269,7 +377,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             child: InteractiveViewer(
               child: CachedNetworkImage(
                 imageUrl: _pageUrls[i],
-                fit: BoxFit.contain,
+                fit: _fitMode,
                 placeholder: (_, _) => const Center(
                   child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
                 ),
@@ -283,11 +391,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
     }
 
-    // Static design fallback
-    return const ClipRect(
-      child: FittedBox(
-        fit: BoxFit.cover,
-        child: SizedBox(width: 390, height: 844, child: _ComicArt()),
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.image_not_supported_outlined, size: 44, color: AppColors.muted),
+          const SizedBox(height: 12),
+          Text(
+            'This chapter has no pages',
+            style: GoogleFonts.inter(fontSize: 14, color: AppColors.muted),
+          ),
+        ],
       ),
     );
   }
@@ -315,14 +429,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 ),
                 const SizedBox(height: 5),
                 Text(
-                  'Chapter ${widget.chapter} · Page $_page/$_totalPages',
+                  '$_chapterLabel · Page $_page/$_totalPages',
                   style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
                 ),
               ],
             ),
           ),
-          const BarIcon(Icons.bookmark_border_rounded, label: 'Bookmark'),
-          const BarIcon(Icons.public_rounded, label: 'WebView'),
+          BarIcon(
+            _mode.icon,
+            label: _mode.label,
+            onTap: _showModeSheet,
+          ),
         ],
       ),
     );
@@ -330,17 +447,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Widget _bottom(BuildContext context) {
     final bottom = MediaQuery.paddingOf(context).bottom;
-    final tools = [
-      (Icons.view_agenda_outlined, _mode == ReaderMode.webtoon ? 'Webtoon' : 'Paged', _toggleReaderMode),
-      (Icons.crop_rounded, 'Crop', () {}),
-      (Icons.grid_view_rounded, 'Layout', () {}),
-      (Icons.brightness_6_outlined, 'Filter', () {}),
-      (Icons.settings_outlined, 'Settings', () {}),
-    ];
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
+        // Page Scrubber Slider
         Container(
           height: 54,
           margin: const EdgeInsets.fromLTRB(12, 0, 12, 12),
@@ -381,25 +492,86 @@ class _ReaderScreenState extends State<ReaderScreen> {
             ],
           ),
         ),
+        // Clean Bottom Controls (No fake placeholder buttons)
         Container(
-          height: 86 + bottom,
-          padding: EdgeInsets.only(top: 9, bottom: bottom),
-          color: const Color.fromRGBO(17, 19, 24, .94),
+          height: 70 + bottom,
+          padding: EdgeInsets.only(top: 8, bottom: bottom),
+          color: const Color.fromRGBO(17, 19, 24, .95),
           child: Row(
             children: [
-              for (final (icon, label, callback) in tools)
-                Expanded(
-                  child: InkWell(
-                    onTap: callback,
-                    child: Column(
-                      children: [
-                        Icon(icon, size: 20, color: AppColors.muted),
-                        const SizedBox(height: 7),
-                        Text(label, style: GoogleFonts.inter(fontSize: 9, color: AppColors.muted)),
-                      ],
-                    ),
+              // Direction toggle (RTL Manga / Webtoon / LTR)
+              Expanded(
+                child: InkWell(
+                  onTap: _showModeSheet,
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(_mode.icon, size: 20, color: AppColors.primary),
+                      const SizedBox(height: 5),
+                      Text(_mode.label, style: GoogleFonts.inter(fontSize: 10, color: AppColors.primary)),
+                    ],
                   ),
                 ),
+              ),
+              // Fit mode toggle (Fit Width vs Fit Screen)
+              Expanded(
+                child: InkWell(
+                  onTap: () {
+                    setState(() {
+                      _fitMode = _fitMode == BoxFit.contain ? BoxFit.fitWidth : BoxFit.contain;
+                    });
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(_fitMode == BoxFit.contain ? 'Mode: Fit Page' : 'Mode: Fit Width'),
+                        duration: const Duration(milliseconds: 800),
+                      ),
+                    );
+                  },
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        _fitMode == BoxFit.contain ? Icons.fit_screen_rounded : Icons.photo_size_select_actual_outlined,
+                        size: 20,
+                        color: AppColors.text,
+                      ),
+                      const SizedBox(height: 5),
+                      Text(
+                        _fitMode == BoxFit.contain ? 'Fit Page' : 'Fit Width',
+                        style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              // Quick Jump First Page
+              Expanded(
+                child: InkWell(
+                  onTap: () => _go(1),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.first_page_rounded, size: 20, color: AppColors.text),
+                      const SizedBox(height: 5),
+                      Text('First Page', style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted)),
+                    ],
+                  ),
+                ),
+              ),
+              // Quick Jump Last Page
+              Expanded(
+                child: InkWell(
+                  onTap: () => _go(_totalPages),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.last_page_rounded, size: 20, color: AppColors.text),
+                      const SizedBox(height: 5),
+                      Text('Last Page', style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted)),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
         ),
@@ -424,131 +596,4 @@ class _ScrubButton extends StatelessWidget {
           ),
         ),
       );
-}
-
-/// The monochrome placeholder comic page, drawn on a 390×844 canvas.
-class _ComicArt extends StatelessWidget {
-  const _ComicArt();
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        Positioned.fill(child: CustomPaint(painter: _ComicPainter())),
-        Positioned(
-          top: 294,
-          left: 22,
-          width: 120,
-          height: 76,
-          child: Transform.rotate(
-            angle: -5 * math.pi / 180,
-            child: Container(
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: const Color(0xFFFAF9F3),
-                border: Border.all(color: const Color(0xFF171717), width: 2),
-                borderRadius: const BorderRadius.all(Radius.elliptical(60, 38)),
-              ),
-              child: const Text(
-                'You should not\nhave come here.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontFamily: 'Georgia',
-                  fontFamilyFallback: ['Times New Roman', 'serif'],
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: Color(0xFF111111),
-                  decoration: TextDecoration.none,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _ComicPainter extends CustomPainter {
-  Path _ridge(Rect r) {
-    Offset p(double x, double y) => Offset(r.left + r.width * x / 100, r.top + r.height * y / 100);
-    return Path()
-      ..moveTo(p(0, 66).dx, p(0, 66).dy)
-      ..lineTo(p(14, 38).dx, p(14, 38).dy)
-      ..lineTo(p(26, 61).dx, p(26, 61).dy)
-      ..lineTo(p(45, 18).dx, p(45, 18).dy)
-      ..lineTo(p(62, 58).dx, p(62, 58).dy)
-      ..lineTo(p(76, 31).dx, p(76, 31).dy)
-      ..lineTo(p(100, 65).dx, p(100, 65).dy)
-      ..lineTo(p(100, 100).dx, p(100, 100).dy)
-      ..lineTo(p(0, 100).dx, p(0, 100).dy)
-      ..close();
-  }
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    const w = 390.0, h = 844.0;
-    canvas.drawRect(const Rect.fromLTWH(0, 0, w, h), Paint()..color = const Color(0xFFE5E3DC));
-
-    // Diagonal hatching (repeating-linear-gradient 125deg, 5px period, 24% opacity).
-    final hatch = Paint()
-      ..color = const Color(0xFF111111).withValues(alpha: .24)
-      ..strokeWidth = 1;
-    final a = 125 * math.pi / 180;
-    final dir = Offset(math.sin(a), -math.cos(a));
-    final perp = Offset(-dir.dy, dir.dx);
-    const c = Offset(w / 2, h / 2);
-    for (double t = -520; t <= 520; t += 5) {
-      final o = c + dir * t;
-      canvas.drawLine(o - perp * 700, o + perp * 700, hatch);
-    }
-
-    // Moon.
-    canvas.drawCircle(const Offset(200, 275), 115, Paint()..color = const Color(0xFFF8F7F0));
-    canvas.drawCircle(
-      const Offset(200, 275),
-      113,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 4
-        ..color = const Color(0xFF242424),
-    );
-
-    // Ridges.
-    canvas.drawPath(
-      _ridge(const Rect.fromLTWH(-25, 504, 440, 250)),
-      Paint()..color = const Color(0xFF191919).withValues(alpha: .32),
-    );
-    canvas.drawPath(
-      _ridge(const Rect.fromLTWH(-50, 544, 500, 300)),
-      Paint()..color = const Color(0xFF191919).withValues(alpha: .84),
-    );
-
-    // Ink figure.
-    const f = Rect.fromLTWH(159, 509, 92, 240);
-    Offset p(double x, double y) => Offset(f.left + f.width * x / 100, f.top + f.height * y / 100);
-    final fig = Path()..moveTo(p(38, 0).dx, p(38, 0).dy);
-    for (final pt in const [
-      [62, 0], [69, 12], [65, 28], [87, 61], [100, 100],
-      [0, 100], [19, 62], [35, 28], [30, 12],
-    ]) {
-      final o = p(pt[0].toDouble(), pt[1].toDouble());
-      fig.lineTo(o.dx, o.dy);
-    }
-    fig.close();
-    canvas.drawPath(fig, Paint()..color = const Color(0xFF0B0B0B));
-
-    // Panel line (450×8, rotated -5deg around its centre).
-    canvas.save();
-    canvas.translate(195, 454);
-    canvas.rotate(-5 * math.pi / 180);
-    canvas.drawRect(
-      const Rect.fromLTWH(-225, -4, 450, 8),
-      Paint()..color = const Color(0xFF111111),
-    );
-    canvas.restore();
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

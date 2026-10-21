@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import '../data.dart';
+import '../display_settings.dart';
 import '../theme.dart';
 
 Future<void> showDisplaySheet(BuildContext context) {
@@ -30,8 +30,8 @@ class _DisplaySheet extends StatelessWidget {
     return SafeArea(
       top: false,
       child: DefaultTabController(
-        length: 3,
-        initialIndex: 2,
+        length: 2,
+        initialIndex: 1,
         child: SizedBox(
           height: sheetHeight,
           child: Column(
@@ -55,11 +55,11 @@ class _DisplaySheet extends StatelessWidget {
               labelStyle: GoogleFonts.inter(fontSize: 13),
               unselectedLabelStyle: GoogleFonts.inter(fontSize: 13),
               overlayColor: const WidgetStatePropertyAll(Colors.transparent),
-              tabs: const [Tab(text: 'Filter'), Tab(text: 'Sort'), Tab(text: 'Display')],
+              tabs: const [Tab(text: 'Sort'), Tab(text: 'Display')],
             ),
             const Expanded(
               child: TabBarView(
-                children: [_FilterTab(), _SortTab(), _DisplayTab()],
+                children: [_SortTab(), _DisplayTab()],
               ),
             ),
           ],
@@ -168,10 +168,7 @@ class _DisplayTab extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 18),
-            const _Heading('Overlay badges'),
-            _ToggleRow('Unread count', s.unreadCount, (v) => s.update(() => s.unreadCount = v)),
-            _ToggleRow('Downloaded chapters', s.downloaded, (v) => s.update(() => s.downloaded = v)),
-            _ToggleRow('Local source badge', s.localBadge, (v) => s.update(() => s.localBadge = v)),
+            const _Heading('Library'),
             _ToggleRow('Category tabs', s.categoryTabs, (v) => s.update(() => s.categoryTabs = v)),
           ],
         );
@@ -268,80 +265,46 @@ class _ToggleRow extends StatelessWidget {
   }
 }
 
-class _FilterTab extends StatefulWidget {
-  const _FilterTab();
-  @override
-  State<_FilterTab> createState() => _FilterTabState();
-}
-
-class _FilterTabState extends State<_FilterTab> {
-  final _on = <String, bool>{
-    'Downloaded': false,
-    'Unread': false,
-    'Started': false,
-    'Completed': false,
-  };
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-      children: [
-        const _Heading('Filter'),
-        for (final e in _on.entries)
-          _ToggleRow(e.key, e.value, (v) => setState(() => _on[e.key] = v)),
-      ],
-    );
-  }
-}
-
-class _SortTab extends StatefulWidget {
+class _SortTab extends StatelessWidget {
   const _SortTab();
-  @override
-  State<_SortTab> createState() => _SortTabState();
-}
-
-class _SortTabState extends State<_SortTab> {
-  static const _options = [
-    'Alphabetically',
-    'Total chapters',
-    'Last read',
-    'Last update',
-    'Unread count',
-  ];
-  String _selected = 'Alphabetically';
 
   @override
   Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
-      children: [
-        const _Heading('Sort by'),
-        for (final o in _options)
-          InkWell(
-            onTap: () => setState(() => _selected = o),
-            child: SizedBox(
-              height: 40,
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 28,
-                    child: o == _selected
-                        ? const Icon(Icons.check_rounded, size: 18, color: AppColors.primary)
-                        : null,
+    return ListenableBuilder(
+      listenable: displaySettings,
+      builder: (context, _) {
+        final s = displaySettings;
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+          children: [
+            const _Heading('Sort by'),
+            for (final o in LibrarySort.values)
+              InkWell(
+                onTap: () => s.update(() => s.sort = o),
+                child: SizedBox(
+                  height: 40,
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 28,
+                        child: o == s.sort
+                            ? const Icon(Icons.check_rounded, size: 18, color: AppColors.primary)
+                            : null,
+                      ),
+                      Text(
+                        o.label,
+                        style: GoogleFonts.inter(
+                          fontSize: 12,
+                          color: o == s.sort ? AppColors.primary : AppColors.text,
+                        ),
+                      ),
+                    ],
                   ),
-                  Text(
-                    o,
-                    style: GoogleFonts.inter(
-                      fontSize: 12,
-                      color: o == _selected ? AppColors.primary : AppColors.text,
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
-      ],
+          ],
+        );
+      },
     );
   }
 }

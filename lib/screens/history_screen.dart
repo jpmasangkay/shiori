@@ -31,10 +31,6 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Future<void> _fetch() async {
-    if (!ApiService.instance.isLoggedIn) {
-      if (mounted) setState(() => _history = []);
-      return;
-    }
     setState(() => _loading = true);
     try {
       final items = await ApiService.instance.getHistory();
@@ -81,31 +77,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Widget _buildEmptyState() {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(32),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.history_toggle_off_rounded, size: 56, color: AppColors.read),
-            const SizedBox(height: 16),
-            Text(
-              ApiService.instance.isLoggedIn
-                  ? 'No reading history yet'
-                  : 'Sign in to sync history',
-              style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              ApiService.instance.isLoggedIn
-                  ? 'Chapters you read will automatically appear here with your page progress saved in MongoDB.'
-                  : 'Log in under the "More" tab to sync your library and reading progress across all your devices.',
-              textAlign: TextAlign.center,
-              style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.5),
-            ),
-          ],
-        ),
-      ),
+    final loggedIn = ApiService.instance.isLoggedIn;
+    return EmptyState(
+      icon: Icons.history_toggle_off_rounded,
+      title: loggedIn ? 'No reading history yet' : 'No reading history',
+      message: loggedIn
+          ? 'Chapters you read will appear here so you can pick up where you left off.'
+          : 'Sign in from the More tab to keep your reading history across devices.',
     );
   }
 
@@ -121,11 +99,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
         Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => ReaderScreen(
-              chapterId: item['chapterId'],
-              mangaId: item['mangaId'],
+              chapterId: item['chapterId']?.toString() ?? '',
+              mangaId: item['mangaId']?.toString() ?? '',
               mangaTitle: title,
               coverUrl: item['cover'],
-              chapter: int.tryParse(chNum.toString()) ?? 1,
+              chapterNumber: chNum.toString(),
             ),
           ),
         ).then((_) => _fetch());
@@ -140,7 +118,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
               height: 56,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(4),
-                child: CoverImage(0, imageUrl: item['cover'], saturation: .7),
+                child: CoverImage(imageUrl: item['cover'], saturation: .7),
               ),
             ),
             const SizedBox(width: 12),

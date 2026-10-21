@@ -33,7 +33,6 @@ app.use(
 );
 app.use(express.json({ limit: '1mb' }));
 
-
 // General rate limiter: 120 reqs / min
 const limiter = rateLimit({
   windowMs: 60 * 1000,
@@ -53,7 +52,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Root welcome
+// Root welcome / API summary
 app.get('/', (req, res) => {
   res.json({
     app: 'Shiori Manga Reader API',

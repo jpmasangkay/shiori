@@ -27,21 +27,18 @@ router.get('/', async (req, res) => {
       }
     }
 
-    // If library is empty or unauthenticated, get popular trending manga
+    // If library is empty or user is unauthenticated, return empty updates
+    // Updates must ONLY show new chapters for series bookmarked in library
     if (mangaList.length === 0) {
-      const popular = await mdRequest(
-        '/manga',
-        {
-          limit: 10,
-          'order[followedCount]': 'desc',
-          availableTranslatedLanguage: ['en'],
-          hasAvailableChapters: 'true',
-          includes: ['cover_art'],
-          contentRating: ['safe', 'suggestive'],
+      return res.json({
+        groups: {
+          Today: [],
+          Yesterday: [],
+          Earlier: [],
         },
-        { ttl: 15 * 60 * 1000 },
-      );
-      mangaList = popular.data.map(normalizeManga);
+        items: [],
+        total: 0,
+      });
     }
 
     // Fetch the 1-2 latest chapters for each manga in parallel

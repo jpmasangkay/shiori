@@ -1,11 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import '../data.dart';
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/skeleton.dart';
 import 'detail_screen.dart';
 import 'reader_screen.dart';
 
@@ -16,18 +17,40 @@ class UpdatesScreen extends StatefulWidget {
   State<UpdatesScreen> createState() => _UpdatesScreenState();
 }
 
-class _UpdatesScreenState extends State<UpdatesScreen> {
+class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserver {
   Map<String, dynamic> _groups = {};
   bool _loading = false;
+  Timer? _realtimeTimer;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _fetch();
+    ApiService.instance.addListener(_fetch);
+    // Real-time silent background refresh every 45 seconds
+    _realtimeTimer = Timer.periodic(const Duration(seconds: 45), (_) => _fetch(silent: true));
   }
 
-  Future<void> _fetch() async {
-    setState(() => _loading = true);
+  @override
+  void dispose() {
+    _realtimeTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    ApiService.instance.removeListener(_fetch);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _fetch(silent: true);
+    }
+  }
+
+  Future<void> _fetch({bool silent = false}) async {
+    if (!silent && _groups.isEmpty) {
+      setState(() => _loading = true);
+    }
     try {
       final res = await ApiService.instance.getUpdates();
       if (mounted) {
@@ -58,63 +81,76 @@ class _UpdatesScreenState extends State<UpdatesScreen> {
             color: AppColors.primary,
             backgroundColor: AppColors.surface,
             onRefresh: _fetch,
-            child: ListView(
-              padding: const EdgeInsets.only(bottom: 16),
-              children: [
-                if (_loading && !hasRealUpdates) ...[
-                  const _DateHeader('Loading Updates...'),
-                  const _Skeleton(),
-                  const _Skeleton(),
-                  const _Skeleton(),
-                  const _Skeleton(),
-                ] else if (hasRealUpdates) ...[
-                  for (final entry in _groups.entries) ...[
-                    if ((entry.value as List).isNotEmpty) ...[
-                      _DateHeader(entry.key),
-                      for (final item in entry.value as List)
-                        _ApiUpdateRow(
-                          item: item as Map<String, dynamic>,
-                          onTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => ReaderScreen(
-                                  chapterId: item['id'],
-                                  mangaId: item['mangaId'],
-                                  mangaTitle: item['mangaTitle'] ?? 'Manga',
-                                  chapterTitle: item['chapterTitle'],
-                                  coverUrl: item['cover'],
-                                  chapter: int.tryParse(item['chapterNumber']?.toString() ?? '1') ?? 1,
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 250),
+              child: _loading && !hasRealUpdates
+                  ? ListView(
+                      key: const ValueKey('updates_loading'),
+                      padding: const EdgeInsets.only(top: 8, bottom: 16),
+                      children: const [
+                        _DateHeader('Checking for new chapters...'),
+                        UpdateRowSkeleton(),
+                        UpdateRowSkeleton(),
+                        UpdateRowSkeleton(),
+                        UpdateRowSkeleton(),
+                        UpdateRowSkeleton(),
+                      ],
+                    )
+                  : ListView(
+                      key: const ValueKey('updates_content'),
+                      padding: const EdgeInsets.only(bottom: 16),
+                      children: [
+                        if (hasRealUpdates) ...[
+                          for (final entry in _groups.entries) ...[
+                            if ((entry.value as List).isNotEmpty) ...[
+                              _DateHeader(entry.key),
+                              for (final item in entry.value as List)
+                                _ApiUpdateRow(
+                                  item: item as Map<String, dynamic>,
+                                  onTap: () {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => ReaderScreen(
+                                          chapterId: item['id']?.toString() ?? '',
+                                          mangaId: item['mangaId']?.toString() ?? '',
+                                          mangaTitle: item['mangaTitle'] ?? 'Untitled',
+                                          chapterTitle: item['chapterTitle'],
+                                          coverUrl: item['cover'],
+                                          chapterNumber: item['chapterNumber']?.toString(),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                  onCoverTap: () {
+                                    Navigator.of(context).push(
+                                      MaterialPageRoute(
+                                        builder: (_) => DetailScreen(
+                                          manga: MangaItem(
+                                            id: item['mangaId'] ?? '',
+                                            title: item['mangaTitle'] ?? '',
+                                            cover: item['cover'] ?? '',
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
                                 ),
+                            ],
+                          ],
+                        ] else ...[
+                          LayoutBuilder(
+                            builder: (_, c) => SizedBox(
+                              height: 400,
+                              child: const EmptyState(
+                                icon: Icons.new_releases_outlined,
+                                title: 'No recent updates',
+                                message: 'Only new chapters for titles bookmarked in your library will appear here. Pull down to refresh.',
                               ),
-                            );
-                          },
-                          onCoverTap: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => DetailScreen(
-                                  manga: MangaItem(
-                                    id: item['mangaId'] ?? '',
-                                    title: item['mangaTitle'] ?? '',
-                                    cover: item['cover'] ?? '',
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                    ],
-                  ],
-                ] else ...[
-                  const _DateHeader('Today'),
-                  for (final r in updateRows.sublist(0, 3)) _UpdateRow(r),
-                  const _DateHeader('Yesterday'),
-                  for (final r in updateRows.sublist(3, 5)) _UpdateRow(r),
-                  const _DateHeader('Oct 14'),
-                  for (final r in updateRows.sublist(5)) _UpdateRow(r),
-                  const _Skeleton(),
-                  const _Skeleton(),
-                ],
-              ],
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
             ),
           ),
         ),
@@ -172,7 +208,7 @@ class _ApiUpdateRow extends StatelessWidget {
                 height: 56,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(4),
-                  child: CoverImage(0, imageUrl: item['cover'], saturation: .6),
+                  child: CoverImage(imageUrl: item['cover'], saturation: .6),
                 ),
               ),
             ),
@@ -209,109 +245,3 @@ class _ApiUpdateRow extends StatelessWidget {
   }
 }
 
-class _UpdateRow extends StatelessWidget {
-  const _UpdateRow(this.entry);
-  final UpdateEntry entry;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: () => Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => DetailScreen(cover: entry.cover)),
-      ),
-      child: Container(
-        height: 60,
-        padding: const EdgeInsets.fromLTRB(12, 2, 7, 2),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 42,
-              height: 56,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: CoverImage(entry.cover, saturation: .6),
-              ),
-            ),
-            const SizedBox(width: 11),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    entry.title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
-                  ),
-                  const SizedBox(height: 5),
-                  Text(
-                    entry.subtitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
-                  ),
-                ],
-              ),
-            ),
-            const BarIcon(Icons.file_download_outlined, label: 'Download chapter'),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _Skeleton extends StatelessWidget {
-  const _Skeleton();
-
-  @override
-  Widget build(BuildContext context) {
-    return Opacity(
-      opacity: .6,
-      child: Container(
-        height: 60,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-        child: Row(
-          children: [
-            Container(
-              width: 42,
-              height: 56,
-              decoration: BoxDecoration(color: AppColors.surface, borderRadius: BorderRadius.circular(4)),
-            ),
-            const SizedBox(width: 11),
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  FractionallySizedBox(
-                    widthFactor: .75,
-                    child: Container(
-                      height: 9,
-                      decoration: BoxDecoration(
-                        color: AppColors.surfaceHigh,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  FractionallySizedBox(
-                    widthFactor: .54,
-                    child: Container(
-                      height: 9,
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}

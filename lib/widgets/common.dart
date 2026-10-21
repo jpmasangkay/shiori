@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import '../data.dart';
 import '../theme.dart';
 
 /// Equivalent of the CSS `filter: saturate(x)`.
@@ -16,48 +15,94 @@ ColorFilter saturate(double s) {
 }
 
 class CoverImage extends StatelessWidget {
-  const CoverImage(
-    this.index, {
+  const CoverImage({
     super.key,
     this.imageUrl,
     this.saturation = .7,
     this.fit,
   });
 
-  final int index;
   final String? imageUrl;
   final double saturation;
   final BoxFit? fit;
 
   @override
   Widget build(BuildContext context) {
-    Widget imageWidget;
-    if (imageUrl != null && imageUrl!.startsWith('http')) {
-      imageWidget = Image.network(
-        imageUrl!,
-        fit: fit ?? BoxFit.cover,
-        width: double.infinity,
-        height: double.infinity,
-        errorBuilder: (_, _, _) => Image.asset(
-          coverAsset(index),
-          fit: fit ?? BoxFit.cover,
-          width: double.infinity,
-          height: double.infinity,
-        ),
-      );
-    } else {
-      imageWidget = Image.asset(
-        coverAsset(index),
-        fit: fit ?? BoxFit.cover,
-        cacheWidth: 480,
-        width: double.infinity,
-        height: double.infinity,
-      );
-    }
+    final url = imageUrl;
+    if (url == null || !url.startsWith('http')) return const _CoverPlaceholder();
 
     return ColorFiltered(
       colorFilter: saturate(saturation),
-      child: imageWidget,
+      child: Image.network(
+        url,
+        fit: fit ?? BoxFit.cover,
+        width: double.infinity,
+        height: double.infinity,
+        errorBuilder: (_, _, _) => const _CoverPlaceholder(),
+      ),
+    );
+  }
+}
+
+class _CoverPlaceholder extends StatelessWidget {
+  const _CoverPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: AppColors.surfaceHigh,
+      child: Center(
+        child: Icon(Icons.auto_stories_outlined, color: AppColors.read, size: 24),
+      ),
+    );
+  }
+}
+
+/// Centered icon + title + message, used for empty and error states.
+class EmptyState extends StatelessWidget {
+  const EmptyState({
+    super.key,
+    required this.icon,
+    required this.title,
+    this.message,
+    this.action,
+  });
+
+  final IconData icon;
+  final String title;
+  final String? message;
+  final Widget? action;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 56, color: AppColors.read),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            if (message != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                message!,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.5),
+              ),
+            ],
+            if (action != null) ...[
+              const SizedBox(height: 16),
+              action!,
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -136,6 +181,7 @@ class AppTopBar extends StatelessWidget {
     this.onBack,
     this.actions = const [],
     this.gradient = false,
+    this.bottom,
   });
 
   final String title;
@@ -143,12 +189,14 @@ class AppTopBar extends StatelessWidget {
   final VoidCallback? onBack;
   final List<Widget> actions;
   final bool gradient;
+  final PreferredSizeWidget? bottom;
 
   @override
   Widget build(BuildContext context) {
     final top = MediaQuery.paddingOf(context).top;
+    final bottomHeight = bottom?.preferredSize.height ?? 0;
     return Container(
-      height: 64 + top,
+      height: 64 + top + bottomHeight,
       padding: EdgeInsets.fromLTRB(onBack != null ? 4 : 12, top + 8, 8, 0),
       decoration: gradient
           ? BoxDecoration(
@@ -162,58 +210,24 @@ class AppTopBar extends StatelessWidget {
               ),
             )
           : null,
-      child: Row(
-        children: [
-          if (onBack != null)
-            BarIcon(Icons.arrow_back_rounded, label: 'Back', onTap: onBack),
-          if (branded) ...[const BrandMark(size: 28), const SizedBox(width: 10)],
-          Expanded(
-            child: Text(
-              title,
-              style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w600),
-            ),
-          ),
-          ...actions,
-        ],
-      ),
-    );
-  }
-}
-
-/// A two-segment pill: surface-high count + primary unread count.
-class CoverBadge extends StatelessWidget {
-  const CoverBadge({super.key, required this.left, required this.right, this.showLeft = true, this.showRight = true});
-  final String left;
-  final String right;
-  final bool showLeft;
-  final bool showRight;
-
-  @override
-  Widget build(BuildContext context) {
-    final style = GoogleFonts.inter(fontSize: 10, height: 19 / 10);
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(8),
-      child: Row(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (showLeft)
-            Container(
-              color: AppColors.surfaceHigh,
-              padding: const EdgeInsets.symmetric(horizontal: 5),
-              child: Text(left, style: style),
-            ),
-          if (showRight)
-            Container(
-              color: AppColors.primary,
-              padding: const EdgeInsets.symmetric(horizontal: 5),
-              child: Text(
-                right,
-                style: style.copyWith(
-                  color: AppColors.onPrimary,
-                  fontWeight: FontWeight.w700,
+          Row(
+            children: [
+              if (onBack != null)
+                BarIcon(Icons.arrow_back_rounded, label: 'Back', onTap: onBack),
+              if (branded) ...[const BrandMark(size: 28), const SizedBox(width: 10)],
+              Expanded(
+                child: Text(
+                  title,
+                  style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w600),
                 ),
               ),
-            ),
+              ...actions,
+            ],
+          ),
+          ?bottom,
         ],
       ),
     );

@@ -9,6 +9,7 @@ class MangaItem {
   final List<String> tags;
   final String? year;
   final String? lastChapter;
+  final String source; // 'mangadex', 'asura', etc.
 
   const MangaItem({
     required this.id,
@@ -21,11 +22,13 @@ class MangaItem {
     this.tags = const [],
     this.year,
     this.lastChapter,
+    this.source = 'mangadex',
   });
 
   factory MangaItem.fromJson(Map<String, dynamic> json) {
+    final id = json['id'] as String? ?? '';
     return MangaItem(
-      id: json['id'] as String? ?? '',
+      id: id,
       title: json['title'] as String? ?? 'Untitled',
       description: json['description'] as String? ?? '',
       cover: json['cover'] as String? ?? '',
@@ -35,6 +38,7 @@ class MangaItem {
       tags: (json['tags'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? const [],
       year: json['year']?.toString(),
       lastChapter: json['lastChapter']?.toString(),
+      source: json['source'] as String? ?? (id.startsWith('asura:') ? 'asura' : 'mangadex'),
     );
   }
 
@@ -49,6 +53,7 @@ class MangaItem {
         'tags': tags,
         'year': year,
         'lastChapter': lastChapter,
+        'source': source,
       };
 }
 
@@ -60,6 +65,7 @@ class ChapterItem {
   final int pages;
   final String group;
   final String? publishAt;
+  final String source;
 
   const ChapterItem({
     required this.id,
@@ -69,17 +75,20 @@ class ChapterItem {
     this.pages = 0,
     this.group = '',
     this.publishAt,
+    this.source = 'mangadex',
   });
 
   factory ChapterItem.fromJson(Map<String, dynamic> json) {
+    final id = json['id'] as String? ?? '';
     return ChapterItem(
-      id: json['id'] as String? ?? '',
+      id: id,
       number: json['number']?.toString(),
       volume: json['volume']?.toString(),
       title: json['title'] as String? ?? '',
       pages: (json['pages'] as num?)?.toInt() ?? 0,
       group: json['group'] as String? ?? '',
       publishAt: json['publishAt'] as String?,
+      source: json['source'] as String? ?? (id.startsWith('asura:') ? 'asura' : 'mangadex'),
     );
   }
 

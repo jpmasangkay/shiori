@@ -2,29 +2,27 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import '../data.dart';
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/skeleton.dart';
 import 'reader_screen.dart';
 
 class DetailScreen extends StatefulWidget {
   const DetailScreen({
     super.key,
-    this.cover = 0,
-    this.manga,
+    required this.manga,
   });
 
-  final int cover;
-  final MangaItem? manga;
+  final MangaItem manga;
 
   @override
   State<DetailScreen> createState() => _DetailScreenState();
 }
 
 class _DetailScreenState extends State<DetailScreen> {
-  late final List<ChapterEntry> _dummyChapters;
+  late MangaItem _manga;
   List<ChapterItem> _apiChapters = [];
   bool _loadingChapters = false;
   String? _chaptersError;
@@ -33,27 +31,29 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _expanded = false;
   bool _descending = true;
   String? _resumeChapterId;
-  String _resumeLabel = 'Resume Ch. 1';
+  String _resumeLabel = 'Start Reading';
   Set<String> _readChapterIds = {};
 
   @override
   void initState() {
     super.initState();
-    _dummyChapters = buildChapters();
-    if (widget.manga != null) {
-      _loadMangaData();
-    } else {
-      _inLibrary = true;
-    }
+    _manga = widget.manga;
+    _loadMangaData();
   }
 
   Future<void> _loadMangaData() async {
-    final m = widget.manga!;
+    final m = _manga;
     // 1. Check in library
     final inLib = await ApiService.instance.checkInLibrary(m.id);
     if (mounted) setState(() => _inLibrary = inLib);
 
-    // 2. Fetch progress & history from MongoDB
+    // 2. Fetch full metadata from source if available
+    try {
+      final full = await ApiService.instance.getManga(m.id);
+      if (mounted) setState(() => _manga = full);
+    } catch (_) {}
+
+    // 3. Fetch progress & history
     final progress = await ApiService.instance.getMangaProgress(m.id);
     if (mounted && progress.isNotEmpty) {
       final completed = (progress['completedChapterIds'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ?? {};
@@ -68,7 +68,7 @@ class _DetailScreenState extends State<DetailScreen> {
       });
     }
 
-    // 3. Load chapters from MangaDex via Backend
+    // 4. Load chapters from API
     setState(() => _loadingChapters = true);
     try {
       final chapters = await ApiService.instance.getChapters(m.id);
@@ -77,8 +77,10 @@ class _DetailScreenState extends State<DetailScreen> {
           _apiChapters = chapters;
           _loadingChapters = false;
           if (_resumeChapterId == null && chapters.isNotEmpty) {
-            _resumeChapterId = chapters.last.id;
-            _resumeLabel = chapters.last.number != null ? 'Start Ch. ${chapters.last.number}' : 'Start Reading';
+            // Chapters are sorted descending (latest at 0, chapter 1 at length-1)
+            final firstCh = chapters.last;
+            _resumeChapterId = firstCh.id;
+            _resumeLabel = firstCh.number != null ? 'Start Ch. ${firstCh.number}' : 'Start Reading';
           }
         });
       }
@@ -93,29 +95,25 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _toggleLibrary() async {
-    final m = widget.manga;
-    if (m == null) {
-      setState(() => _inLibrary = !_inLibrary);
-      return;
-    }
-
-    if (!ApiService.instance.isLoggedIn) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Sign in under "More" tab to save to MongoDB cloud library!'),
-          duration: Duration(seconds: 3),
-        ),
-      );
-    }
-
+    final m = _manga;
     final newStatus = !_inLibrary;
     setState(() => _inLibrary = newStatus);
 
     try {
       if (newStatus) {
         await ApiService.instance.addToLibrary(m);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Added to library'), duration: Duration(seconds: 1)),
+          );
+        }
       } else {
         await ApiService.instance.removeFromLibrary(m.id);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Removed from library'), duration: Duration(seconds: 1)),
+          );
+        }
       }
     } catch (err) {
       if (mounted) {
@@ -127,21 +125,28 @@ class _DetailScreenState extends State<DetailScreen> {
     }
   }
 
-  void _openReader({String? chapterId, int? chapterNum, String? title}) {
+  void _openReader({String? chapterId, String? chapterNumber, String? title}) {
+    if (chapterId == null && _apiChapters.isNotEmpty) {
+      chapterId = _descending ? _apiChapters.last.id : _apiChapters.first.id;
+      chapterNumber = _descending ? _apiChapters.last.number : _apiChapters.first.number;
+      title = _descending ? _apiChapters.last.title : _apiChapters.first.title;
+    }
+
+    if (chapterId == null) return;
+
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ReaderScreen(
-          chapter: chapterNum ?? 1,
-          chapterId: chapterId,
-          mangaId: widget.manga?.id,
-          mangaTitle: widget.manga?.title ?? 'The Breaker: Eternal Force',
-          coverUrl: widget.manga?.cover,
+          chapterId: chapterId!,
+          mangaId: _manga.id,
+          mangaTitle: _manga.title,
+          coverUrl: _manga.cover,
+          chapterNumber: chapterNumber,
           chapterTitle: title,
         ),
       ),
     ).then((_) {
-      // Refresh progress when returning from reader
-      if (widget.manga != null) {
+      if (mounted) {
         _loadMangaData();
       }
     });
@@ -149,80 +154,86 @@ class _DetailScreenState extends State<DetailScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isApi = widget.manga != null;
     final top = MediaQuery.paddingOf(context).top;
 
     return Scaffold(
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-      floatingActionButton: _ResumeFab(
-        label: isApi ? _resumeLabel : 'Resume Ch. 142',
-        onTap: () {
-          if (isApi) {
-            _openReader(chapterId: _resumeChapterId);
-          } else {
-            _openReader(chapterNum: 142);
-          }
-        },
-      ),
+      floatingActionButton: _apiChapters.isNotEmpty
+          ? _ResumeFab(
+              label: _resumeLabel,
+              onTap: () => _openReader(chapterId: _resumeChapterId),
+            )
+          : null,
       body: CustomScrollView(
         slivers: [
           SliverToBoxAdapter(child: _hero(top)),
           SliverToBoxAdapter(child: _actionRow()),
           SliverToBoxAdapter(child: _synopsisBlock()),
-          SliverToBoxAdapter(child: _chips()),
+          if (_manga.tags.isNotEmpty) SliverToBoxAdapter(child: _chips()),
           SliverToBoxAdapter(child: _sectionTitle()),
-          if (isApi) ...[
-            if (_loadingChapters)
-              const SliverToBoxAdapter(
-                child: Padding(
-                  padding: EdgeInsets.all(40),
-                  child: Center(child: CircularProgressIndicator(color: AppColors.primary)),
-                ),
-              )
-            else if (_chaptersError != null)
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Center(
-                    child: Text(
-                      'Failed to load chapters: $_chaptersError',
-                      textAlign: TextAlign.center,
-                      style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
-                    ),
+          if (_loadingChapters)
+            SliverList.builder(
+              itemCount: 8,
+              itemBuilder: (ctx, i) => const ChapterTileSkeleton(),
+            )
+          else if (_chaptersError != null)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Center(
+                  child: Column(
+                    children: [
+                      Text(
+                        'Failed to load chapters: $_chaptersError',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                      ),
+                      const SizedBox(height: 12),
+                      FilledButton.icon(
+                        onPressed: _loadMangaData,
+                        icon: const Icon(Icons.refresh_rounded, size: 16),
+                        label: const Text('Retry'),
+                        style: FilledButton.styleFrom(backgroundColor: AppColors.surfaceHigh),
+                      ),
+                    ],
                   ),
                 ),
-              )
-            else
-              SliverList.builder(
-                itemCount: _apiChapters.length,
-                itemBuilder: (_, i) {
-                  final list = _descending ? _apiChapters : _apiChapters.reversed.toList();
-                  final c = list[i];
-                  final isRead = _readChapterIds.contains(c.id);
-                  return _ApiChapterTile(
-                    chapter: c,
-                    isRead: isRead,
-                    onTap: () => _openReader(
-                      chapterId: c.id,
-                      chapterNum: int.tryParse(c.number ?? '1'),
-                      title: c.title,
-                    ),
-                  );
-                },
               ),
-          ] else ...[
-            SliverList.builder(
-              itemCount: _dummyChapters.length,
-              itemBuilder: (_, i) {
-                final list = _descending ? _dummyChapters : _dummyChapters.reversed.toList();
-                final c = list[i];
-                return _ChapterTile(
-                  c,
-                  onTap: () => _openReader(chapterNum: c.num, title: c.title),
+            )
+          else if (_apiChapters.isEmpty)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.all(32),
+                child: Center(
+                  child: Text(
+                    'No chapters available for this title.',
+                    style: GoogleFonts.inter(fontSize: 13, color: AppColors.muted),
+                  ),
+                ),
+              ),
+            )
+          else
+            Builder(
+              builder: (context) {
+                final chaptersList = _descending ? _apiChapters : _apiChapters.reversed.toList();
+                return SliverList.builder(
+                  itemCount: chaptersList.length,
+                  itemBuilder: (_, i) {
+                    final c = chaptersList[i];
+                    final isRead = _readChapterIds.contains(c.id);
+                    return _ApiChapterTile(
+                      chapter: c,
+                      isRead: isRead,
+                      onTap: () => _openReader(
+                        chapterId: c.id,
+                        chapterNumber: c.number,
+                        title: c.title,
+                      ),
+                    );
+                  },
                 );
               },
             ),
-          ],
           const SliverToBoxAdapter(child: SizedBox(height: 88)),
         ],
       ),
@@ -230,14 +241,17 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Widget _hero(double top) {
-    final m = widget.manga;
-    final title = m?.title ?? 'The Breaker:\nEternal Force';
-    final authors = m != null && m.authors.isNotEmpty
-        ? m.authors.join(' · ')
-        : 'Jeon Geuk-jin · Park Jin-hwan';
-    final status = m != null
-        ? '${m.status.toUpperCase()} · ${m.type.toUpperCase()}'
-        : 'Ongoing · Asura Scans';
+    final m = _manga;
+    final isAsura = m.id.startsWith('asura:') || m.source == 'asura';
+    final sourceName = isAsura ? 'ASURA SCANS' : 'MANGADEX';
+    final sourceColor = isAsura ? const Color(0xFF6366F1) : const Color(0xFFFF6740);
+
+    final title = m.title;
+    final authors = m.authors.isNotEmpty ? m.authors.join(' · ') : 'Unknown Author';
+    final statusList = <String>[];
+    if (m.status.isNotEmpty) statusList.add(m.status.toUpperCase());
+    if (m.type.isNotEmpty) statusList.add(m.type.toUpperCase());
+    final status = statusList.join(' · ');
 
     return SizedBox(
       height: 260 + top,
@@ -249,7 +263,7 @@ class _DetailScreenState extends State<DetailScreen> {
               scale: 1.15,
               child: ImageFiltered(
                 imageFilter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                child: CoverImage(widget.cover, imageUrl: m?.cover, saturation: .5),
+                child: CoverImage(imageUrl: m.cover, saturation: .5),
               ),
             ),
           ),
@@ -266,7 +280,7 @@ class _DetailScreenState extends State<DetailScreen> {
                   height: 150,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(6),
-                    child: CoverImage(widget.cover, imageUrl: m?.cover, saturation: .75),
+                    child: CoverImage(imageUrl: m.cover, saturation: .75),
                   ),
                 ),
                 const SizedBox(width: 16),
@@ -274,6 +288,23 @@ class _DetailScreenState extends State<DetailScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: sourceColor.withValues(alpha: .2),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          sourceName,
+                          style: GoogleFonts.inter(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.5,
+                            color: sourceColor,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 5),
                       Text(
                         title,
                         maxLines: 2,
@@ -284,7 +315,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           fontWeight: FontWeight.w700,
                         ),
                       ),
-                      const SizedBox(height: 9),
+                      const SizedBox(height: 7),
                       Text(
                         authors,
                         maxLines: 2,
@@ -295,21 +326,23 @@ class _DetailScreenState extends State<DetailScreen> {
                           color: AppColors.muted,
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          const Icon(Icons.schedule_rounded, size: 11, color: AppColors.primary),
-                          const SizedBox(width: 6),
-                          Flexible(
-                            child: Text(
-                              status,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                      if (status.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            const Icon(Icons.schedule_rounded, size: 11, color: AppColors.primary),
+                            const SizedBox(width: 6),
+                            Flexible(
+                              child: Text(
+                                status,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
+                          ],
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -358,9 +391,9 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Widget _synopsisBlock() {
-    final synopsis = widget.manga?.description.isNotEmpty == true
-        ? widget.manga!.description
-        : 'After his master disappears, a reluctant student is pulled back into the hidden world of martial arts. A new generation gathers around him as old enemies return.';
+    final synopsis = _manga.description.isNotEmpty
+        ? _manga.description
+        : 'No synopsis available.';
 
     final style = GoogleFonts.inter(fontSize: 12, height: 17 / 12, color: AppColors.muted);
     return InkWell(
@@ -397,9 +430,8 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Widget _chips() {
-    final chips = widget.manga != null && widget.manga!.tags.isNotEmpty
-        ? widget.manga!.tags.take(6).toList()
-        : const ['Seinen', 'Action', 'Martial Arts', 'Regression'];
+    final chips = _manga.tags.take(6).toList();
+    if (chips.isEmpty) return const SizedBox.shrink();
 
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
@@ -424,7 +456,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Widget _sectionTitle() {
-    final count = widget.manga != null ? _apiChapters.length : 184;
+    final count = _apiChapters.length;
     return Container(
       height: 48,
       padding: const EdgeInsets.only(left: 16, right: 8),
@@ -441,7 +473,7 @@ class _DetailScreenState extends State<DetailScreen> {
           ),
           BarIcon(
             Icons.sort_rounded,
-            label: 'Sort and filter',
+            label: 'Sort order',
             onTap: () => setState(() => _descending = !_descending),
           ),
         ],
@@ -473,7 +505,6 @@ class _Action extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: GoogleFonts.inter(fontSize: 10, color: active ? AppColors.primary : AppColors.muted),
             ),
-
           ],
         ),
       ),
@@ -547,90 +578,8 @@ class _ApiChapterTile extends StatelessWidget {
   }
 }
 
-class _ChapterTile extends StatelessWidget {
-  const _ChapterTile(this.c, {required this.onTap});
-  final ChapterEntry c;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final color = c.read ? AppColors.read : AppColors.text;
-    final metaColor = c.read ? AppColors.read : AppColors.muted;
-    return InkWell(
-      onTap: onTap,
-      child: Container(
-        height: 56,
-        margin: const EdgeInsets.only(left: 16),
-        padding: const EdgeInsets.only(right: 9),
-        decoration: const BoxDecoration(
-          border: Border(bottom: BorderSide(color: AppColors.surface)),
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Chapter ${c.num} - ${c.title}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 13, color: color),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(c.meta, style: GoogleFonts.inter(fontSize: 10, color: metaColor)),
-                ],
-              ),
-            ),
-            _DownloadButton(c.state),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DownloadButton extends StatelessWidget {
-  const _DownloadButton(this.state);
-  final DownloadState state;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 34,
-      height: 34,
-      child: switch (state) {
-        DownloadState.download =>
-          const Icon(Icons.file_download_outlined, size: 17, color: AppColors.muted),
-        DownloadState.check => const Icon(Icons.check_rounded, size: 17, color: AppColors.primary),
-        DownloadState.progress => Stack(
-            alignment: Alignment.center,
-            children: [
-              const SizedBox(
-                width: 34,
-                height: 34,
-                child: CircularProgressIndicator(
-                  value: .25,
-                  strokeWidth: 2,
-                  color: AppColors.primary,
-                  backgroundColor: AppColors.outline,
-                ),
-              ),
-              Container(
-                width: 5,
-                height: 5,
-                decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle),
-              ),
-            ],
-          ),
-      },
-    );
-  }
-}
-
 class _ResumeFab extends StatelessWidget {
-  const _ResumeFab({required this.onTap, this.label = 'Resume Ch. 142'});
+  const _ResumeFab({required this.onTap, required this.label});
   final VoidCallback onTap;
   final String label;
 

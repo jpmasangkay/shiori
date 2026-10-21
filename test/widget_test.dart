@@ -3,7 +3,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:manga_reader/main.dart';
-import 'package:manga_reader/screens/reader_screen.dart';
 import 'package:manga_reader/services/api_service.dart';
 
 void main() {
@@ -21,17 +20,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
   }
 
-  testWidgets('Library → Detail → Reader', (tester) async {
+  testWidgets('Library tab renders with empty state', (tester) async {
     await boot(tester);
     expect(find.text('Library'), findsWidgets);
-
-    await tester.tap(find.byType(InkWell).at(6));
-    await tester.pumpAndSettle();
-    expect(find.text('Resume Ch. 142'), findsOneWidget);
-
-    await tester.tap(find.text('Resume Ch. 142'));
-    await tester.pumpAndSettle();
-    expect(find.byType(ReaderScreen), findsOneWidget);
+    expect(find.text('Your library is empty'), findsOneWidget);
   });
 
   testWidgets('Display sheet opens and changes columns/mode', (tester) async {
@@ -48,7 +40,7 @@ void main() {
     await boot(tester);
     await tester.tap(find.text('Updates'));
     await tester.pumpAndSettle();
-    expect(find.text('Solo Leveling: Ragnarok'), findsOneWidget);
+    expect(find.text('No recent updates'), findsOneWidget);
   });
 
   testWidgets('Browse tab renders', (tester) async {
@@ -58,11 +50,12 @@ void main() {
     expect(find.text('Browse'), findsWidgets);
   });
 
-  testWidgets('More tab renders with auth & settings', (tester) async {
+  testWidgets('More tab renders with clean auth card & settings', (tester) async {
     await boot(tester);
     await tester.tap(find.text('More'));
     await tester.pumpAndSettle();
     expect(find.text('Guest User'), findsOneWidget);
-    expect(find.text('MongoDB Status'), findsOneWidget);
+    expect(find.text('Sign In / Create Account'), findsOneWidget);
+    expect(find.text('Extensions'), findsOneWidget);
   });
 }
