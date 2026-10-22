@@ -17,7 +17,6 @@ void main() {
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(const ShioriApp());
-    await tester.pump(const Duration(milliseconds: 2500));
     await tester.pumpAndSettle();
   }
 
