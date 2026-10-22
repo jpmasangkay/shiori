@@ -54,13 +54,18 @@ class _DetailScreenState extends State<DetailScreen> {
       if (mounted) setState(() => _manga = full);
     } catch (_) {}
 
-    // 3. Fetch progress & history
+    // 3. Fetch progress & history & read status
+    final localRead = ApiService.instance.getReadChapterIds(m.id);
     final progress = await ApiService.instance.getMangaProgress(m.id);
-    if (mounted && progress.isNotEmpty) {
-      final completed = (progress['completedChapterIds'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ?? {};
+    if (mounted) {
+      final completed = (progress['completedChapters'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ??
+          (progress['completedChapterIds'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ??
+          <String>{};
+      localRead.addAll(completed);
+
       final lastRead = progress['lastRead'] as Map<String, dynamic>?;
       setState(() {
-        _readChapterIds = completed;
+        _readChapterIds = localRead;
         if (lastRead != null) {
           _resumeChapterId = lastRead['chapterId'] as String?;
           final num = lastRead['chapterNumber'] ?? '';
@@ -135,15 +140,29 @@ class _DetailScreenState extends State<DetailScreen> {
 
     if (chapterId == null) return;
 
+    // Build reading chapters in chronological ascending order
+    final readingChapters = [..._apiChapters];
+    readingChapters.sort((a, b) {
+      final aNum = double.tryParse(a.number ?? '') ?? 0;
+      final bNum = double.tryParse(b.number ?? '') ?? 0;
+      if (aNum != bNum) return aNum.compareTo(bNum);
+      return a.displayTitle.compareTo(b.displayTitle);
+    });
+
+    var idx = readingChapters.indexWhere((c) => c.id == chapterId);
+    if (idx < 0) idx = 0;
+
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ReaderScreen(
-          chapterId: chapterId!,
+          chapterId: chapterId,
           mangaId: _manga.id,
           mangaTitle: _manga.title,
           coverUrl: _manga.cover,
           chapterNumber: chapterNumber,
           chapterTitle: title,
+          chapters: readingChapters,
+          initialIndex: idx,
         ),
       ),
     ).then((_) {
@@ -151,6 +170,196 @@ class _DetailScreenState extends State<DetailScreen> {
         _loadMangaData();
       }
     });
+  }
+
+  void _showChapterOptions(ChapterItem chapter, bool isRead, bool isBookmarked) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+                child: Text(
+                  chapter.displayTitle,
+                  style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w700),
+                ),
+              ),
+              ListTile(
+                leading: Icon(
+                  isRead ? Icons.radio_button_unchecked_rounded : Icons.check_circle_rounded,
+                  color: AppColors.primary,
+                ),
+                title: Text(isRead ? 'Mark as Unread' : 'Mark as Read'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await ApiService.instance.markChapterRead(_manga.id, chapter.id, read: !isRead);
+                  setState(() {
+                    if (!isRead) {
+                      _readChapterIds.add(chapter.id);
+                    } else {
+                      _readChapterIds.remove(chapter.id);
+                    }
+                  });
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  isBookmarked ? Icons.bookmark_remove_rounded : Icons.bookmark_add_rounded,
+                  color: AppColors.primary,
+                ),
+                title: Text(isBookmarked ? 'Remove Bookmark' : 'Bookmark Chapter'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  await ApiService.instance.toggleChapterBookmark(chapter.id);
+                  setState(() {});
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.done_all_rounded, color: AppColors.primary),
+                title: const Text('Mark Previous Chapters as Read'),
+                subtitle: const Text('Marks all older chapters up to this one as read'),
+                onTap: () async {
+                  Navigator.pop(context);
+                  final readingChapters = [..._apiChapters];
+                  readingChapters.sort((a, b) {
+                    final aNum = double.tryParse(a.number ?? '') ?? 0;
+                    final bNum = double.tryParse(b.number ?? '') ?? 0;
+                    if (aNum != bNum) return aNum.compareTo(bNum);
+                    return a.displayTitle.compareTo(b.displayTitle);
+                  });
+                  final curIdx = readingChapters.indexWhere((c) => c.id == chapter.id);
+                  if (curIdx >= 0) {
+                    final prevIds = readingChapters.sublist(0, curIdx + 1).map((c) => c.id).toList();
+                    await ApiService.instance.markChaptersRead(_manga.id, prevIds, read: true);
+                    setState(() => _readChapterIds.addAll(prevIds));
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showCategorySheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final categories = ApiService.instance.getCategories();
+          final assigned = ApiService.instance.getMangaCategoryIds(_manga.id).toSet();
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'ASSIGN CATEGORIES',
+                          style: GoogleFonts.inter(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1,
+                            color: AppColors.muted,
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () => _promptCreateCategory(onCreated: () => setSheetState(() {})),
+                          icon: const Icon(Icons.add_rounded, size: 16),
+                          label: const Text('New'),
+                          style: TextButton.styleFrom(
+                            foregroundColor: AppColors.primary,
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (categories.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(child: Text('No categories yet. Create one!')),
+                    )
+                  else
+                    ...categories.map((cat) {
+                      final isSelected = assigned.contains(cat.id);
+                      return CheckboxListTile(
+                        value: isSelected,
+                        activeColor: AppColors.primary,
+                        title: Text(cat.name, style: GoogleFonts.inter(fontSize: 14)),
+                        onChanged: (val) async {
+                          await ApiService.instance.toggleMangaCategory(_manga.id, cat.id);
+                          setSheetState(() {});
+                          if (mounted) setState(() {});
+                        },
+                      );
+                    }),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _promptCreateCategory({VoidCallback? onCreated}) async {
+    final textController = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('New Category', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: TextField(
+          controller: textController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'e.g. Favorites, Reading, Shonen',
+            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primary)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.muted)),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final name = textController.text.trim();
+              if (name.isNotEmpty) {
+                await ApiService.instance.createCategory(name);
+                if (ctx.mounted) Navigator.pop(ctx);
+                onCreated?.call();
+                if (mounted) setState(() {});
+              }
+            },
+            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -222,14 +431,33 @@ class _DetailScreenState extends State<DetailScreen> {
                   itemBuilder: (_, i) {
                     final c = chaptersList[i];
                     final isRead = _readChapterIds.contains(c.id);
+                    final isBookmarked = ApiService.instance.isChapterBookmarked(c.id);
+
                     return _ApiChapterTile(
                       chapter: c,
                       isRead: isRead,
+                      isBookmarked: isBookmarked,
                       onTap: () => _openReader(
                         chapterId: c.id,
                         chapterNumber: c.number,
                         title: c.title,
                       ),
+                      onToggleRead: () async {
+                        final nextState = !isRead;
+                        await ApiService.instance.markChapterRead(_manga.id, c.id, read: nextState);
+                        setState(() {
+                          if (nextState) {
+                            _readChapterIds.add(c.id);
+                          } else {
+                            _readChapterIds.remove(c.id);
+                          }
+                        });
+                      },
+                      onToggleBookmark: () async {
+                        await ApiService.instance.toggleChapterBookmark(c.id);
+                        setState(() {});
+                      },
+                      onLongPress: () => _showChapterOptions(c, isRead, isBookmarked),
                     );
                   },
                 );
@@ -258,125 +486,147 @@ class _DetailScreenState extends State<DetailScreen> {
     } else if (id.startsWith('weeb:') || s.contains('weeb')) {
       sourceName = 'WEEB CENTRAL';
       sourceColor = const Color(0xFF00BCD4);
-    } else if (id.startsWith('ext:') || (s.isNotEmpty && s != 'mangadex')) {
-      final ext = ExtensionService.instance.getExtensionByPkg(m.source);
-      sourceName = (ext?.name ?? m.source).toUpperCase();
-      sourceColor = const Color(0xFF10B981);
+    } else if (id.startsWith('ext:') || s.startsWith('ext:')) {
+      final parts = (id.startsWith('ext:') ? id : s).split(':');
+      final pkgId = parts.length > 1 ? parts[1] : 'extension';
+      final ext = ExtensionService.instance.installedExtensions.where((e) => e.pkg == pkgId).firstOrNull;
+      sourceName = (ext?.name ?? pkgId).toUpperCase();
+      sourceColor = const Color(0xFF8B5CF6);
     } else {
-      sourceName = 'MANGADEX';
-      sourceColor = const Color(0xFFFF6740);
+      sourceName = s.toUpperCase();
+      sourceColor = const Color(0xFFE50914);
     }
 
-    final title = m.title;
-    final authors = m.authors.isNotEmpty ? m.authors.join(' · ') : 'Unknown Author';
-    final statusList = <String>[];
-    if (m.status.isNotEmpty) statusList.add(m.status.toUpperCase());
-    if (m.type.isNotEmpty) statusList.add(m.type.toUpperCase());
-    final status = statusList.join(' · ');
-
     return SizedBox(
-      height: 260 + top,
+      height: 290,
       child: Stack(
         fit: StackFit.expand,
         children: [
-          ClipRect(
-            child: Transform.scale(
-              scale: 1.15,
-              child: ImageFiltered(
-                imageFilter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
-                child: CoverImage(imageUrl: m.cover, saturation: .5),
+          // Background blur
+          CoverImage(imageUrl: m.cover, saturation: .5),
+          BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: const ColoredBox(color: Color.fromRGBO(5, 6, 9, .78)),
+          ),
+          DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Colors.transparent, AppColors.bg],
               ),
             ),
           ),
-          ColoredBox(color: Colors.black.withValues(alpha: .72)),
+          // Content
           Positioned(
             left: 16,
             right: 16,
-            top: top + 72,
+            bottom: 12,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                SizedBox(
-                  width: 100,
-                  height: 150,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(6),
-                    child: CoverImage(imageUrl: m.cover, saturation: .75),
+                Hero(
+                  tag: 'cover_${m.id}',
+                  child: Container(
+                    width: 104,
+                    height: 154,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.black.withValues(alpha: .5),
+                          blurRadius: 16,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: CoverImage(imageUrl: m.cover),
+                    ),
                   ),
                 ),
-                const SizedBox(width: 16),
+                const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                         decoration: BoxDecoration(
                           color: sourceColor.withValues(alpha: .2),
                           borderRadius: BorderRadius.circular(4),
+                          border: Border.all(color: sourceColor.withValues(alpha: .5), width: .8),
                         ),
                         child: Text(
                           sourceName,
                           style: GoogleFonts.inter(
                             fontSize: 9,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.5,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: .8,
                             color: sourceColor,
                           ),
                         ),
                       ),
-                      const SizedBox(height: 5),
+                      const SizedBox(height: 6),
                       Text(
-                        title,
+                        m.title,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.inter(
                           fontSize: 18,
-                          height: 23 / 18,
                           fontWeight: FontWeight.w700,
+                          height: 1.2,
                         ),
                       ),
-                      const SizedBox(height: 7),
+                      const SizedBox(height: 5),
                       Text(
-                        authors,
-                        maxLines: 2,
+                        m.authors.isNotEmpty ? m.authors.join(', ') : 'Unknown Author',
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          height: 17 / 12,
-                          color: AppColors.muted,
-                        ),
+                        style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
                       ),
-                      if (status.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            const Icon(Icons.schedule_rounded, size: 11, color: AppColors.primary),
-                            const SizedBox(width: 6),
-                            Flexible(
-                              child: Text(
-                                status,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          if (m.status.isNotEmpty) ...[
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: m.status.toLowerCase() == 'completed'
+                                    ? const Color(0xFF4ADE80)
+                                    : AppColors.primary,
                               ),
                             ),
+                            const SizedBox(width: 6),
+                            Text(
+                              m.status.toUpperCase(),
+                              style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                            ),
+                            const SizedBox(width: 10),
                           ],
-                        ),
-                      ],
+                          Text(
+                            m.type.toUpperCase(),
+                            style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
               ],
             ),
           ),
+          // Top Navigation Bar
           Positioned(
             top: 0,
             left: 0,
             right: 0,
             child: AppTopBar(
               title: '',
-              gradient: true,
               onBack: () => Navigator.of(context).maybePop(),
               actions: const [
                 BarIcon(Icons.share_outlined, label: 'Share'),
@@ -390,6 +640,8 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Widget _actionRow() {
+    final assignedCategories = ApiService.instance.getMangaCategoryIds(_manga.id);
+
     return Container(
       height: 76,
       decoration: const BoxDecoration(
@@ -403,9 +655,27 @@ class _DetailScreenState extends State<DetailScreen> {
             active: _inLibrary,
             onTap: _toggleLibrary,
           ),
-          const _Action(icon: Icons.sync_rounded, label: 'Tracking'),
+          _Action(
+            icon: Icons.label_outline_rounded,
+            label: assignedCategories.isNotEmpty ? 'Categories (${assignedCategories.length})' : 'Categories',
+            active: assignedCategories.isNotEmpty,
+            onTap: _showCategorySheet,
+          ),
+          _Action(
+            icon: Icons.bookmark_added_rounded,
+            label: 'Bookmarked',
+            active: _apiChapters.any((c) => ApiService.instance.isChapterBookmarked(c.id)),
+            onTap: () {
+              final bms = _apiChapters.where((c) => ApiService.instance.isChapterBookmarked(c.id)).toList();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(bms.isNotEmpty ? '${bms.length} chapters bookmarked' : 'No chapters bookmarked yet'),
+                  duration: const Duration(seconds: 1),
+                ),
+              );
+            },
+          ),
           const _Action(icon: Icons.public_rounded, label: 'WebView'),
-          const _Action(icon: Icons.share_outlined, label: 'Share'),
         ],
       ),
     );
@@ -478,6 +748,8 @@ class _DetailScreenState extends State<DetailScreen> {
 
   Widget _sectionTitle() {
     final count = _apiChapters.length;
+    final readCount = _apiChapters.where((c) => _readChapterIds.contains(c.id)).length;
+
     return Container(
       height: 48,
       padding: const EdgeInsets.only(left: 16, right: 8),
@@ -487,15 +759,58 @@ class _DetailScreenState extends State<DetailScreen> {
       child: Row(
         children: [
           Expanded(
-            child: Text(
-              '$count Chapters',
-              style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+            child: Row(
+              children: [
+                Text(
+                  '$count Chapters',
+                  style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+                if (readCount > 0) ...[
+                  const SizedBox(width: 8),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceHigh,
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      '$readCount read',
+                      style: GoogleFonts.inter(fontSize: 10, color: AppColors.primary),
+                    ),
+                  ),
+                ],
+              ],
             ),
           ),
           BarIcon(
             Icons.sort_rounded,
-            label: 'Sort order',
+            label: _descending ? 'Descending' : 'Ascending',
             onTap: () => setState(() => _descending = !_descending),
+          ),
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.more_vert_rounded, size: 20, color: AppColors.muted),
+            color: AppColors.surface,
+            onSelected: (val) async {
+              if (val == 'mark_all_read') {
+                final allIds = _apiChapters.map((c) => c.id).toList();
+                await ApiService.instance.markChaptersRead(_manga.id, allIds, read: true);
+                setState(() => _readChapterIds.addAll(allIds));
+              } else if (val == 'mark_all_unread') {
+                final allIds = _apiChapters.map((c) => c.id).toList();
+                await ApiService.instance.markChaptersRead(_manga.id, allIds, read: false);
+                setState(() => _readChapterIds.removeAll(allIds));
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(
+                value: 'mark_all_read',
+                child: Text('Mark all as read'),
+              ),
+              const PopupMenuItem(
+                value: 'mark_all_unread',
+                child: Text('Mark all as unread'),
+              ),
+            ],
           ),
         ],
       ),
@@ -537,12 +852,20 @@ class _ApiChapterTile extends StatelessWidget {
   const _ApiChapterTile({
     required this.chapter,
     required this.isRead,
+    required this.isBookmarked,
     required this.onTap,
+    required this.onToggleRead,
+    required this.onToggleBookmark,
+    required this.onLongPress,
   });
 
   final ChapterItem chapter;
   final bool isRead;
+  final bool isBookmarked;
   final VoidCallback onTap;
+  final VoidCallback onToggleRead;
+  final VoidCallback onToggleBookmark;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -554,15 +877,20 @@ class _ApiChapterTile extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Container(
-        height: 56,
+        height: 58,
         margin: const EdgeInsets.only(left: 16),
-        padding: const EdgeInsets.only(right: 9),
+        padding: const EdgeInsets.only(right: 6),
         decoration: const BoxDecoration(
           border: Border(bottom: BorderSide(color: AppColors.surface)),
         ),
         child: Row(
           children: [
+            if (isBookmarked) ...[
+              const Icon(Icons.bookmark_rounded, size: 16, color: AppColors.primary),
+              const SizedBox(width: 8),
+            ],
             Expanded(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -572,10 +900,14 @@ class _ApiChapterTile extends StatelessWidget {
                     chapter.displayTitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 13, color: color),
+                    style: GoogleFonts.inter(
+                      fontSize: 13,
+                      fontWeight: isBookmarked ? FontWeight.w600 : FontWeight.w400,
+                      color: isBookmarked && !isRead ? AppColors.primary : color,
+                    ),
                   ),
                   if (metaParts.isNotEmpty) ...[
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     Text(
                       metaParts.join(' · '),
                       style: GoogleFonts.inter(fontSize: 10, color: metaColor),
@@ -586,11 +918,21 @@ class _ApiChapterTile extends StatelessWidget {
             ),
             IconButton(
               icon: Icon(
-                isRead ? Icons.check_circle_rounded : Icons.file_download_outlined,
-                size: 18,
-                color: isRead ? AppColors.primary : AppColors.muted,
+                isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
+                size: 20,
+                color: isBookmarked ? AppColors.primary : AppColors.muted.withValues(alpha: .5),
               ),
-              onPressed: () {},
+              tooltip: isBookmarked ? 'Bookmarked' : 'Bookmark chapter',
+              onPressed: onToggleBookmark,
+            ),
+            IconButton(
+              icon: Icon(
+                isRead ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
+                size: 20,
+                color: isRead ? AppColors.primary : AppColors.muted.withValues(alpha: .5),
+              ),
+              tooltip: isRead ? 'Mark as unread' : 'Mark as read',
+              onPressed: onToggleRead,
             ),
           ],
         ),

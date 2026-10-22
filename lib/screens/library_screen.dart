@@ -11,14 +11,6 @@ import '../widgets/skeleton.dart';
 import 'detail_screen.dart';
 import 'display_sheet.dart';
 
-/// Library category tabs, keyed by [MangaItem.type]. `null` means "All".
-const _categories = <(String?, String)>[
-  (null, 'All'),
-  ('manhwa', 'Manhwa'),
-  ('manga', 'Manga'),
-  ('manhua', 'Manhua'),
-];
-
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({super.key});
 
@@ -36,14 +28,20 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadUserLibrary();
-    ApiService.instance.addListener(_loadUserLibrary);
+    ApiService.instance.addListener(_onServiceChanged);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    ApiService.instance.removeListener(_loadUserLibrary);
+    ApiService.instance.removeListener(_onServiceChanged);
     super.dispose();
+  }
+
+  void _onServiceChanged() {
+    if (mounted) {
+      _loadUserLibrary(silent: true);
+    }
   }
 
   @override
@@ -71,13 +69,314 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
   }
 
   List<MangaItem> _visibleItems(DisplaySettings s) {
-    final items = _category == null
-        ? [..._userLibrary]
-        : _userLibrary.where((m) => m.type == _category).toList();
+    List<MangaItem> items;
+    if (_category == null) {
+      items = [..._userLibrary];
+    } else {
+      items = _userLibrary.where((m) {
+        final catIds = ApiService.instance.getMangaCategoryIds(m.id);
+        return catIds.contains(_category);
+      }).toList();
+    }
     if (s.sort == LibrarySort.alphabetical) {
       items.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
     }
     return items;
+  }
+
+  Future<void> _promptCreateCategory({VoidCallback? onCreated}) async {
+    final textController = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('New Category', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: TextField(
+          controller: textController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'e.g. Reading, Favorites, Shonen',
+            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primary)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.muted)),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final name = textController.text.trim();
+              if (name.isNotEmpty) {
+                await ApiService.instance.createCategory(name);
+                if (ctx.mounted) Navigator.pop(ctx);
+                onCreated?.call();
+                if (mounted) setState(() {});
+              }
+            },
+            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _promptRenameCategory(CategoryItem cat, {VoidCallback? onRenamed}) async {
+    final textController = TextEditingController(text: cat.name);
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('Rename Category', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: TextField(
+          controller: textController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primary)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.muted)),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final name = textController.text.trim();
+              if (name.isNotEmpty) {
+                await ApiService.instance.renameCategory(cat.id, name);
+                if (ctx.mounted) Navigator.pop(ctx);
+                onRenamed?.call();
+                if (mounted) setState(() {});
+              }
+            },
+            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _confirmDeleteCategory(CategoryItem cat, {VoidCallback? onDeleted}) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('Delete "${cat.name}"?', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600)),
+        content: const Text('Titles in this category will not be deleted from your library.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.muted)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      if (_category == cat.id) {
+        _category = null;
+      }
+      await ApiService.instance.deleteCategory(cat.id);
+      onDeleted?.call();
+      if (mounted) setState(() {});
+    }
+  }
+
+  void _showCategoryManagementSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final cats = ApiService.instance.getCategories();
+          return SafeArea(
+            child: Padding(
+              padding: EdgeInsets.only(
+                top: 16,
+                bottom: MediaQuery.of(ctx).viewInsets.bottom + 16,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          'MANAGE CATEGORIES',
+                          style: GoogleFonts.inter(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1,
+                            color: AppColors.muted,
+                          ),
+                        ),
+                        FilledButton.icon(
+                          onPressed: () => _promptCreateCategory(
+                            onCreated: () {
+                              setSheetState(() {});
+                              if (mounted) setState(() {});
+                            },
+                          ),
+                          icon: const Icon(Icons.add_rounded, size: 16),
+                          label: const Text('Add'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            minimumSize: const Size(0, 32),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(color: AppColors.surfaceHigh, height: 1),
+                  if (cats.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(child: Text('No categories yet. Create one!')),
+                    )
+                  else
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 350),
+                      child: ListView.builder(
+                        shrinkWrap: true,
+                        itemCount: cats.length,
+                        itemBuilder: (ctx, i) {
+                          final cat = cats[i];
+                          final count = _userLibrary
+                              .where((m) => ApiService.instance.getMangaCategoryIds(m.id).contains(cat.id))
+                              .length;
+                          return ListTile(
+                            leading: const Icon(Icons.folder_outlined, color: AppColors.muted),
+                            title: Text(cat.name, style: GoogleFonts.inter(fontSize: 14)),
+                            subtitle: Text('$count titles', style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted)),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.edit_outlined, size: 18, color: AppColors.muted),
+                                  onPressed: () => _promptRenameCategory(
+                                    cat,
+                                    onRenamed: () {
+                                      setSheetState(() {});
+                                      if (mounted) setState(() {});
+                                    },
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.muted),
+                                  onPressed: () => _confirmDeleteCategory(
+                                    cat,
+                                    onDeleted: () {
+                                      setSheetState(() {});
+                                      if (mounted) setState(() {});
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showMangaCategoryDialog(MangaItem manga) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final cats = ApiService.instance.getCategories();
+          final assigned = ApiService.instance.getMangaCategoryIds(manga.id).toSet();
+
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                manga.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w700),
+                              ),
+                              const SizedBox(height: 2),
+                              Text('Set Categories', style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted)),
+                            ],
+                          ),
+                        ),
+                        TextButton.icon(
+                          onPressed: () => _promptCreateCategory(
+                            onCreated: () => setSheetState(() {}),
+                          ),
+                          icon: const Icon(Icons.add_rounded, size: 16),
+                          label: const Text('New'),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(color: AppColors.surfaceHigh, height: 1),
+                  if (cats.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(child: Text('No categories yet. Create one!')),
+                    )
+                  else
+                    ...cats.map((cat) {
+                      final isSelected = assigned.contains(cat.id);
+                      return CheckboxListTile(
+                        value: isSelected,
+                        activeColor: AppColors.primary,
+                        title: Text(cat.name, style: GoogleFonts.inter(fontSize: 14)),
+                        onChanged: (val) async {
+                          await ApiService.instance.toggleMangaCategory(manga.id, cat.id);
+                          setSheetState(() {});
+                          if (mounted) setState(() {});
+                        },
+                      );
+                    }),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -87,12 +386,24 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
       builder: (context, _) {
         final s = displaySettings;
         final items = _visibleItems(s);
+        final userCats = ApiService.instance.getCategories();
+
+        final tabCategories = <(String?, String)>[
+          (null, 'All'),
+          ...userCats.map((c) => (c.id as String?, c.name)),
+        ];
+
         return Column(
           children: [
             AppTopBar(
               title: 'Library',
               branded: true,
               actions: [
+                BarIcon(
+                  Icons.playlist_add_rounded,
+                  label: 'Manage categories',
+                  onTap: _showCategoryManagementSheet,
+                ),
                 BarIcon(
                   Icons.filter_list_rounded,
                   label: 'Filter, sort and display',
@@ -104,14 +415,17 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
             _buildCloudSyncBanner(),
             if (s.categoryTabs && _userLibrary.isNotEmpty)
               _Tabs(
+                categories: tabCategories,
                 selected: _category,
                 counts: {
-                  for (final (key, _) in _categories)
-                    key: key == null
-                        ? _userLibrary.length
-                        : _userLibrary.where((m) => m.type == key).length,
+                  null: _userLibrary.length,
+                  for (final c in userCats)
+                    c.id: _userLibrary
+                        .where((m) => ApiService.instance.getMangaCategoryIds(m.id).contains(c.id))
+                        .length,
                 },
                 onSelect: (c) => setState(() => _category = c),
+                onManageCategories: _showCategoryManagementSheet,
               ),
             Expanded(
               child: AnimatedSwitcher(
@@ -159,25 +473,21 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
         margin: const EdgeInsets.fromLTRB(14, 2, 14, 6),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: AppColors.surface,
+          color: const Color(0xFF1E293B),
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: AppColors.surfaceHigh),
+          border: Border.all(color: const Color(0xFF334155), width: .8),
         ),
         child: Row(
           children: [
-            const Icon(Icons.cloud_done_rounded, size: 14, color: Colors.greenAccent),
-            const SizedBox(width: 6),
+            const Icon(Icons.cloud_done_rounded, size: 14, color: AppColors.primary),
+            const SizedBox(width: 8),
             Expanded(
               child: Text(
-                'Cloud Synced with ${user?.displayName.isNotEmpty == true ? user!.displayName : user!.email}',
-                style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                'Cloud Sync Active (${user?.email ?? "User"}) · Bookmarks & progress synced automatically',
+                style: GoogleFonts.inter(fontSize: 10, color: AppColors.text, fontWeight: FontWeight.w500),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-            ),
-            Text(
-              'Online',
-              style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.primary),
             ),
           ],
         ),
@@ -185,16 +495,16 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
     }
 
     return Container(
-      margin: const EdgeInsets.fromLTRB(14, 4, 14, 6),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      margin: const EdgeInsets.fromLTRB(14, 2, 14, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppColors.primary.withValues(alpha: .3)),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.surfaceHigh, width: .8),
       ),
       child: Row(
         children: [
-          const Icon(Icons.cloud_sync_rounded, size: 18, color: AppColors.primary),
+          const Icon(Icons.cloud_off_rounded, size: 16, color: AppColors.muted),
           const SizedBox(width: 8),
           Expanded(
             child: Column(
@@ -240,6 +550,7 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
     return const EmptyState(
       icon: Icons.filter_alt_off_outlined,
       title: 'Nothing in this category',
+      message: 'Long-press any manga cover to assign it to this category.',
     );
   }
 
@@ -266,6 +577,7 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
           imageUrl: manga.cover,
           mode: s.mode,
           onTap: () => _openManga(manga),
+          onLongPress: () => _showMangaCategoryDialog(manga),
         );
       },
     );
@@ -280,6 +592,7 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
         final manga = items[i];
         return InkWell(
           onTap: () => _openManga(manga),
+          onLongPress: () => _showMangaCategoryDialog(manga),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
             child: Row(
@@ -303,15 +616,18 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
                         overflow: TextOverflow.ellipsis,
                         style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
                       ),
-                      if (manga.lastChapter?.isNotEmpty == true) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          'Latest: Ch. ${manga.lastChapter}',
-                          style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
-                        ),
-                      ],
+                      const SizedBox(height: 2),
+                      Text(
+                        manga.authors.isNotEmpty ? manga.authors.first : manga.type.toUpperCase(),
+                        style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                      ),
                     ],
                   ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.label_outline_rounded, size: 18, color: AppColors.muted),
+                  tooltip: 'Set categories',
+                  onPressed: () => _showMangaCategoryDialog(manga),
                 ),
               ],
             ),
@@ -323,10 +639,19 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
 }
 
 class _Tabs extends StatelessWidget {
-  const _Tabs({required this.selected, required this.counts, required this.onSelect});
+  const _Tabs({
+    required this.categories,
+    required this.selected,
+    required this.counts,
+    required this.onSelect,
+    required this.onManageCategories,
+  });
+
+  final List<(String?, String)> categories;
   final String? selected;
   final Map<String?, int> counts;
   final ValueChanged<String?> onSelect;
+  final VoidCallback onManageCategories;
 
   @override
   Widget build(BuildContext context) {
@@ -335,39 +660,51 @@ class _Tabs extends StatelessWidget {
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: AppColors.surface)),
       ),
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.only(left: 4),
+      child: Row(
         children: [
-          for (final (key, label) in _categories)
-            InkWell(
-              onTap: () => onSelect(key),
-              child: Container(
-                height: 44,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                alignment: Alignment.center,
-                child: Stack(
-                  alignment: Alignment.center,
-                  clipBehavior: Clip.none,
-                  children: [
-                    Text(
-                      '$label ${counts[key] ?? 0}',
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        color: key == selected ? AppColors.primary : AppColors.muted,
+          Expanded(
+            child: ListView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.only(left: 4),
+              children: [
+                for (final (key, label) in categories)
+                  InkWell(
+                    onTap: () => onSelect(key),
+                    child: Container(
+                      height: 44,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      alignment: Alignment.center,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        clipBehavior: Clip.none,
+                        children: [
+                          Text(
+                            '$label ${counts[key] ?? 0}',
+                            style: GoogleFonts.inter(
+                              fontSize: 12,
+                              fontWeight: key == selected ? FontWeight.w600 : FontWeight.w400,
+                              color: key == selected ? AppColors.primary : AppColors.muted,
+                            ),
+                          ),
+                          if (key == selected)
+                            Positioned(
+                              left: -2,
+                              right: -2,
+                              bottom: -14,
+                              child: Container(height: 2, color: AppColors.primary),
+                            ),
+                        ],
                       ),
                     ),
-                    if (key == selected)
-                      Positioned(
-                        left: -2,
-                        right: -2,
-                        bottom: -14,
-                        child: Container(height: 2, color: AppColors.primary),
-                      ),
-                  ],
-                ),
-              ),
+                  ),
+              ],
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.playlist_add_rounded, size: 20, color: AppColors.primary),
+            tooltip: 'Manage Categories',
+            onPressed: onManageCategories,
+          ),
         ],
       ),
     );
@@ -381,12 +718,14 @@ class CoverCard extends StatelessWidget {
     required this.mode,
     this.imageUrl,
     this.onTap,
+    this.onLongPress,
   });
 
   final String title;
   final DisplayMode mode;
   final String? imageUrl;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -435,6 +774,7 @@ class CoverCard extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
+      onLongPress: onLongPress,
       borderRadius: BorderRadius.circular(6),
       child: comfortable
           ? Column(

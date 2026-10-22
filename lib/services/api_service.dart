@@ -18,6 +18,10 @@ class ApiService extends ChangeNotifier {
   final Map<String, MangaItem> _localLibrary = {};
   final List<Map<String, dynamic>> _localHistory = [];
   final Map<String, Map<String, dynamic>> _localProgress = {};
+  final Map<String, Set<String>> _readChapters = {};
+  final Set<String> _bookmarkedChapterIds = {};
+  final List<CategoryItem> _userCategories = [];
+  final Map<String, List<String>> _mangaCategories = {};
 
   String get baseUrl => _baseUrl;
   String? get token => _token;
@@ -79,6 +83,68 @@ class ApiService extends ChangeNotifier {
       } catch (_) {}
     }
 
+    // Load read chapters
+    final readJson = prefs.getString('shiori_read_chapters');
+    if (readJson != null && readJson.isNotEmpty) {
+      try {
+        final Map<String, dynamic> map = jsonDecode(readJson);
+        _readChapters.clear();
+        map.forEach((k, v) {
+          if (v is List) {
+            _readChapters[k] = v.map((e) => e.toString()).toSet();
+          }
+        });
+      } catch (_) {}
+    }
+
+    // Load chapter bookmarks
+    final bmJson = prefs.getString('shiori_chapter_bookmarks');
+    if (bmJson != null && bmJson.isNotEmpty) {
+      try {
+        final List<dynamic> list = jsonDecode(bmJson);
+        _bookmarkedChapterIds.clear();
+        for (final item in list) {
+          _bookmarkedChapterIds.add(item.toString());
+        }
+      } catch (_) {}
+    }
+
+    // Load user categories
+    final catJson = prefs.getString('shiori_user_categories');
+    _userCategories.clear();
+    if (catJson != null && catJson.isNotEmpty) {
+      try {
+        final List<dynamic> list = jsonDecode(catJson);
+        for (final item in list) {
+          if (item is Map) {
+            _userCategories.add(CategoryItem.fromJson(Map<String, dynamic>.from(item)));
+          }
+        }
+      } catch (_) {}
+    }
+    if (_userCategories.isEmpty) {
+      _userCategories.addAll(const [
+        CategoryItem(id: 'reading', name: 'Reading', order: 0),
+        CategoryItem(id: 'completed', name: 'Completed', order: 1),
+        CategoryItem(id: 'plan_to_read', name: 'Plan to Read', order: 2),
+        CategoryItem(id: 'favorites', name: 'Favorites', order: 3),
+      ]);
+    }
+
+    // Load manga categories mapping
+    final mangaCatJson = prefs.getString('shiori_manga_categories');
+    if (mangaCatJson != null && mangaCatJson.isNotEmpty) {
+      try {
+        final Map<String, dynamic> map = jsonDecode(mangaCatJson);
+        _mangaCategories.clear();
+        map.forEach((k, v) {
+          if (v is List) {
+            _mangaCategories[k] = v.map((e) => e.toString()).toList();
+          }
+        });
+      } catch (_) {}
+    }
+
     _initialized = true;
     checkHealth();
     if (isLoggedIn) {
@@ -105,6 +171,38 @@ class ApiService extends ChangeNotifier {
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('shiori_local_progress', jsonEncode(_localProgress));
+    } catch (_) {}
+  }
+
+  Future<void> _persistReadChapters() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final map = <String, List<String>>{
+        for (final entry in _readChapters.entries) entry.key: entry.value.toList(),
+      };
+      await prefs.setString('shiori_read_chapters', jsonEncode(map));
+    } catch (_) {}
+  }
+
+  Future<void> _persistChapterBookmarks() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('shiori_chapter_bookmarks', jsonEncode(_bookmarkedChapterIds.toList()));
+    } catch (_) {}
+  }
+
+  Future<void> _persistUserCategories() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = _userCategories.map((e) => e.toJson()).toList();
+      await prefs.setString('shiori_user_categories', jsonEncode(list));
+    } catch (_) {}
+  }
+
+  Future<void> _persistMangaCategories() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('shiori_manga_categories', jsonEncode(_mangaCategories));
     } catch (_) {}
   }
 
@@ -1320,6 +1418,11 @@ class ApiService extends ChangeNotifier {
     int totalPages = 0,
     bool completed = false,
   }) async {
+    if (completed) {
+      _readChapters.putIfAbsent(mangaId, () => <String>{}).add(chapterId);
+      _persistReadChapters();
+    }
+
     final progressData = <String, dynamic>{
       'mangaId': mangaId,
       'chapterId': chapterId,
@@ -1358,20 +1461,160 @@ class ApiService extends ChangeNotifier {
   }
 
   Future<Map<String, dynamic>> getMangaProgress(String mangaId) async {
-    if (_localProgress.containsKey(mangaId)) {
-      return _localProgress[mangaId]!;
-    }
-    if (!isLoggedIn) return {};
+    final localLast = _localProgress[mangaId];
+    final readSet = _readChapters[mangaId] ?? <String>{};
+    final base = <String, dynamic>{
+      'mangaId': mangaId,
+      'completedChapters': readSet.toList(),
+      'lastRead': localLast,
+    };
+
+    if (!isLoggedIn) return base;
     try {
       final res = await http.get(Uri.parse('$_baseUrl/progress/manga/$mangaId'), headers: _headers(withAuth: true));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        _localProgress[mangaId] = data;
-        _persistLocalProgress();
-        return data;
+        if (data['completedChapters'] is List) {
+          final cloudCompleted = (data['completedChapters'] as List).map((e) => e.toString()).toSet();
+          readSet.addAll(cloudCompleted);
+          _readChapters[mangaId] = readSet;
+          _persistReadChapters();
+        }
+        if (data['lastRead'] is Map) {
+          _localProgress[mangaId] = Map<String, dynamic>.from(data['lastRead'] as Map);
+          _persistLocalProgress();
+        }
+        return {
+          'mangaId': mangaId,
+          'completedChapters': readSet.toList(),
+          'lastRead': _localProgress[mangaId],
+        };
       }
     } catch (_) {}
-    return {};
+    return base;
+  }
+
+  // ---- Chapter Read/Unread Status ----
+
+  bool isChapterRead(String mangaId, String chapterId) {
+    return _readChapters[mangaId]?.contains(chapterId) ?? false;
+  }
+
+  Set<String> getReadChapterIds(String mangaId) {
+    return Set<String>.from(_readChapters[mangaId] ?? const <String>{});
+  }
+
+  Future<void> markChapterRead(String mangaId, String chapterId, {bool read = true}) async {
+    final set = _readChapters.putIfAbsent(mangaId, () => <String>{});
+    if (read) {
+      set.add(chapterId);
+    } else {
+      set.remove(chapterId);
+    }
+    await _persistReadChapters();
+    notifyListeners();
+  }
+
+  Future<void> markChaptersRead(String mangaId, List<String> chapterIds, {bool read = true}) async {
+    final set = _readChapters.putIfAbsent(mangaId, () => <String>{});
+    if (read) {
+      set.addAll(chapterIds);
+    } else {
+      set.removeAll(chapterIds);
+    }
+    await _persistReadChapters();
+    notifyListeners();
+  }
+
+  // ---- Chapter Bookmarks ----
+
+  bool isChapterBookmarked(String chapterId) {
+    return _bookmarkedChapterIds.contains(chapterId);
+  }
+
+  Future<bool> toggleChapterBookmark(String chapterId) async {
+    final has = _bookmarkedChapterIds.contains(chapterId);
+    if (has) {
+      _bookmarkedChapterIds.remove(chapterId);
+    } else {
+      _bookmarkedChapterIds.add(chapterId);
+    }
+    await _persistChapterBookmarks();
+    notifyListeners();
+    return !has;
+  }
+
+  Future<void> setChapterBookmarked(String chapterId, bool bookmarked) async {
+    if (bookmarked) {
+      _bookmarkedChapterIds.add(chapterId);
+    } else {
+      _bookmarkedChapterIds.remove(chapterId);
+    }
+    await _persistChapterBookmarks();
+    notifyListeners();
+  }
+
+  Set<String> getBookmarkedChapterIds() {
+    return Set<String>.from(_bookmarkedChapterIds);
+  }
+
+  // ---- User Categories Management ----
+
+  List<CategoryItem> getCategories() {
+    return List<CategoryItem>.from(_userCategories);
+  }
+
+  Future<CategoryItem> createCategory(String name) async {
+    final trimmed = name.trim();
+    if (trimmed.isEmpty) throw Exception('Category name cannot be empty');
+    final id = 'cat_${DateTime.now().millisecondsSinceEpoch}';
+    final newCat = CategoryItem(id: id, name: trimmed, order: _userCategories.length);
+    _userCategories.add(newCat);
+    await _persistUserCategories();
+    notifyListeners();
+    return newCat;
+  }
+
+  Future<void> renameCategory(String id, String newName) async {
+    final trimmed = newName.trim();
+    if (trimmed.isEmpty) throw Exception('Category name cannot be empty');
+    final idx = _userCategories.indexWhere((c) => c.id == id);
+    if (idx != -1) {
+      _userCategories[idx] = CategoryItem(id: id, name: trimmed, order: _userCategories[idx].order);
+      await _persistUserCategories();
+      notifyListeners();
+    }
+  }
+
+  Future<void> deleteCategory(String id) async {
+    _userCategories.removeWhere((c) => c.id == id);
+    for (final key in _mangaCategories.keys) {
+      _mangaCategories[key]?.remove(id);
+    }
+    await _persistUserCategories();
+    await _persistMangaCategories();
+    notifyListeners();
+  }
+
+  List<String> getMangaCategoryIds(String mangaId) {
+    return List<String>.from(_mangaCategories[mangaId] ?? const <String>[]);
+  }
+
+  Future<void> setMangaCategories(String mangaId, List<String> categoryIds) async {
+    _mangaCategories[mangaId] = List<String>.from(categoryIds);
+    await _persistMangaCategories();
+    notifyListeners();
+  }
+
+  Future<void> toggleMangaCategory(String mangaId, String categoryId) async {
+    final list = _mangaCategories.putIfAbsent(mangaId, () => <String>[]);
+    if (list.contains(categoryId)) {
+      list.remove(categoryId);
+    } else {
+      list.add(categoryId);
+    }
+    await _persistMangaCategories();
+    notifyListeners();
   }
 
   Future<List<Map<String, dynamic>>> getHistory() async {
