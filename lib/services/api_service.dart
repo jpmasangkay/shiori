@@ -40,6 +40,8 @@ class ApiService extends ChangeNotifier {
     if (id.startsWith('flame:')) return 'flamecomics';
     if (id.startsWith('weeb:')) return 'weebcentral';
     if (id.startsWith('pill:')) return 'mangapill';
+    if (id.startsWith('katana:')) return 'mangakatana';
+    if (id.startsWith('mread:')) return 'mangaread';
     if (id.startsWith('ext:')) {
       final parts = id.split(':');
       return parts.length > 1 ? parts[1] : 'extension';
@@ -427,6 +429,12 @@ class ApiService extends ChangeNotifier {
     if (s == 'mangapill' || s == 'pill') {
       return _searchMangaPill(query: query, page: page, limit: limit);
     }
+    if (s == 'mangakatana' || s == 'katana') {
+      return _searchMangaKatana(query: query, page: page, limit: limit);
+    }
+    if (s == 'mangaread' || s == 'mread') {
+      return _searchMangaRead(query: query, page: page, limit: limit);
+    }
     if (s == 'asura') {
       return _searchAsura(query: query, page: page);
     }
@@ -483,6 +491,8 @@ class ApiService extends ChangeNotifier {
     if (id.startsWith('flame:')) return _getFlameManga(id);
     if (id.startsWith('weeb:')) return _getWeebManga(id);
     if (id.startsWith('pill:')) return _getMangaPill(id);
+    if (id.startsWith('katana:')) return _getMangaKatana(id);
+    if (id.startsWith('mread:')) return _getMangaRead(id);
 
     if (id.startsWith('ext:')) {
       final firstColon = id.indexOf(':');
@@ -519,6 +529,8 @@ class ApiService extends ChangeNotifier {
     if (mangaId.startsWith('flame:')) return _getFlameChapters(mangaId);
     if (mangaId.startsWith('weeb:')) return _getWeebChapters(mangaId);
     if (mangaId.startsWith('pill:')) return _getMangaPillChapters(mangaId);
+    if (mangaId.startsWith('katana:')) return _getMangaKatanaChapters(mangaId);
+    if (mangaId.startsWith('mread:')) return _getMangaReadChapters(mangaId);
 
     if (mangaId.startsWith('ext:')) {
       final firstColon = mangaId.indexOf(':');
@@ -563,6 +575,8 @@ class ApiService extends ChangeNotifier {
     if (chapterId.startsWith('flame:')) return _getFlameChapterPages(chapterId);
     if (chapterId.startsWith('weeb:')) return _getWeebChapterPages(chapterId);
     if (chapterId.startsWith('pill:')) return _getMangaPillChapterPages(chapterId);
+    if (chapterId.startsWith('katana:')) return _getMangaKatanaChapterPages(chapterId);
+    if (chapterId.startsWith('mread:')) return _getMangaReadChapterPages(chapterId);
 
     if (chapterId.startsWith('ext:')) {
       final firstColon = chapterId.indexOf(':');
@@ -2254,5 +2268,359 @@ class ApiService extends ChangeNotifier {
       }
     }
     throw Exception('Failed to load MangaPill chapter pages');
+  }
+
+  // ---- MangaKatana Direct Scraper (iOS & Web) ----
+
+  Future<List<MangaItem>> _searchMangaKatana({String? query, int page = 1, int limit = 24}) async {
+    try {
+      final String url;
+      if (query != null && query.trim().isNotEmpty) {
+        url = 'https://mangakatana.com/?search=${Uri.encodeComponent(query.trim())}&search_by=book_name';
+      } else {
+        url = 'https://mangakatana.com/manga?filter=1&order=latest&page=$page';
+      }
+
+      final res = await http.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+          'Accept': 'text/html,application/xhtml+xml',
+        },
+      ).timeout(const Duration(seconds: 12));
+
+      if (res.statusCode == 200) {
+        final html = res.body;
+        final cardRegex = RegExp(
+          r'<div class="item"[^>]*>[\s\S]*?<a href="(https://mangakatana\.com/manga/([^.]+)\.(\d+))"[^>]*>[\s\S]*?<img\s+(?:src|data-src)="([^"]+)"[\s\S]*?<h3 class="title">\s*<a[^>]*>([^<]+)</a>',
+          caseSensitive: false,
+        );
+
+        final matches = cardRegex.allMatches(html);
+        final items = <MangaItem>[];
+        final seen = <String>{};
+
+        for (final m in matches) {
+          final slug = m.group(2)!;
+          final mId = m.group(3)!;
+          final cover = m.group(4)!;
+          final title = m.group(5)!.trim();
+
+          final id = 'katana:$slug:$mId';
+          if (seen.contains(id)) continue;
+          seen.add(id);
+
+          items.add(MangaItem(
+            id: id,
+            title: title,
+            cover: cover,
+            source: 'mangakatana',
+          ));
+          if (items.length >= limit) break;
+        }
+        return items;
+      }
+    } catch (e) {
+      debugPrint('MangaKatana search error: $e');
+    }
+    return [];
+  }
+
+  Future<MangaItem> _getMangaKatana(String id) async {
+    final parts = id.split(':');
+    final slug = parts.length > 1 ? parts[1] : '';
+    final mId = parts.length > 2 ? parts[2] : '';
+    final url = 'https://mangakatana.com/manga/$slug.$mId';
+
+    final res = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+    ).timeout(const Duration(seconds: 12));
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final titleMatch = RegExp(r'<h1 class="heading">([^<]+)</h1>').firstMatch(html);
+      final title = titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' ');
+
+      final descMatch = RegExp(r'<div class="summary">[\s\S]*?<p>([^<]+)</p>').firstMatch(html);
+      final desc = descMatch?.group(1)?.trim() ?? '';
+
+      final coverMatch = RegExp(r'<div class="cover">[\s\S]*?<img\s+(?:src|data-src)="([^"]+)"').firstMatch(html);
+      final cover = coverMatch?.group(1) ?? '';
+
+      final authorMatches = RegExp(r'<a class="author"[^>]*>([^<]+)</a>').allMatches(html);
+      final authors = authorMatches.map((m) => m.group(1)!.trim()).toList();
+
+      final genreMatches = RegExp(r'<div class="genres">[\s\S]*?<a[^>]*>([^<]+)</a>').allMatches(html);
+      final tags = genreMatches.map((m) => m.group(1)!.trim()).toList();
+
+      final status = html.contains('class="status completed"') ? 'completed' : 'ongoing';
+
+      return MangaItem(
+        id: id,
+        title: title,
+        description: desc,
+        cover: cover,
+        authors: authors,
+        status: status,
+        tags: tags,
+        source: 'mangakatana',
+      );
+    }
+    throw Exception('Failed to load MangaKatana manga details');
+  }
+
+  Future<List<ChapterItem>> _getMangaKatanaChapters(String mangaId) async {
+    final parts = mangaId.split(':');
+    final slug = parts.length > 1 ? parts[1] : '';
+    final mId = parts.length > 2 ? parts[2] : '';
+    final url = 'https://mangakatana.com/manga/$slug.$mId';
+
+    final res = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+    ).timeout(const Duration(seconds: 12));
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final chapterRegex = RegExp(
+        r'<div class="chapter">\s*<a href="https://mangakatana\.com/manga/[^/]+/c([^"]+)"[^>]*>([^<]+)</a>',
+        caseSensitive: false,
+      );
+
+      final matches = chapterRegex.allMatches(html);
+      final chapters = <ChapterItem>[];
+
+      for (final m in matches) {
+        final cNum = m.group(1)!;
+        final rawTitle = m.group(2)!.trim();
+
+        chapters.add(ChapterItem(
+          id: 'katana:$slug:$mId:c$cNum',
+          title: rawTitle,
+          number: cNum,
+          source: 'mangakatana',
+        ));
+      }
+      return chapters;
+    }
+    return [];
+  }
+
+  Future<ChapterPages> _getMangaKatanaChapterPages(String chapterId) async {
+    final parts = chapterId.split(':');
+    final slug = parts.length > 1 ? parts[1] : '';
+    final mId = parts.length > 2 ? parts[2] : '';
+    final cPart = parts.length > 3 ? parts[3] : '';
+    final url = 'https://mangakatana.com/manga/$slug.$mId/$cPart';
+
+    final res = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Referer': 'https://mangakatana.com/',
+      },
+    ).timeout(const Duration(seconds: 12));
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final arrayMatch = RegExp(r'var\s+thzq\s*=\s*\[([^\]]+)\]').firstMatch(html) ??
+          RegExp(r'var\s+ytaw\s*=\s*\[([^\]]+)\]').firstMatch(html);
+
+      if (arrayMatch != null) {
+        final content = arrayMatch.group(1)!;
+        final urlMatches = RegExp(r"'((?:https?:)?//[^']+)'").allMatches(content);
+        final pages = <String>[];
+        for (final m in urlMatches) {
+          var pUrl = m.group(1)!;
+          if (pUrl.startsWith('//')) pUrl = 'https:$pUrl';
+          pages.add(pUrl);
+        }
+
+        if (pages.isNotEmpty) {
+          return ChapterPages(chapterId: chapterId, pages: pages, dataSaver: pages);
+        }
+      }
+    }
+    throw Exception('Failed to load MangaKatana chapter pages');
+  }
+
+  // ---- MangaRead Direct Scraper (iOS & Web) ----
+
+  Future<List<MangaItem>> _searchMangaRead({String? query, int page = 1, int limit = 24}) async {
+    try {
+      final String url;
+      if (query != null && query.trim().isNotEmpty) {
+        url = 'https://www.mangaread.org/?s=${Uri.encodeComponent(query.trim())}&post_type=wp-manga';
+      } else {
+        url = 'https://www.mangaread.org/manga/?m_orderby=latest';
+      }
+
+      final res = await http.get(
+        Uri.parse(url),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+          'Accept': 'text/html,application/xhtml+xml',
+        },
+      ).timeout(const Duration(seconds: 12));
+
+      if (res.statusCode == 200) {
+        final html = res.body;
+        final cardRegex = RegExp(
+          r'<div class="post-title"[^>]*>[\s\S]*?<a href="https://www\.mangaread\.org/manga/([^/]+)/"[^>]*>([^<]+)</a>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"',
+          caseSensitive: false,
+        );
+
+        final matches = cardRegex.allMatches(html);
+        final items = <MangaItem>[];
+        final seen = <String>{};
+
+        for (final m in matches) {
+          final slug = m.group(1)!;
+          final title = m.group(2)!.trim();
+          final cover = m.group(3)!.trim();
+
+          final id = 'mread:$slug';
+          if (seen.contains(id)) continue;
+          seen.add(id);
+
+          items.add(MangaItem(
+            id: id,
+            title: title,
+            cover: cover,
+            source: 'mangaread',
+          ));
+          if (items.length >= limit) break;
+        }
+        return items;
+      }
+    } catch (e) {
+      debugPrint('MangaRead search error: $e');
+    }
+    return [];
+  }
+
+  Future<MangaItem> _getMangaRead(String id) async {
+    final slug = id.replaceFirst('mread:', '');
+    final url = 'https://www.mangaread.org/manga/$slug/';
+
+    final res = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+    ).timeout(const Duration(seconds: 12));
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final titleMatch = RegExp(r'<div class="post-title">[\s\S]*?<h1>([^<]+)</h1>').firstMatch(html);
+      final title = titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' ');
+
+      final descMatch = RegExp(r'<div class="description-summary">[\s\S]*?<p>([\s\S]*?)</p>').firstMatch(html);
+      final desc = descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
+
+      final coverMatch = RegExp(r'<div class="summary_image"[^>]*>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"').firstMatch(html);
+      final cover = coverMatch?.group(1)?.trim() ?? '';
+
+      final authorMatches = RegExp(r'<div class="author-content">[\s\S]*?<a[^>]*>([^<]+)</a>').allMatches(html);
+      final authors = authorMatches.map((m) => m.group(1)!.trim()).toList();
+
+      final genreMatches = RegExp(r'<div class="genres-content">[\s\S]*?<a[^>]*>([^<]+)</a>').allMatches(html);
+      final tags = genreMatches.map((m) => m.group(1)!.trim()).toList();
+
+      return MangaItem(
+        id: id,
+        title: title,
+        description: desc,
+        cover: cover,
+        authors: authors,
+        tags: tags,
+        source: 'mangaread',
+      );
+    }
+    throw Exception('Failed to load MangaRead manga details');
+  }
+
+  Future<List<ChapterItem>> _getMangaReadChapters(String mangaId) async {
+    final slug = mangaId.replaceFirst('mread:', '');
+    final url = 'https://www.mangaread.org/manga/$slug/';
+
+    final res = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+      },
+    ).timeout(const Duration(seconds: 12));
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final chapterRegex = RegExp(
+        r'<li class="wp-manga-chapter[^>]*>[\s\S]*?<a href="https://www\.mangaread\.org/manga/[^/]+/([^/]+)/"[^>]*>([^<]+)</a>',
+        caseSensitive: false,
+      );
+
+      final matches = chapterRegex.allMatches(html);
+      final chapters = <ChapterItem>[];
+
+      for (final m in matches) {
+        final cSlug = m.group(1)!;
+        final rawTitle = m.group(2)!.trim();
+        final numMatch = RegExp(r'Chapter\s+([0-9.]+)').firstMatch(rawTitle);
+        final num = numMatch?.group(1);
+
+        chapters.add(ChapterItem(
+          id: 'mread:$slug:$cSlug',
+          title: rawTitle,
+          number: num,
+          source: 'mangaread',
+        ));
+      }
+      return chapters;
+    }
+    return [];
+  }
+
+  Future<ChapterPages> _getMangaReadChapterPages(String chapterId) async {
+    final parts = chapterId.split(':');
+    final slug = parts.length > 1 ? parts[1] : '';
+    final cSlug = parts.length > 2 ? parts[2] : '';
+    final url = 'https://www.mangaread.org/manga/$slug/$cSlug/';
+
+    final res = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Referer': 'https://www.mangaread.org/',
+      },
+    ).timeout(const Duration(seconds: 12));
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final pageRegex = RegExp(r'<div class="page-break[^>]*>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"');
+      final matches = pageRegex.allMatches(html);
+
+      final pages = <String>[];
+      for (final m in matches) {
+        final imgUrl = m.group(1)?.trim();
+        if (imgUrl != null && imgUrl.isNotEmpty) {
+          pages.add(imgUrl);
+        }
+      }
+
+      if (pages.isNotEmpty) {
+        return ChapterPages(chapterId: chapterId, pages: pages, dataSaver: pages);
+      }
+    }
+    throw Exception('Failed to load MangaRead chapter pages');
   }
 }

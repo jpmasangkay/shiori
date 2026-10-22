@@ -64,14 +64,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
   final Set<String> _loadingChapterIds = {};
   final Map<String, String> _chapterErrors = {};
 
-  // Webtoon continuous feed chapters
+  // Webtoon continuous feed. Always an ascending, contiguous run of chapter
+  // indices so chapters can never appear out of order or be skipped.
   final List<int> _webtoonLoadedIndices = [];
+  final Map<String, _PageSlot> _pageSlots = {};
+  final GlobalKey _listKey = GlobalKey();
+  DateTime _trackingPausedUntil = DateTime.fromMillisecondsSinceEpoch(0);
 
   int _totalPages = 1;
   int _page = 1;
   bool _chrome = true;
-  bool _loading = true;
-  String? _error;
+  bool _advancing = false;
 
   ReaderMode _mode = ReaderMode.webtoon;
   BoxFit _fitMode = BoxFit.fitWidth;
@@ -100,10 +103,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool get _hasNextChapter => _currentChapterIndex + 1 < _chapters.length;
   bool get _hasPrevChapter => _currentChapterIndex - 1 >= 0;
 
+  // keepPage: false stops PageStorage from restoring the previous chapter's
+  // page index when the PageView is rebuilt for a different chapter.
+  PageController _newPageController(int initialPage) =>
+      PageController(initialPage: initialPage, keepPage: false);
+
+  void _pauseTracking([int milliseconds = 500]) {
+    _trackingPausedUntil = DateTime.now().add(Duration(milliseconds: milliseconds));
+  }
+
   @override
   void initState() {
     super.initState();
-    _pageController = PageController();
+    _pageController = _newPageController(0);
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
 
     // Setup chapters list
@@ -126,7 +138,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
 
     _webtoonLoadedIndices.add(_currentChapterIndex);
-    _loadCurrentChapter();
+    _loadChapter(_currentChapterIndex);
   }
 
   @override
@@ -136,90 +148,55 @@ class _ReaderScreenState extends State<ReaderScreen> {
     super.dispose();
   }
 
-  Future<void> _loadCurrentChapter() async {
-    final chapter = _currentChapter;
-    if (chapter.id.isEmpty) {
-      setState(() {
-        _loading = false;
-        _error = 'This chapter is not available.';
-      });
-      return;
-    }
+  /// Loads a chapter's pages. A chapter that fails to load (or has no pages) is
+  /// recorded in [_chapterErrors] so the reader can show a Retry tile instead
+  /// of silently skipping over it.
+  Future<void> _loadChapter(int idx) async {
+    if (idx < 0 || idx >= _chapters.length) return;
+    final chapter = _chapters[idx];
+    if (_pagesCache.containsKey(chapter.id) || _loadingChapterIds.contains(chapter.id)) return;
 
-    if (_pagesCache.containsKey(chapter.id)) {
-      final cachedPages = _pagesCache[chapter.id]!;
-      setState(() {
-        _totalPages = cachedPages.isNotEmpty ? cachedPages.length : 1;
-        _page = 1;
-        _loading = false;
-        _error = null;
-      });
-      _syncProgress(1);
-      _preloadNextChapter(_currentChapterIndex + 1);
+    if (chapter.id.isEmpty) {
+      setState(() => _chapterErrors[chapter.id] = 'This chapter is not available.');
       return;
     }
 
     setState(() {
-      _loading = true;
-      _error = null;
+      _chapterErrors.remove(chapter.id);
+      _loadingChapterIds.add(chapter.id);
     });
 
     try {
-      _loadingChapterIds.add(chapter.id);
       final res = await ApiService.instance.getChapterPages(chapter.id);
+      if (res.pages.isEmpty) throw Exception('No pages found for this chapter.');
       _pagesCache[chapter.id] = res.pages;
       _loadingChapterIds.remove(chapter.id);
+      if (!mounted) return;
 
-      if (mounted) {
-        setState(() {
-          _totalPages = res.pages.isNotEmpty ? res.pages.length : 1;
-          _page = 1;
-          _loading = false;
-        });
-        _syncProgress(1);
+      setState(() {
+        if (idx == _currentChapterIndex) {
+          _totalPages = res.pages.length;
+          _page = _page.clamp(1, _totalPages);
+        }
+      });
+      _precacheFirstPages(res.pages);
 
-        // Preload next chapter immediately in background for zero-delay continuous reading
-        _preloadNextChapter(_currentChapterIndex + 1);
+      if (idx == _currentChapterIndex) {
+        _syncProgress(_page);
+        // Prefetch the next chapter so continuing to read has no loading gap.
+        _loadChapter(idx + 1);
       }
     } catch (err) {
       _loadingChapterIds.remove(chapter.id);
-      if (mounted) {
-        setState(() {
-          _error = err.toString().replaceFirst('Exception: ', '');
-          _loading = false;
-        });
-      }
+      if (!mounted) return;
+      setState(() => _chapterErrors[chapter.id] = err.toString().replaceFirst('Exception: ', ''));
     }
   }
 
-  Future<void> _preloadNextChapter(int nextIndex) async {
-    if (nextIndex < 0 || nextIndex >= _chapters.length) return;
-    final nextChapter = _chapters[nextIndex];
-    if (_pagesCache.containsKey(nextChapter.id) || _loadingChapterIds.contains(nextChapter.id)) {
-      return;
-    }
-
-    _loadingChapterIds.add(nextChapter.id);
-    try {
-      final res = await ApiService.instance.getChapterPages(nextChapter.id);
-      _pagesCache[nextChapter.id] = res.pages;
-      _loadingChapterIds.remove(nextChapter.id);
-
-      // Pre-cache first 3 images into memory cache
-      if (mounted && res.pages.isNotEmpty) {
-        for (var i = 0; i < math.min(3, res.pages.length); i++) {
-          try {
-            precacheImage(CachedNetworkImageProvider(res.pages[i]), context);
-          } catch (_) {}
-        }
-        // If webtoon mode and waiting on this chapter, trigger rebuild to display it seamlessly
-        if (_mode == ReaderMode.webtoon && _webtoonLoadedIndices.contains(nextIndex)) {
-          setState(() {});
-        }
-      }
-    } catch (e) {
-      _loadingChapterIds.remove(nextChapter.id);
-      _chapterErrors[nextChapter.id] = e.toString();
+  void _precacheFirstPages(List<String> pages) {
+    if (!mounted) return;
+    for (var i = 0; i < math.min(3, pages.length); i++) {
+      precacheImage(CachedNetworkImageProvider(pages[i]), context, onError: (_, _) {});
     }
   }
 
@@ -247,38 +224,137 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ApiService.instance.markChapterRead(widget.mangaId, finished.id, read: true);
   }
 
-  void _switchToChapter(int newIndex, {bool jumpToStart = true}) {
-    if (newIndex < 0 || newIndex >= _chapters.length) return;
-    final prevIdx = _currentChapterIndex;
-    if (prevIdx != newIndex) {
-      _onChapterFinished(prevIdx);
-    }
+  /// Jump to another chapter (bottom bar buttons / transition card). The
+  /// webtoon feed is re-anchored on the new chapter and the page controller is
+  /// replaced, so the new chapter always starts at its first page.
+  void _switchToChapter(int newIndex) {
+    if (newIndex < 0 || newIndex >= _chapters.length || newIndex == _currentChapterIndex) return;
+    // Only moving forward counts as finishing the chapter.
+    if (newIndex == _currentChapterIndex + 1) _onChapterFinished(_currentChapterIndex);
 
+    final chapter = _chapters[newIndex];
+    final cached = _pagesCache[chapter.id];
+    final oldController = _pageController;
+
+    _pauseTracking(600);
     setState(() {
       _currentChapterIndex = newIndex;
-      if (!_webtoonLoadedIndices.contains(newIndex)) {
-        _webtoonLoadedIndices.add(newIndex);
-      }
+      _page = 1;
+      _totalPages = cached?.length ?? 1;
+      _chapterErrors.remove(chapter.id);
+      _webtoonLoadedIndices
+        ..clear()
+        ..add(newIndex);
+      _pageSlots.clear();
+      _pageController = _newPageController(0);
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) => oldController.dispose());
 
-    final ch = _chapters[newIndex];
-    if (_pagesCache.containsKey(ch.id)) {
-      final pages = _pagesCache[ch.id]!;
-      setState(() {
-        _totalPages = pages.isNotEmpty ? pages.length : 1;
-        _page = 1;
-        _loading = false;
-        _error = null;
-      });
+    if (_scrollController.hasClients) _scrollController.jumpTo(0);
+
+    if (cached != null) {
       _syncProgress(1);
-      _preloadNextChapter(newIndex + 1);
-
-      if (_mode != ReaderMode.webtoon && _pageController.hasClients && jumpToStart) {
-        _pageController.jumpToPage(0);
-      }
+      _loadChapter(newIndex + 1);
     } else {
-      _loadCurrentChapter();
+      _loadChapter(newIndex);
     }
+  }
+
+  // ---- Webtoon feed tracking ----
+
+  /// Appends the next chapter to the continuous feed. Never appends past a
+  /// chapter that hasn't loaded, otherwise that chapter would be skipped.
+  void _extendWebtoonFeed() {
+    if (_webtoonLoadedIndices.isEmpty) return;
+    final last = _webtoonLoadedIndices.last;
+    final next = last + 1;
+    if (next >= _chapters.length) return;
+    if (!_pagesCache.containsKey(_chapters[last].id)) return;
+    setState(() => _webtoonLoadedIndices.add(next));
+    _loadChapter(next);
+  }
+
+  bool _onWebtoonScroll(ScrollNotification notif) {
+    if (notif.depth != 0) return false;
+    if (notif is! ScrollUpdateNotification && notif is! ScrollEndNotification) return false;
+
+    if (notif.metrics.extentAfter < 1600) _extendWebtoonFeed();
+    if (DateTime.now().isBefore(_trackingPausedUntil)) return false;
+    _trackWebtoonPosition();
+    return false;
+  }
+
+  /// Finds the page that is actually under the reading line by measuring the
+  /// mounted page widgets (page heights vary a lot, so estimating from the
+  /// scroll fraction picks the wrong chapter/page).
+  void _trackWebtoonPosition() {
+    final listBox = _listKey.currentContext?.findRenderObject();
+    if (listBox is! RenderBox || !listBox.attached || !listBox.hasSize) return;
+    final anchor = listBox.size.height * 0.4;
+
+    for (final slot in _pageSlots.values) {
+      final box = slot.key.currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+      final top = box.localToGlobal(Offset.zero, ancestor: listBox).dy;
+      if (top <= anchor && anchor < top + box.size.height) {
+        _updateWebtoonPosition(slot.chapterIndex, slot.pageIndex);
+        return;
+      }
+    }
+  }
+
+  void _updateWebtoonPosition(int chapterIndex, int pageIndex) {
+    final pages = _pagesCache[_chapters[chapterIndex].id];
+    if (pages == null || pages.isEmpty) return;
+    final newPage = (pageIndex + 1).clamp(1, pages.length);
+
+    if (chapterIndex != _currentChapterIndex) {
+      final oldIdx = _currentChapterIndex;
+      if (chapterIndex == oldIdx + 1) _onChapterFinished(oldIdx);
+      setState(() {
+        _currentChapterIndex = chapterIndex;
+        _totalPages = pages.length;
+        _page = newPage;
+      });
+      _syncProgress(newPage);
+      _loadChapter(chapterIndex + 1);
+    } else if (newPage != _page) {
+      setState(() => _page = newPage);
+      _syncProgress(newPage);
+    }
+  }
+
+  void _scrollToWebtoonPage(int target) {
+    if (!_scrollController.hasClients) return;
+    _pauseTracking(450);
+
+    final ctx = _pageSlots['p:$_currentChapterIndex:${target - 1}']?.key.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(
+        ctx,
+        alignment: 0.05,
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeInOut,
+      );
+      return;
+    }
+
+    // Target page isn't built yet: step by the average height of built pages.
+    var total = 0.0;
+    var count = 0;
+    for (final slot in _pageSlots.values) {
+      final box = slot.key.currentContext?.findRenderObject();
+      if (box is RenderBox && box.hasSize) {
+        total += box.size.height;
+        count++;
+      }
+    }
+    final avg = count > 0 ? total / count : MediaQuery.sizeOf(context).height;
+    final position = _scrollController.position;
+    final dest = (position.pixels + (target - _page) * avg)
+        .clamp(position.minScrollExtent, position.maxScrollExtent)
+        .toDouble();
+    _scrollController.animateTo(dest, duration: const Duration(milliseconds: 250), curve: Curves.easeInOut);
   }
 
   void _go(int p) {
@@ -286,24 +362,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
     setState(() => _page = target);
     _syncProgress(target);
 
-    if (_mode != ReaderMode.webtoon && _pageController.hasClients) {
+    if (_mode == ReaderMode.webtoon) {
+      _scrollToWebtoonPage(target);
+    } else if (_pageController.hasClients) {
       _pageController.jumpToPage(target - 1);
-    } else if (_mode == ReaderMode.webtoon && _scrollController.hasClients) {
-      final max = _scrollController.position.maxScrollExtent;
-      final offset = (target - 1) * (max / (_totalPages > 1 ? _totalPages - 1 : 1));
-      _scrollController.animateTo(
-        offset,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeInOut,
-      );
     }
   }
 
   void _setMode(ReaderMode mode) {
+    if (mode == _mode) return;
+    final oldController = _pageController;
     setState(() {
       _mode = mode;
-      _pageController.dispose();
-      _pageController = PageController(initialPage: _page - 1);
+      _pageController = _newPageController(_page - 1);
+      _webtoonLoadedIndices
+        ..clear()
+        ..add(_currentChapterIndex);
+      _pageSlots.clear();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      oldController.dispose();
+      if (mounted && _mode == ReaderMode.webtoon && _page > 1) _scrollToWebtoonPage(_page);
     });
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -427,65 +506,70 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  Widget _buildReaderBody() {
-    if (_loading && !_pagesCache.containsKey(_currentChapter.id)) {
-      return const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
-      );
-    }
+  Widget _buildReaderBody() =>
+      _mode == ReaderMode.webtoon ? _buildWebtoonReader() : _buildPagedReader();
 
-    if (_error != null && !_pagesCache.containsKey(_currentChapter.id)) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
+  /// Inline loading / error state for a chapter whose pages aren't available.
+  Widget _buildChapterStatus(int chapterIndex, {bool fill = false}) {
+    final chapter = _chapters[chapterIndex];
+    final error = _chapterErrors[chapter.id];
+
+    final Widget content = error != null
+        ? Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               const Icon(Icons.error_outline_rounded, size: 44, color: AppColors.muted),
               const SizedBox(height: 12),
               Text(
-                'Could not load chapter pages',
+                'Could not load ${chapter.displayTitle}',
+                textAlign: TextAlign.center,
                 style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 6),
               Text(
-                _error!,
+                error,
                 textAlign: TextAlign.center,
                 style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
               ),
               const SizedBox(height: 16),
               FilledButton.icon(
-                onPressed: _loadCurrentChapter,
+                onPressed: () => _loadChapter(chapterIndex),
                 icon: const Icon(Icons.refresh_rounded, size: 18),
                 label: const Text('Retry'),
                 style: FilledButton.styleFrom(backgroundColor: AppColors.surfaceHigh),
               ),
             ],
-          ),
-        ),
-      );
-    }
+          )
+        : Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2.5),
+              const SizedBox(height: 12),
+              Text(
+                'Loading ${chapter.displayTitle}...',
+                style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+              ),
+            ],
+          );
 
-    if (_mode == ReaderMode.webtoon) {
-      return _buildWebtoonReader();
-    } else {
-      return _buildPagedReader();
-    }
+    final body = Center(child: Padding(padding: const EdgeInsets.all(24), child: content));
+    return fill ? body : SizedBox(height: 280, child: body);
   }
 
   // ---- Continuous Webtoon Reader ----
 
+  _PageSlot _slotFor(_FeedItem item) =>
+      _pageSlots.putIfAbsent(item.id, () => _PageSlot(item.chapterIndex!, item.pageIndex!));
+
   Widget _buildWebtoonReader() {
-    // Build continuous feed elements
     final feedItems = <_FeedItem>[];
 
     for (var k = 0; k < _webtoonLoadedIndices.length; k++) {
       final chIdx = _webtoonLoadedIndices[k];
       final chapter = _chapters[chIdx];
-      final pages = _pagesCache[chapter.id] ?? const [];
+      final pages = _pagesCache[chapter.id];
 
       if (k > 0) {
-        // Divider between chapter k-1 and chapter k
         feedItems.add(_FeedItem.divider(
           prevChapter: _chapters[_webtoonLoadedIndices[k - 1]],
           nextChapter: chapter,
@@ -493,225 +577,168 @@ class _ReaderScreenState extends State<ReaderScreen> {
         ));
       }
 
-      for (var p = 0; p < pages.length; p++) {
-        feedItems.add(_FeedItem.page(
-          chapterIndex: chIdx,
-          pageIndex: p,
-          totalPages: pages.length,
-          url: pages[p],
-        ));
-      }
-
-      // If chapter k has no cached pages yet, show inline loader
-      if (pages.isEmpty && _loadingChapterIds.contains(chapter.id)) {
-        feedItems.add(_FeedItem.loader(chapter));
+      if (pages == null) {
+        // Loading or failed: shown inline (with Retry) so it can't be skipped.
+        feedItems.add(_FeedItem.status(chIdx));
+      } else {
+        for (var p = 0; p < pages.length; p++) {
+          feedItems.add(_FeedItem.page(chapterIndex: chIdx, pageIndex: p, url: pages[p]));
+        }
       }
     }
 
-    // If at the end of current loaded chapters and there is a next chapter, add a continuous trigger/footer
-    final lastLoadedIdx = _webtoonLoadedIndices.isNotEmpty ? _webtoonLoadedIndices.last : _currentChapterIndex;
-    final hasMore = lastLoadedIdx + 1 < _chapters.length;
-
-    if (hasMore) {
-      final nextCh = _chapters[lastLoadedIdx + 1];
-      feedItems.add(_FeedItem.nextChapterTrigger(nextCh, lastLoadedIdx + 1));
-    } else {
-      feedItems.add(_FeedItem.endOfManga());
+    final lastIdx = _webtoonLoadedIndices.last;
+    if (_pagesCache.containsKey(_chapters[lastIdx].id)) {
+      if (lastIdx + 1 < _chapters.length) {
+        feedItems.add(_FeedItem.nextChapterTrigger(_chapters[lastIdx + 1], lastIdx + 1));
+      } else {
+        feedItems.add(_FeedItem.endOfManga());
+      }
     }
+
+    final keys = <Key>[
+      for (final item in feedItems)
+        item.type == _ItemType.page ? _slotFor(item).key : ValueKey(item.id),
+    ];
+    final indexByKey = <Key, int>{for (var i = 0; i < keys.length; i++) keys[i]: i};
 
     return NotificationListener<ScrollNotification>(
-      onNotification: (notif) {
-        // Near bottom: auto-load next chapter into continuous strip with zero loading screen
-        if (notif.metrics.extentAfter < 1600 && hasMore) {
-          final nextIdx = lastLoadedIdx + 1;
-          if (!_webtoonLoadedIndices.contains(nextIdx)) {
-            setState(() {
-              _webtoonLoadedIndices.add(nextIdx);
-            });
-            _preloadNextChapter(nextIdx);
-          }
-        }
-
-        // Track active chapter and page by scroll position
-        if (_scrollController.hasClients && feedItems.isNotEmpty) {
-          final maxExtent = _scrollController.position.maxScrollExtent;
-          if (maxExtent > 0) {
-            final progress = (_scrollController.offset / maxExtent).clamp(0.0, 1.0);
-            final targetItemIdx = (progress * (feedItems.length - 1)).round().clamp(0, feedItems.length - 1);
-            final item = feedItems[targetItemIdx];
-
-            if (item.chapterIndex != null && item.chapterIndex != _currentChapterIndex) {
-              final oldIdx = _currentChapterIndex;
-              final newIdx = item.chapterIndex!;
-              _onChapterFinished(oldIdx);
-
-              setState(() {
-                _currentChapterIndex = newIdx;
-                final chPages = _pagesCache[_chapters[newIdx].id];
-                _totalPages = chPages?.isNotEmpty == true ? chPages!.length : 1;
-                _page = (item.pageIndex != null ? item.pageIndex! + 1 : 1).clamp(1, _totalPages);
-              });
-              _syncProgress(_page);
-              _preloadNextChapter(newIdx + 1);
-            } else if (item.pageIndex != null) {
-              final newPage = (item.pageIndex! + 1).clamp(1, _totalPages);
-              if (newPage != _page) {
-                setState(() => _page = newPage);
-                _syncProgress(newPage);
-              }
-            }
-          }
-        }
-        return false;
-      },
+      onNotification: _onWebtoonScroll,
       child: ListView.builder(
+        key: _listKey,
         controller: _scrollController,
+        // ignore: deprecated_member_use
+        cacheExtent: MediaQuery.sizeOf(context).height * 1.5,
         padding: EdgeInsets.only(
           top: MediaQuery.paddingOf(context).top + 50,
           bottom: MediaQuery.paddingOf(context).bottom + 90,
         ),
         itemCount: feedItems.length,
-        itemBuilder: (context, i) {
-          final item = feedItems[i];
-          switch (item.type) {
-            case _ItemType.page:
-              return CachedNetworkImage(
-                imageUrl: item.url!,
-                fit: BoxFit.fitWidth,
-                width: double.infinity,
-                placeholder: (_, _) => Container(
-                  height: 400,
-                  color: AppColors.surface,
-                  child: const Center(
-                    child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
-                  ),
-                ),
-                errorWidget: (_, _, _) => Container(
-                  height: 200,
-                  color: AppColors.surface,
-                  child: Center(
-                    child: Text('Page ${(item.pageIndex ?? 0) + 1} failed to load',
-                        style: const TextStyle(color: AppColors.muted)),
-                  ),
-                ),
-              );
-
-            case _ItemType.divider:
-              return Container(
-                margin: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.surfaceHigh),
-                ),
-                child: Column(
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 16),
-                        const SizedBox(width: 8),
-                        Text(
-                          '${item.prevChapter?.displayTitle ?? "Previous Chapter"} finished',
-                          style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '↓ Continuing to ${item.nextChapter?.displayTitle ?? "Next Chapter"}',
-                      style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.text),
-                    ),
-                  ],
-                ),
-              );
-
-            case _ItemType.loader:
-              return Container(
-                height: 220,
-                color: AppColors.surface,
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2.5),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Seamlessly loading ${item.nextChapter?.displayTitle ?? "next chapter"}...',
-                        style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-
-            case _ItemType.nextTrigger:
-              return Container(
-                padding: const EdgeInsets.symmetric(vertical: 36),
-                child: Center(
-                  child: FilledButton.tonalIcon(
-                    onPressed: () {
-                      final nextIdx = item.chapterIndex!;
-                      if (!_webtoonLoadedIndices.contains(nextIdx)) {
-                        setState(() => _webtoonLoadedIndices.add(nextIdx));
-                        _preloadNextChapter(nextIdx);
-                      }
-                    },
-                    icon: const Icon(Icons.arrow_downward_rounded, size: 18),
-                    label: Text('Next: ${item.nextChapter?.displayTitle ?? "Next Chapter"}'),
-                  ),
-                ),
-              );
-
-            case _ItemType.endOfManga:
-              return Container(
-                padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
-                child: Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.celebration_rounded, color: AppColors.primary, size: 36),
-                      const SizedBox(height: 12),
-                      Text(
-                        "You've reached the latest chapter!",
-                        style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Check back later for new releases',
-                        style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-          }
-        },
+        findChildIndexCallback: (key) => indexByKey[key],
+        itemBuilder: (context, i) => KeyedSubtree(
+          key: keys[i],
+          child: _buildFeedItem(feedItems[i]),
+        ),
       ),
     );
   }
 
+  Widget _buildFeedItem(_FeedItem item) {
+    switch (item.type) {
+      case _ItemType.page:
+        return CachedNetworkImage(
+          imageUrl: item.url!,
+          fit: BoxFit.fitWidth,
+          width: double.infinity,
+          placeholder: (_, _) => Container(
+            height: 400,
+            color: AppColors.surface,
+            child: const Center(
+              child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
+            ),
+          ),
+          errorWidget: (_, _, _) => Container(
+            height: 200,
+            color: AppColors.surface,
+            child: Center(
+              child: Text('Page ${(item.pageIndex ?? 0) + 1} failed to load',
+                  style: const TextStyle(color: AppColors.muted)),
+            ),
+          ),
+        );
+
+      case _ItemType.divider:
+        return Container(
+          margin: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: AppColors.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: AppColors.surfaceHigh),
+          ),
+          child: Column(
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 16),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${item.prevChapter?.displayTitle ?? "Previous Chapter"} finished',
+                    style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                '↓ Continuing to ${item.nextChapter?.displayTitle ?? "Next Chapter"}',
+                style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.text),
+              ),
+            ],
+          ),
+        );
+
+      case _ItemType.status:
+        return _buildChapterStatus(item.chapterIndex!);
+
+      case _ItemType.nextTrigger:
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 36),
+          child: Center(
+            child: FilledButton.tonalIcon(
+              onPressed: _extendWebtoonFeed,
+              icon: const Icon(Icons.arrow_downward_rounded, size: 18),
+              label: Text('Next: ${item.nextChapter?.displayTitle ?? "Next Chapter"}'),
+            ),
+          ),
+        );
+
+      case _ItemType.endOfManga:
+        return Container(
+          padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.celebration_rounded, color: AppColors.primary, size: 36),
+                const SizedBox(height: 12),
+                Text(
+                  "You've reached the latest chapter!",
+                  style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Check back later for new releases',
+                  style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                ),
+              ],
+            ),
+          ),
+        );
+    }
+  }
+
   // ---- Continuous Paged Reader (RTL Japanese Manga & LTR Western) ----
+
+  /// Called when the reader lands on the "next chapter" card. Waits a beat and
+  /// only advances if the user is still on that card (they may swipe back).
+  void _scheduleAutoAdvance(int fromIdx, int cardPage) {
+    if (_advancing) return;
+    _advancing = true;
+    Future.delayed(const Duration(milliseconds: 250), () {
+      _advancing = false;
+      if (!mounted || _mode == ReaderMode.webtoon || _currentChapterIndex != fromIdx) return;
+      if (!_pageController.hasClients || _pageController.page?.round() != cardPage) return;
+      _switchToChapter(fromIdx + 1);
+    });
+  }
 
   Widget _buildPagedReader() {
     final curChapter = _currentChapter;
-    final pages = _pagesCache[curChapter.id] ?? const [];
+    final pages = _pagesCache[curChapter.id];
 
-    if (pages.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.image_not_supported_outlined, size: 44, color: AppColors.muted),
-            const SizedBox(height: 12),
-            Text(
-              'This chapter has no pages',
-              style: GoogleFonts.inter(fontSize: 14, color: AppColors.muted),
-            ),
-          ],
-        ),
-      );
+    if (pages == null) {
+      return _buildChapterStatus(_currentChapterIndex, fill: true);
     }
 
     final isRtl = _mode == ReaderMode.rightToLeft;
@@ -719,20 +746,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
     // Total items in pageview: pages + 1 transition card to next chapter if available
     final hasNext = _hasNextChapter;
     final pageCount = pages.length + (hasNext ? 1 : 0);
+    final chapterIdx = _currentChapterIndex;
 
     return PageView.builder(
+      key: ValueKey('${curChapter.id}:${_mode.name}'),
       controller: _pageController,
       reverse: isRtl,
       itemCount: pageCount,
       onPageChanged: (idx) {
         if (idx < pages.length) {
-          setState(() => _page = idx + 1);
-          _syncProgress(idx + 1);
-        } else if (idx == pages.length && hasNext) {
-          // Reached next chapter transition page
-          _onChapterFinished(_currentChapterIndex);
-          // Automatically switch to next chapter!
-          _switchToChapter(_currentChapterIndex + 1);
+          if (_page != idx + 1) {
+            setState(() => _page = idx + 1);
+            _syncProgress(idx + 1);
+          }
+        } else if (hasNext) {
+          _scheduleAutoAdvance(chapterIdx, idx);
         }
       },
       itemBuilder: (_, i) {
@@ -754,7 +782,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         }
 
         // Seamless Next Chapter Transition Card
-        final nextCh = _chapters[_currentChapterIndex + 1];
+        final nextCh = _chapters[chapterIdx + 1];
         return Center(
           child: Container(
             padding: const EdgeInsets.all(32),
@@ -770,7 +798,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 48),
                 const SizedBox(height: 16),
                 Text(
-                  '${_currentChapter.displayTitle} Finished',
+                  '${curChapter.displayTitle} Finished',
                   style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 8),
@@ -780,7 +808,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 ),
                 const SizedBox(height: 24),
                 FilledButton.icon(
-                  onPressed: () => _switchToChapter(_currentChapterIndex + 1),
+                  onPressed: () => _switchToChapter(chapterIdx + 1),
                   icon: const Icon(Icons.play_arrow_rounded),
                   label: const Text('Read Next Chapter'),
                   style: FilledButton.styleFrom(
@@ -1036,13 +1064,21 @@ class _ScrubButton extends StatelessWidget {
 }
 
 // Supporting models for continuous webtoon feed
-enum _ItemType { page, divider, loader, nextTrigger, endOfManga }
+enum _ItemType { page, divider, status, nextTrigger, endOfManga }
+
+/// Tracks a mounted page widget so the reader can measure which page is under
+/// the reading line.
+class _PageSlot {
+  _PageSlot(this.chapterIndex, this.pageIndex);
+  final int chapterIndex;
+  final int pageIndex;
+  final GlobalKey key = GlobalKey();
+}
 
 class _FeedItem {
   final _ItemType type;
   final int? chapterIndex;
   final int? pageIndex;
-  final int? totalPages;
   final String? url;
   final ChapterItem? prevChapter;
   final ChapterItem? nextChapter;
@@ -1051,23 +1087,29 @@ class _FeedItem {
     required this.type,
     this.chapterIndex,
     this.pageIndex,
-    this.totalPages,
     this.url,
     this.prevChapter,
     this.nextChapter,
   });
 
+  /// Stable identity, used for widget keys.
+  String get id => switch (type) {
+        _ItemType.page => 'p:$chapterIndex:$pageIndex',
+        _ItemType.divider => 'd:$chapterIndex',
+        _ItemType.status => 's:$chapterIndex',
+        _ItemType.nextTrigger => 'n:$chapterIndex',
+        _ItemType.endOfManga => 'end',
+      };
+
   factory _FeedItem.page({
     required int chapterIndex,
     required int pageIndex,
-    required int totalPages,
     required String url,
   }) =>
       _FeedItem._(
         type: _ItemType.page,
         chapterIndex: chapterIndex,
         pageIndex: pageIndex,
-        totalPages: totalPages,
         url: url,
       );
 
@@ -1083,8 +1125,8 @@ class _FeedItem {
         chapterIndex: chapterIndex,
       );
 
-  factory _FeedItem.loader(ChapterItem chapter) =>
-      _FeedItem._(type: _ItemType.loader, nextChapter: chapter);
+  factory _FeedItem.status(int chapterIndex) =>
+      _FeedItem._(type: _ItemType.status, chapterIndex: chapterIndex);
 
   factory _FeedItem.nextChapterTrigger(ChapterItem chapter, int chapterIndex) =>
       _FeedItem._(type: _ItemType.nextTrigger, nextChapter: chapter, chapterIndex: chapterIndex);

@@ -73,11 +73,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     final directSources = SourceManager.directSources;
     final installedExts = Platform.isIOS
         ? <MangaExtension>[]
-        : _extService.installedExtensions.where((e) =>
-            !e.pkg.toLowerCase().contains('mangadex') &&
-            !e.pkg.toLowerCase().contains('asura') &&
-            !e.name.toLowerCase().contains('mangadex') &&
-            !e.name.toLowerCase().contains('asura')).toList();
+        : _extService.installedExtensions.toList();
 
     final Map<String, List<MangaItem>> resultMap = {};
     final List<Future<void>> tasks = [];
@@ -170,11 +166,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     final directSources = SourceManager.directSources;
     final installedExts = Platform.isIOS
         ? <MangaExtension>[]
-        : _extService.installedExtensions.where((e) =>
-            !e.pkg.toLowerCase().contains('mangadex') &&
-            !e.pkg.toLowerCase().contains('asura') &&
-            !e.name.toLowerCase().contains('mangadex') &&
-            !e.name.toLowerCase().contains('asura')).toList();
+        : _extService.installedExtensions.toList();
 
     // Collect all source IDs that are currently pinned
     final pinnedDirect = directSources.where((s) => _sourceManager.isPinned(s.id)).toList();
@@ -291,24 +283,26 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             const SizedBox(height: 14),
           ],
 
-          // SECTION 2: DIRECT SOURCES (UNIVERSAL - iOS & ANDROID)
-          _sectionHeaderWithBadge(
-            title: 'DIRECT SOURCES',
-            badgeText: 'Universal',
-            badgeColor: AppColors.primary,
-            icon: Icons.bolt_rounded,
-          ),
-          for (final ds in directSources)
-            _buildSourceCard(
-              id: ds.id,
-              name: ds.name,
-              lang: ds.lang,
-              badge: ds.badge,
-              description: ds.description,
-              iconLetter: ds.iconLetter,
-              iconColor: Color(ds.colorValue),
-              isPinned: _sourceManager.isPinned(ds.id),
+          // SECTION 2: DIRECT SOURCES (iOS only)
+          if (directSources.isNotEmpty) ...[
+            _sectionHeaderWithBadge(
+              title: 'DIRECT SOURCES',
+              badgeText: 'iOS',
+              badgeColor: AppColors.primary,
+              icon: Icons.bolt_rounded,
             ),
+            for (final ds in directSources)
+              _buildSourceCard(
+                id: ds.id,
+                name: ds.name,
+                lang: ds.lang,
+                badge: ds.badge,
+                description: ds.description,
+                iconLetter: ds.iconLetter,
+                iconColor: Color(ds.colorValue),
+                isPinned: _sourceManager.isPinned(ds.id),
+              ),
+          ],
 
           if (Platform.isIOS) ...[
             // On iPhone / iOS: Clean direct access card with zero APK/extension download prompts
@@ -343,7 +337,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'MangaDex, MangaPill, Asura Scans, Flame Comics, and Weeb Central run natively on iOS with offline reading, continuous scroll, and categories.',
+                          'MangaDex, MangaPill, Asura Scans, Flame Comics, Weeb Central, MangaKatana, Mangakakalot and more run natively on iOS with offline reading, continuous scroll, and categories.',
                           style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.35),
                         ),
                       ],

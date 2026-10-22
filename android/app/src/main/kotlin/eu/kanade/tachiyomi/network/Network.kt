@@ -13,57 +13,7 @@ import rx.Observable
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-fun GET(
-    url: String,
-    headers: Headers = Headers.Builder().build(),
-    cache: CacheControl = CacheControl.FORCE_NETWORK
-): Request {
-    return Request.Builder()
-        .url(url)
-        .headers(headers)
-        .cacheControl(cache)
-        .build()
-}
 
-fun POST(
-    url: String,
-    headers: Headers = Headers.Builder().build(),
-    body: RequestBody = RequestBody.create(null, ByteArray(0)),
-    cache: CacheControl = CacheControl.FORCE_NETWORK
-): Request {
-    return Request.Builder()
-        .url(url)
-        .post(body)
-        .headers(headers)
-        .cacheControl(cache)
-        .build()
-}
-
-fun Call.asObservable(): Observable<Response> {
-    return Observable.create { subscriber ->
-        try {
-            val response = execute()
-            if (!subscriber.isUnsubscribed) {
-                subscriber.onNext(response)
-                subscriber.onCompleted()
-            }
-        } catch (e: Exception) {
-            if (!subscriber.isUnsubscribed) {
-                subscriber.onError(e)
-            }
-        }
-    }
-}
-
-fun Call.asObservableSuccess(): Observable<Response> {
-    return asObservable().doOnNext { response ->
-        if (!response.isSuccessful) {
-            val code = response.code
-            response.close()
-            throw HttpException(code)
-        }
-    }
-}
 
 class HttpException(val code: Int) : IllegalStateException("HTTP error $code")
 
@@ -76,6 +26,8 @@ open class NetworkHelper(val context: Context) {
             .addInterceptor(eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor())
             .addInterceptor(eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor())
             .addInterceptor(eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor(context))
+            .addInterceptor(okhttp3.CompressionInterceptor())
+            .addInterceptor(okhttp3.brotli.BrotliInterceptor)
             .build()
     }
 

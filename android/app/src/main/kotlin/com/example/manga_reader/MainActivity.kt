@@ -138,7 +138,7 @@ class MainActivity : FlutterActivity() {
                         try {
                             val items = extensionManager.fetchPopularManga(pkg, page, apkPath)
                             result.success(items)
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
                             result.error("FETCH_ERROR", extractErrorMessage(e), null)
                         }
                     }
@@ -154,7 +154,7 @@ class MainActivity : FlutterActivity() {
                                 extensionManager.searchManga(pkg, query, page, apkPath)
                             }
                             result.success(items)
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
                             result.error("SEARCH_ERROR", extractErrorMessage(e), null)
                         }
                     }
@@ -166,7 +166,7 @@ class MainActivity : FlutterActivity() {
                         try {
                             val details = extensionManager.fetchMangaDetails(pkg, url, title, apkPath)
                             result.success(details)
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
                             result.error("DETAILS_ERROR", extractErrorMessage(e), null)
                         }
                     }
@@ -178,7 +178,7 @@ class MainActivity : FlutterActivity() {
                         try {
                             val chapters = extensionManager.fetchChapterList(pkg, url, title, apkPath)
                             result.success(chapters)
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
                             result.error("CHAPTERS_ERROR", extractErrorMessage(e), null)
                         }
                     }
@@ -189,12 +189,59 @@ class MainActivity : FlutterActivity() {
                         try {
                             val pages = extensionManager.fetchPageList(pkg, chapterUrl, apkPath)
                             result.success(pages)
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
                             result.error("PAGES_ERROR", extractErrorMessage(e), null)
                         }
                     }
                 }
+                "testAllExtensions" -> {
+                    mainScope.launch {
+                        val report = mutableMapOf<String, Any?>()
+                        val pm = packageManager
+                        val packages = pm.getInstalledPackages(0)
+                        val extPackages = packages
+                            .map { it.packageName }
+                            .filter { it.contains("tachiyomi.extension") || it.startsWith("eu.kanade.tachiyomi") }
+
+                        for (extPkg in extPackages) {
+                            try {
+                                val popular = extensionManager.fetchPopularManga(extPkg, 1, null)
+                                android.util.Log.i("ExtensionTest", "SUCCESS ($extPkg): ${popular.size} items")
+                                report[extPkg] = mapOf("status" to "SUCCESS", "count" to popular.size)
+                            } catch (t: Throwable) {
+                                val msg = extractErrorMessage(t)
+                                android.util.Log.e("ExtensionTest", "FAILED ($extPkg): $msg", t)
+                                report[extPkg] = mapOf("status" to "ERROR", "message" to msg)
+                            }
+                        }
+                        result.success(report)
+                    }
+                }
                 else -> result.notImplemented()
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (intent?.getBooleanExtra("test_extensions", false) == true) {
+            intent?.removeExtra("test_extensions")
+            mainScope.launch {
+                val pm = packageManager
+                val packages = pm.getInstalledPackages(0)
+                val extPackages = packages
+                    .map { it.packageName }
+                    .filter { it.contains("tachiyomi.extension") || it.startsWith("eu.kanade.tachiyomi") }
+
+                for (extPkg in extPackages) {
+                    try {
+                        val popular = extensionManager.fetchPopularManga(extPkg, 1, null)
+                        android.util.Log.i("ExtensionTest", "SUCCESS ($extPkg): ${popular.size} items")
+                    } catch (t: Throwable) {
+                        val msg = extractErrorMessage(t)
+                        android.util.Log.e("ExtensionTest", "FAILED ($extPkg): $msg", t)
+                    }
+                }
             }
         }
     }

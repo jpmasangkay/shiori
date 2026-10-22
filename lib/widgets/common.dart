@@ -107,50 +107,25 @@ class EmptyState extends StatelessWidget {
   }
 }
 
-/// The "Shiori" bookmark logo (32×32 viewBox).
+/// The "Shiori" logo icon.
 class BrandMark extends StatelessWidget {
   const BrandMark({super.key, this.size = 28});
   final double size;
 
   @override
-  Widget build(BuildContext context) =>
-      CustomPaint(size: Size.square(size), painter: _BrandPainter());
-}
-
-class _BrandPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.scale(size.width / 32);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        const Rect.fromLTWH(3, 3, 26, 26),
-        const Radius.circular(4),
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(size * 0.22),
+      child: Image.asset(
+        'assets/logo.png',
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
       ),
-      Paint()..color = AppColors.onPrimary,
-    );
-    canvas.drawPath(
-      Path()
-        ..moveTo(10, 8.5)
-        ..lineTo(22, 8.5)
-        ..lineTo(22, 24.5)
-        ..lineTo(16, 20.5)
-        ..lineTo(10, 24.5)
-        ..close(),
-      Paint()..color = AppColors.primary,
-    );
-    canvas.drawPath(
-      Path()
-        ..moveTo(16, 8.5)
-        ..lineTo(22, 14)
-        ..lineTo(16, 14)
-        ..close(),
-      Paint()..color = AppColors.surfaceHigh,
     );
   }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
+
 
 class BarIcon extends StatelessWidget {
   const BarIcon(this.icon, {super.key, this.label, this.onTap, this.size = 22});

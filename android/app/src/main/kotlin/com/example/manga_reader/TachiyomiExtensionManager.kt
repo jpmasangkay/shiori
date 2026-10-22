@@ -160,6 +160,10 @@ class TachiyomiExtensionManager(private val context: Context) {
             throw IllegalStateException("Cannot resolve extension class name for $pkg in $apkPath")
         }
 
+        if (className.startsWith(".")) {
+            className = pkg + className
+        }
+
         Log.d(TAG, "Instantiating extension class $className")
         val loadedClass = Class.forName(className, false, classLoader)
 
@@ -185,14 +189,26 @@ class TachiyomiExtensionManager(private val context: Context) {
     suspend fun fetchPopularManga(pkg: String, page: Int, hintPath: String? = null): List<Map<String, Any?>> =
         withContext(Dispatchers.IO) {
             val source = getOrLoadSource(pkg, hintPath)
-            val mangasPage = source.fetchPopularManga(page).toBlocking().first()
+            val mangasPage = try {
+                source.getPopularManga(page)
+            } catch (e: NoSuchMethodError) {
+                source.fetchPopularManga(page).toBlocking().first()
+            } catch (e: AbstractMethodError) {
+                source.fetchPopularManga(page).toBlocking().first()
+            }
             mangasPage.mangas.map { sMangaToMap(it) }
         }
 
     suspend fun searchManga(pkg: String, query: String, page: Int, hintPath: String? = null): List<Map<String, Any?>> =
         withContext(Dispatchers.IO) {
             val source = getOrLoadSource(pkg, hintPath)
-            val mangasPage = source.fetchSearchManga(page, query, FilterList()).toBlocking().first()
+            val mangasPage = try {
+                source.getSearchManga(page, query, FilterList())
+            } catch (e: NoSuchMethodError) {
+                source.fetchSearchManga(page, query, FilterList()).toBlocking().first()
+            } catch (e: AbstractMethodError) {
+                source.fetchSearchManga(page, query, FilterList()).toBlocking().first()
+            }
             mangasPage.mangas.map { sMangaToMap(it) }
         }
 
@@ -203,7 +219,13 @@ class TachiyomiExtensionManager(private val context: Context) {
                 this.url = url
                 if (!title.isNullOrEmpty()) this.title = title
             }
-            val details = source.fetchMangaDetails(sManga).toBlocking().first()
+            val details = try {
+                source.getMangaDetails(sManga)
+            } catch (e: NoSuchMethodError) {
+                source.fetchMangaDetails(sManga).toBlocking().first()
+            } catch (e: AbstractMethodError) {
+                source.fetchMangaDetails(sManga).toBlocking().first()
+            }
             sMangaToMap(details)
         }
 
@@ -214,7 +236,13 @@ class TachiyomiExtensionManager(private val context: Context) {
                 this.url = url
                 if (!title.isNullOrEmpty()) this.title = title
             }
-            val chapters = source.fetchChapterList(sManga).toBlocking().first()
+            val chapters = try {
+                source.getChapterList(sManga)
+            } catch (e: NoSuchMethodError) {
+                source.fetchChapterList(sManga).toBlocking().first()
+            } catch (e: AbstractMethodError) {
+                source.fetchChapterList(sManga).toBlocking().first()
+            }
             chapters.map { sChapterToMap(it) }
         }
 
@@ -224,13 +252,25 @@ class TachiyomiExtensionManager(private val context: Context) {
             val sChapter = SChapter.create().apply {
                 this.url = chapterUrl
             }
-            val pages = source.fetchPageList(sChapter).toBlocking().first()
+            val pages = try {
+                source.getPageList(sChapter)
+            } catch (e: NoSuchMethodError) {
+                source.fetchPageList(sChapter).toBlocking().first()
+            } catch (e: AbstractMethodError) {
+                source.fetchPageList(sChapter).toBlocking().first()
+            }
 
             pages.map { page ->
                 var imgUrl = page.imageUrl
                 if (imgUrl.isNullOrEmpty() && page.url.isNotEmpty()) {
                     try {
-                        imgUrl = source.fetchImageUrl(page).toBlocking().first()
+                        imgUrl = try {
+                            source.getImageUrl(page)
+                        } catch (e: NoSuchMethodError) {
+                            source.fetchImageUrl(page).toBlocking().first()
+                        } catch (e: AbstractMethodError) {
+                            source.fetchImageUrl(page).toBlocking().first()
+                        }
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed to fetch image URL for page ${page.index}: ${e.message}")
                     }

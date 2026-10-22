@@ -11,19 +11,31 @@ interface Source {
     val id: Long
     val name: String
     val lang: String
+
+    suspend fun getMangaDetails(manga: SManga): SManga
+    fun fetchMangaDetails(manga: SManga): Observable<SManga>
+
+    suspend fun getChapterList(manga: SManga): List<SChapter>
+    fun fetchChapterList(manga: SManga): Observable<List<SChapter>>
+
+    suspend fun getPageList(chapter: SChapter): List<Page>
+    fun fetchPageList(chapter: SChapter): Observable<List<Page>>
+
+    suspend fun getImageUrl(page: Page): String
+    fun fetchImageUrl(page: Page): Observable<String> = Observable.just(page.imageUrl ?: page.url)
 }
 
 interface CatalogueSource : Source {
     val supportsLatest: Boolean
 
+    suspend fun getPopularManga(page: Int): MangasPage
     fun fetchPopularManga(page: Int): Observable<MangasPage>
-    fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage>
-    fun fetchLatestUpdates(page: Int): Observable<MangasPage>
 
-    fun fetchMangaDetails(manga: SManga): Observable<SManga>
-    fun fetchChapterList(manga: SManga): Observable<List<SChapter>>
-    fun fetchPageList(chapter: SChapter): Observable<List<Page>>
-    fun fetchImageUrl(page: Page): Observable<String> = Observable.just(page.imageUrl ?: page.url)
+    suspend fun getSearchManga(page: Int, query: String, filters: FilterList): MangasPage
+    fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage>
+
+    suspend fun getLatestUpdates(page: Int): MangasPage
+    fun fetchLatestUpdates(page: Int): Observable<MangasPage>
 
     fun getFilterList(): FilterList = FilterList()
 }

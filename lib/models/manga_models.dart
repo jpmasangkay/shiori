@@ -4,6 +4,8 @@ String _resolveSource(String id, String? explicit) {
   if (id.startsWith('flame:')) return 'flamecomics';
   if (id.startsWith('weeb:')) return 'weebcentral';
   if (id.startsWith('pill:')) return 'mangapill';
+  if (id.startsWith('katana:')) return 'mangakatana';
+  if (id.startsWith('mread:')) return 'mangaread';
   if (id.startsWith('ext:')) {
     final parts = id.split(':');
     if (parts.length > 1 && parts[1].isNotEmpty) return parts[1];

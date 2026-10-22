@@ -17,7 +17,8 @@ void main() {
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
     await tester.pumpWidget(const ShioriApp());
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 2500));
+    await tester.pumpAndSettle();
   }
 
   testWidgets('Library tab renders with empty state', (tester) async {

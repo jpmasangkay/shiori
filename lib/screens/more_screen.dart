@@ -168,8 +168,8 @@ class _MoreScreenState extends State<MoreScreen> {
                 icon: Icons.public_rounded,
                 title: 'Active Sources',
                 subtitle: Platform.isIOS
-                    ? 'Direct Sources: MangaDex, MangaPill, Asura, Flame, Weeb Central'
-                    : 'Direct Sources (MangaDex, MangaPill, Asura...) & extensions',
+                    ? 'Direct Sources: MangaDex, MangaPill, Asura, Flame, Weeb Central & more'
+                    : 'Community extensions (Tachiyomi / Keiyoushi)',
                 trailing: const Icon(Icons.check_circle_outline_rounded, color: AppColors.primary, size: 20),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const ExtensionsScreen()),

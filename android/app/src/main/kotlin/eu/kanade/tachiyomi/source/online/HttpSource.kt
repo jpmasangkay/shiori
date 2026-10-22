@@ -2,12 +2,15 @@ package eu.kanade.tachiyomi.source.online
 
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.asObservableSuccess
+import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.source.model.SMangaUpdate
+import eu.kanade.tachiyomi.source.model.SMangaUpdateImpl
 import eu.kanade.tachiyomi.util.asJsoup
 import okhttp3.Headers
 import okhttp3.OkHttpClient
@@ -54,70 +57,131 @@ abstract class HttpSource : CatalogueSource {
         get() = Injekt.get<eu.kanade.tachiyomi.network.NetworkHelper>()
 
     open val client: OkHttpClient
-        get() = try { network.client } catch (_: Exception) { OkHttpClient.Builder().build() }
+        get() = try { network.client } catch (_: Throwable) { OkHttpClient.Builder().build() }
 
     open val headers: Headers by lazy { headersBuilder().build() }
+
+    open fun getMangaUrl(manga: SManga): String = baseUrl + manga.url
+    open fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
 
     // Popular
     open fun popularMangaRequest(page: Int): Request = GET(baseUrl, headers)
     open fun popularMangaParse(response: Response): MangasPage = MangasPage(emptyList(), false)
+
+    override suspend fun getPopularManga(page: Int): MangasPage {
+        val response = client.newCall(popularMangaRequest(page)).awaitSuccess()
+        return popularMangaParse(response)
+    }
+
     override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        return client.newCall(popularMangaRequest(page))
-            .asObservableSuccess()
-            .map { response -> popularMangaParse(response) }
+        return Observable.fromCallable {
+            kotlinx.coroutines.runBlocking { getPopularManga(page) }
+        }
     }
 
     // Search
     open fun searchMangaRequest(page: Int, query: String, filters: FilterList): Request = GET(baseUrl, headers)
     open fun searchMangaParse(response: Response): MangasPage = MangasPage(emptyList(), false)
+
+    override suspend fun getSearchManga(page: Int, query: String, filters: FilterList): MangasPage {
+        val response = client.newCall(searchMangaRequest(page, query, filters)).awaitSuccess()
+        return searchMangaParse(response)
+    }
+
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return client.newCall(searchMangaRequest(page, query, filters))
-            .asObservableSuccess()
-            .map { response -> searchMangaParse(response) }
+        return Observable.fromCallable {
+            kotlinx.coroutines.runBlocking { getSearchManga(page, query, filters) }
+        }
     }
 
     // Latest
     open fun latestUpdatesRequest(page: Int): Request = GET(baseUrl, headers)
     open fun latestUpdatesParse(response: Response): MangasPage = MangasPage(emptyList(), false)
-    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
-        return client.newCall(latestUpdatesRequest(page))
-            .asObservableSuccess()
-            .map { response -> latestUpdatesParse(response) }
+
+    override suspend fun getLatestUpdates(page: Int): MangasPage {
+        val response = client.newCall(latestUpdatesRequest(page)).awaitSuccess()
+        return latestUpdatesParse(response)
     }
 
-    // Details
+    override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
+        return Observable.fromCallable {
+            kotlinx.coroutines.runBlocking { getLatestUpdates(page) }
+        }
+    }
+
+    // Details & Chapters
     open fun mangaDetailsRequest(manga: SManga): Request = GET(baseUrl + manga.url, headers)
     open fun mangaDetailsParse(response: Response): SManga = SManga.create()
-    override fun fetchMangaDetails(manga: SManga): Observable<SManga> {
-        return client.newCall(mangaDetailsRequest(manga))
-            .asObservableSuccess()
-            .map { response -> mangaDetailsParse(response).apply { initialized = true } }
-    }
 
-    // Chapters
     open fun chapterListRequest(manga: SManga): Request = GET(baseUrl + manga.url, headers)
     open fun chapterListParse(response: Response): List<SChapter> = emptyList()
+
+    open suspend fun getMangaUpdate(
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean
+    ): SMangaUpdate {
+        val newDetails = if (fetchDetails) {
+            val response = client.newCall(mangaDetailsRequest(manga)).awaitSuccess()
+            mangaDetailsParse(response).apply { initialized = true }
+        } else manga
+
+        val newChapters = if (fetchChapters) {
+            val response = client.newCall(chapterListRequest(manga)).awaitSuccess()
+            chapterListParse(response)
+        } else chapters
+
+        return SMangaUpdateImpl(newDetails, newChapters)
+    }
+
+    override suspend fun getMangaDetails(manga: SManga): SManga {
+        return getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false).manga
+    }
+
+    override fun fetchMangaDetails(manga: SManga): Observable<SManga> {
+        return Observable.fromCallable {
+            kotlinx.coroutines.runBlocking { getMangaDetails(manga) }
+        }
+    }
+
+    override suspend fun getChapterList(manga: SManga): List<SChapter> {
+        return getMangaUpdate(manga, emptyList(), fetchDetails = false, fetchChapters = true).chapters
+    }
+
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        return client.newCall(chapterListRequest(manga))
-            .asObservableSuccess()
-            .map { response -> chapterListParse(response) }
+        return Observable.fromCallable {
+            kotlinx.coroutines.runBlocking { getChapterList(manga) }
+        }
     }
 
     // Pages
     open fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + chapter.url, headers)
     open fun pageListParse(response: Response): List<Page> = emptyList()
+
+    override suspend fun getPageList(chapter: SChapter): List<Page> {
+        val response = client.newCall(pageListRequest(chapter)).awaitSuccess()
+        return pageListParse(response)
+    }
+
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        return client.newCall(pageListRequest(chapter))
-            .asObservableSuccess()
-            .map { response -> pageListParse(response) }
+        return Observable.fromCallable {
+            kotlinx.coroutines.runBlocking { getPageList(chapter) }
+        }
     }
 
     open fun imageUrlRequest(page: Page): Request = GET(page.url, headers)
     open fun imageUrlParse(response: Response): String = ""
+
+    override suspend fun getImageUrl(page: Page): String {
+        val response = client.newCall(imageUrlRequest(page)).awaitSuccess()
+        return imageUrlParse(response)
+    }
+
     override fun fetchImageUrl(page: Page): Observable<String> {
-        return client.newCall(imageUrlRequest(page))
-            .asObservableSuccess()
-            .map { response -> imageUrlParse(response) }
+        return Observable.fromCallable {
+            kotlinx.coroutines.runBlocking { getImageUrl(page) }
+        }
     }
 
     override fun getFilterList(): FilterList = FilterList()

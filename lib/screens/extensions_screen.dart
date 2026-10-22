@@ -664,7 +664,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                                     Expanded(
                                       child: Text(
                                         Platform.isIOS
-                                            ? 'Direct Built-in Sources: MangaDex, Asura Scans, Flame Comics, and Weeb Central are directly integrated into Shiori. Community APK extensions are not supported on iOS.'
+                                            ? 'Direct Built-in Sources: MangaDex, Asura Scans, Flame Comics, Weeb Central, MangaPill and more are directly integrated into Shiori. Community APK extensions are not supported on iOS.'
                                             : 'All extensions install directly in-app. Browse manga catalogs and read chapters with zero external redirects.',
                                         style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.4),
                                       ),

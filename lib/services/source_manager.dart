@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -30,7 +32,12 @@ class SourceManager extends ChangeNotifier {
   static const String _pinnedKey = 'shiori_pinned_sources_v1';
   static const String _disabledDirectKey = 'shiori_disabled_direct_sources_v1';
 
-  static const List<DirectSourceInfo> directSources = [
+  /// Built-in direct sources are only offered on iOS (where Tachiyomi APK
+  /// extensions cannot run). Android uses community extensions instead.
+  static List<DirectSourceInfo> get directSources =>
+      (!kIsWeb && Platform.isIOS) ? allDirectSources : const [];
+
+  static const List<DirectSourceInfo> allDirectSources = [
     DirectSourceInfo(
       id: 'mangadex',
       name: 'MangaDex',
@@ -76,6 +83,24 @@ class SourceManager extends ChangeNotifier {
       iconLetter: 'P',
       colorValue: 0xFFF59E0B,
     ),
+    DirectSourceInfo(
+      id: 'mangakatana',
+      name: 'MangaKatana',
+      lang: 'EN',
+      badge: 'DIRECT • EN',
+      description: 'Massive Manga Archive • Fast high-res chapters & thousands of series',
+      iconLetter: 'K',
+      colorValue: 0xFF06B6D4,
+    ),
+    DirectSourceInfo(
+      id: 'mangaread',
+      name: 'MangaRead',
+      lang: 'EN',
+      badge: 'DIRECT • EN',
+      description: 'Webtoons & Manhwa • Solo Leveling Ragnarok, daily high-res updates',
+      iconLetter: 'R',
+      colorValue: 0xFF8B5CF6,
+    ),
   ];
 
   final Set<String> _pinnedSourceIds = {'mangadex', 'asura'};
@@ -89,7 +114,7 @@ class SourceManager extends ChangeNotifier {
 
   DirectSourceInfo? getDirectSource(String sourceId) {
     try {
-      return directSources.firstWhere((s) => s.id == sourceId);
+      return allDirectSources.firstWhere((s) => s.id == sourceId);
     } catch (_) {
       return null;
     }

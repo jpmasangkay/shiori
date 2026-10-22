@@ -271,7 +271,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
               ),
               const SizedBox(height: 6),
               Text(
-                'If this source uses Cloudflare or has no results for this query, use Universal Direct Sources (MangaDex, MangaPill, Weeb Central, Asura Scans) which work reliably worldwide.',
+                'This source may be blocked by Cloudflare, be offline, or have no results for this query. Try another search or a different extension.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.4),
               ),

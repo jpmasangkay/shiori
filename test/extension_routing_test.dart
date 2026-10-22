@@ -41,11 +41,17 @@ void main() {
 
       final pill = MangaItem.fromJson({'id': 'pill:123/one-piece', 'title': 'One Piece'});
       expect(pill.source, 'mangapill');
+
+      final katana = MangaItem.fromJson({'id': 'katana:solo-leveling:21708', 'title': 'Solo'});
+      expect(katana.source, 'mangakatana');
+
+      final mread = MangaItem.fromJson({'id': 'mread:solo-leveling-ragnarok', 'title': 'Ragnarok'});
+      expect(mread.source, 'mangaread');
     });
 
-    test('SourceManager includes MangaPill in universal direct sources', () {
-      final directIds = SourceManager.directSources.map((s) => s.id).toList();
-      expect(directIds, containsAll(['mangadex', 'mangapill', 'weebcentral', 'asura', 'flamecomics']));
+    test('SourceManager includes direct sources in allDirectSources', () {
+      final directIds = SourceManager.allDirectSources.map((s) => s.id).toList();
+      expect(directIds, containsAll(['mangadex', 'mangapill', 'weebcentral', 'asura', 'flamecomics', 'mangakatana', 'mangaread']));
     });
 
     test('MangaItem resolves genuine MangaDex UUID to mangadex', () {

@@ -1,3 +1,4 @@
+@file:JvmName("JsoupExtensionsKt")
 package eu.kanade.tachiyomi.util
 
 import okhttp3.Response
@@ -6,7 +7,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
 fun Response.asJsoup(html: String? = null): Document {
-    val content = html ?: try { body?.string().orEmpty() } catch (_: Exception) { "" }
+    val content = html ?: try { body?.string().orEmpty() } catch (_: Throwable) { "" }
     return Jsoup.parse(content, request.url.toString())
 }
 
