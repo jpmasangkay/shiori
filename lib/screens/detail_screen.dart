@@ -75,6 +75,7 @@ class _DetailScreenState extends State<DetailScreen> {
     }
 
     // 4. Load chapters from API
+    if (!mounted) return;
     setState(() => _loadingChapters = true);
     try {
       final chapters = await ApiService.instance.getChapters(m.id);

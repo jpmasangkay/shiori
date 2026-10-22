@@ -257,16 +257,38 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
 
     if (_items.isEmpty) {
       return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.search_off_rounded, size: 44, color: AppColors.muted),
-            const SizedBox(height: 10),
-            Text(
-              'No titles found on ${widget.sourceName}',
-              style: GoogleFonts.inter(fontSize: 14, color: AppColors.muted),
-            ),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.search_off_rounded, size: 48, color: AppColors.muted),
+              const SizedBox(height: 12),
+              Text(
+                'No titles found on ${widget.sourceName}',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.text),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                'If this source uses Cloudflare or has no results for this query, use Universal Direct Sources (MangaDex, MangaPill, Weeb Central, Asura Scans) which work reliably worldwide.',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.4),
+              ),
+              const SizedBox(height: 18),
+              FilledButton.icon(
+                onPressed: () => Navigator.pop(context),
+                icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                label: const Text('Browse Direct Sources'),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: AppColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }

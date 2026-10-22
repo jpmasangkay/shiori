@@ -481,6 +481,11 @@ class ExtensionService extends ChangeNotifier {
   /// Downloads the extension package and installs it strictly in-app.
   /// No Android OS package installer prompts, no browser redirects, no permissions popups.
   Future<bool> downloadAndInstallExtension(MangaExtension ext) async {
+    if (Platform.isIOS) {
+      debugPrint('Community APK extensions cannot be installed on iOS');
+      return false;
+    }
+
     final key = (ext.pkg.isNotEmpty ? ext.pkg : ext.id).toLowerCase().trim();
     if (_downloadingPackages.contains(key)) return false;
 

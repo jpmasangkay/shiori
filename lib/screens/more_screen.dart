@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -141,30 +143,33 @@ class _MoreScreenState extends State<MoreScreen> {
               const SizedBox(height: 22),
 
               // Sources & Extensions
-              _sectionHeader('SOURCES & EXTENSIONS'),
-              _settingTile(
-                icon: Icons.extension_outlined,
-                title: 'Extensions',
-                subtitle: 'Browse & download community sources',
-                trailing: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: AppColors.active,
-                    borderRadius: BorderRadius.circular(6),
+              _sectionHeader(Platform.isIOS ? 'SOURCES' : 'SOURCES & EXTENSIONS'),
+              if (!Platform.isIOS)
+                _settingTile(
+                  icon: Icons.extension_outlined,
+                  title: 'Extensions',
+                  subtitle: 'Browse & download community sources',
+                  trailing: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.active,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      'Sources',
+                      style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.primary),
+                    ),
                   ),
-                  child: Text(
-                    'Sources',
-                    style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.primary),
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const ExtensionsScreen()),
                   ),
                 ),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ExtensionsScreen()),
-                ),
-              ),
               _settingTile(
                 icon: Icons.public_rounded,
                 title: 'Active Sources',
-                subtitle: 'MangaDex & downloaded extensions',
+                subtitle: Platform.isIOS
+                    ? 'Direct Sources: MangaDex, MangaPill, Asura, Flame, Weeb Central'
+                    : 'Direct Sources (MangaDex, MangaPill, Asura...) & extensions',
                 trailing: const Icon(Icons.check_circle_outline_rounded, color: AppColors.primary, size: 20),
                 onTap: () => Navigator.of(context).push(
                   MaterialPageRoute(builder: (_) => const ExtensionsScreen()),

@@ -3,11 +3,18 @@ String _resolveSource(String id, String? explicit) {
   if (id.startsWith('asura:')) return 'asura';
   if (id.startsWith('flame:')) return 'flamecomics';
   if (id.startsWith('weeb:')) return 'weebcentral';
+  if (id.startsWith('pill:')) return 'mangapill';
   if (id.startsWith('ext:')) {
     final parts = id.split(':');
     if (parts.length > 1 && parts[1].isNotEmpty) return parts[1];
   }
-  return 'mangadex';
+  if (id.contains(':')) {
+    final prefix = id.substring(0, id.indexOf(':'));
+    if (prefix.isNotEmpty) return prefix;
+  }
+  final isUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(id);
+  if (isUuid) return 'mangadex';
+  return id.isNotEmpty ? id : 'unknown';
 }
 
 class MangaItem {

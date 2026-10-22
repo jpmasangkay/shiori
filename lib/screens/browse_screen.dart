@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -6,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/extension_service.dart';
+import '../services/source_manager.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/skeleton.dart';
@@ -23,21 +25,21 @@ class BrowseScreen extends StatefulWidget {
 class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderStateMixin {
   late TabController _tabController;
   final _extService = ExtensionService.instance;
+  final _sourceManager = SourceManager.instance;
 
   final _searchController = TextEditingController();
   Timer? _searchDebounce;
   String _searchQuery = '';
   String _selectedSourceFilter = 'ALL';
   bool _searching = false;
-  List<MangaItem> _asuraResults = [];
-  List<MangaItem> _mangaDexResults = [];
-  Map<String, List<MangaItem>> _communityResults = {};
+  Map<String, List<MangaItem>> _searchResults = {};
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
     _extService.addListener(_onServiceUpdate);
+    _sourceManager.addListener(_onServiceUpdate);
   }
 
   @override
@@ -45,6 +47,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     _searchDebounce?.cancel();
     _searchController.dispose();
     _extService.removeListener(_onServiceUpdate);
+    _sourceManager.removeListener(_onServiceUpdate);
     _tabController.dispose();
     super.dispose();
   }
@@ -66,44 +69,39 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
 
   Future<void> _runGlobalSearch(String query) async {
     setState(() => _searching = true);
-    final hasAsura = _extService.hasAsura;
-    final hasMangaDex = _extService.hasMangaDex;
-    final installedExts = _extService.installedExtensions;
-    final extraExts = installedExts.where((e) =>
-        !e.pkg.toLowerCase().contains('mangadex') &&
-        !e.pkg.toLowerCase().contains('asura') &&
-        !e.name.toLowerCase().contains('mangadex') &&
-        !e.name.toLowerCase().contains('asura')).toList();
 
-    final shouldSearchAsura = hasAsura && (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == 'asura');
-    final shouldSearchMangaDex = hasMangaDex && (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == 'mangadex');
+    final directSources = SourceManager.directSources;
+    final installedExts = Platform.isIOS
+        ? <MangaExtension>[]
+        : _extService.installedExtensions.where((e) =>
+            !e.pkg.toLowerCase().contains('mangadex') &&
+            !e.pkg.toLowerCase().contains('asura') &&
+            !e.name.toLowerCase().contains('mangadex') &&
+            !e.name.toLowerCase().contains('asura')).toList();
 
-    List<MangaItem> asuraList = [];
-    List<MangaItem> mangaDexList = [];
-    final Map<String, List<MangaItem>> communityMap = {};
+    final Map<String, List<MangaItem>> resultMap = {};
+    final List<Future<void>> tasks = [];
 
-    final List<Future<void>> tasks = [
-      if (shouldSearchAsura)
-        ApiService.instance
-            .searchManga(query: query, source: 'asura')
-            .then((res) => asuraList = res)
-            .catchError((_) => <MangaItem>[]),
-      if (shouldSearchMangaDex)
-        ApiService.instance
-            .searchManga(query: query, source: 'mangadex')
-            .then((res) => mangaDexList = res)
-            .catchError((_) => <MangaItem>[]),
-    ];
+    for (final ds in directSources) {
+      if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) {
+        tasks.add(
+          ApiService.instance
+              .searchManga(query: query, source: ds.id)
+              .then((res) {
+                if (res.isNotEmpty) resultMap[ds.id] = res;
+              })
+              .catchError((_) {}),
+        );
+      }
+    }
 
-    for (final ext in extraExts) {
+    for (final ext in installedExts) {
       if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) {
         tasks.add(
           ApiService.instance
               .searchManga(query: query, source: ext.pkg)
               .then((res) {
-                if (res.isNotEmpty) {
-                  communityMap[ext.pkg] = res;
-                }
+                if (res.isNotEmpty) resultMap[ext.pkg] = res;
               })
               .catchError((_) {}),
         );
@@ -114,9 +112,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
 
     if (mounted) {
       setState(() {
-        _asuraResults = asuraList;
-        _mangaDexResults = mangaDexList;
-        _communityResults = communityMap;
+        _searchResults = resultMap;
         _searching = false;
       });
     }
@@ -124,6 +120,20 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
 
   @override
   Widget build(BuildContext context) {
+    if (Platform.isIOS) {
+      return Column(
+        children: [
+          const AppTopBar(
+            title: 'Browse',
+            branded: true,
+          ),
+          Expanded(
+            child: _buildSourcesTab(),
+          ),
+        ],
+      );
+    }
+
     return Column(
       children: [
         AppTopBar(
@@ -157,69 +167,26 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   }
 
   Widget _buildSourcesTab() {
-    // Detect which active sources are actually installed by user
-    final hasMangaDex = _extService.hasMangaDex;
-    final hasAsura = _extService.hasAsura;
-    final installedExts = _extService.installedExtensions;
-    final extraExts = installedExts.where((e) =>
-        !e.pkg.toLowerCase().contains('mangadex') &&
-        !e.pkg.toLowerCase().contains('asura') &&
-        !e.name.toLowerCase().contains('mangadex') &&
-        !e.name.toLowerCase().contains('asura')).toList();
-    final allInstalledCount = (hasMangaDex ? 1 : 0) + (hasAsura ? 1 : 0) + extraExts.length;
+    final directSources = SourceManager.directSources;
+    final installedExts = Platform.isIOS
+        ? <MangaExtension>[]
+        : _extService.installedExtensions.where((e) =>
+            !e.pkg.toLowerCase().contains('mangadex') &&
+            !e.pkg.toLowerCase().contains('asura') &&
+            !e.name.toLowerCase().contains('mangadex') &&
+            !e.name.toLowerCase().contains('asura')).toList();
 
-    // Zero extensions installed state
-    if (allInstalledCount == 0) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 72,
-                height: 72,
-                decoration: const BoxDecoration(
-                  color: AppColors.surfaceHigh,
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.extension_off_rounded, size: 36, color: AppColors.muted),
-              ),
-              const SizedBox(height: 20),
-              Text(
-                'No sources installed',
-                style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Shiori comes with zero pre-installed extensions. Go to the Extensions tab to install your preferred sources.',
-                textAlign: TextAlign.center,
-                style: GoogleFonts.inter(fontSize: 13, color: AppColors.muted, height: 1.45),
-              ),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: () => _tabController.animateTo(1),
-                icon: const Icon(Icons.extension_rounded, size: 18),
-                label: const Text('Browse Extensions'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: AppColors.onPrimary,
-                  padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                ),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+    // Collect all source IDs that are currently pinned
+    final pinnedDirect = directSources.where((s) => _sourceManager.isPinned(s.id)).toList();
+    final pinnedExts = installedExts.where((e) => _sourceManager.isPinned(e.pkg)).toList();
+    final hasPinned = pinnedDirect.isNotEmpty || pinnedExts.isNotEmpty;
 
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
         // Global Multi-Source Search Bar
         Container(
-          height: 42,
+          height: 44,
           padding: const EdgeInsets.symmetric(horizontal: 12),
           decoration: BoxDecoration(
             color: AppColors.surface,
@@ -237,17 +204,13 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   style: GoogleFonts.inter(fontSize: 13, color: AppColors.text),
                   decoration: InputDecoration(
                     hintText: () {
-                      if (_selectedSourceFilter == 'asura') return 'Search Asura Scans...';
-                      if (_selectedSourceFilter == 'mangadex') return 'Search MangaDex...';
                       if (_selectedSourceFilter != 'ALL') {
+                        final ds = _sourceManager.getDirectSource(_selectedSourceFilter);
+                        if (ds != null) return 'Search ${ds.name}...';
                         final ext = _extService.getExtensionByPkg(_selectedSourceFilter);
                         return 'Search ${ext?.name ?? _selectedSourceFilter}...';
                       }
-                      if (allInstalledCount > 1) return 'Search across installed sources...';
-                      if (hasAsura) return 'Search Asura Scans...';
-                      if (hasMangaDex) return 'Search MangaDex...';
-                      if (extraExts.isNotEmpty) return 'Search ${extraExts.first.name}...';
-                      return 'Search manga...';
+                      return 'Search across all sources...';
                     }(),
                     hintStyle: const TextStyle(color: AppColors.muted, fontSize: 13),
                     border: InputBorder.none,
@@ -267,124 +230,206 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           ),
         ),
 
-        if (allInstalledCount > 1) ...[
-          const SizedBox(height: 8),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _buildSourceFilterChip('ALL', 'All Sources'),
-                if (hasAsura) ...[
-                  const SizedBox(width: 6),
-                  _buildSourceFilterChip('asura', 'Asura Scans'),
-                ],
-                if (hasMangaDex) ...[
-                  const SizedBox(width: 6),
-                  _buildSourceFilterChip('mangadex', 'MangaDex'),
-                ],
-                for (final ext in extraExts) ...[
-                  const SizedBox(width: 6),
-                  _buildSourceFilterChip(ext.pkg, ext.name),
-                ],
+        // Source Filter Chips
+        const SizedBox(height: 8),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              _buildSourceFilterChip('ALL', 'All Sources'),
+              for (final ds in directSources) ...[
+                const SizedBox(width: 6),
+                _buildSourceFilterChip(ds.id, ds.name),
               ],
-            ),
+              for (final ext in installedExts) ...[
+                const SizedBox(width: 6),
+                _buildSourceFilterChip(ext.pkg, ext.name),
+              ],
+            ],
           ),
-          const SizedBox(height: 10),
-        ] else
-          const SizedBox(height: 12),
+        ),
+        const SizedBox(height: 12),
 
         // If currently in search mode, display multi-source results
         if (_searchQuery.isNotEmpty) ...[
           _buildSearchResults(),
         ] else ...[
-          _sectionHeader('ACTIVE SOURCES ($allInstalledCount)'),
+          // SECTION 1: PINNED / FAVORITE SOURCES
+          if (hasPinned) ...[
+            _sectionHeaderWithBadge(
+              title: 'PINNED SOURCES',
+              badgeText: '${pinnedDirect.length + pinnedExts.length}',
+              badgeColor: Colors.amber,
+              icon: Icons.push_pin_rounded,
+            ),
+            for (final ds in pinnedDirect)
+              _buildSourceCard(
+                id: ds.id,
+                name: ds.name,
+                lang: ds.lang,
+                badge: ds.badge,
+                description: ds.description,
+                iconLetter: ds.iconLetter,
+                iconColor: Color(ds.colorValue),
+                isPinned: true,
+              ),
+            for (final ext in pinnedExts)
+              _buildSourceCard(
+                id: ext.pkg,
+                name: ext.name,
+                lang: ext.lang,
+                badge: 'EXT • ${ext.lang}',
+                description: ext.sourceNames.isNotEmpty
+                    ? 'Sources: ${ext.sourceNames.join(', ')}'
+                    : 'Installed Community Extension (${ext.lang})',
+                iconLetter: ext.name.isNotEmpty ? ext.name[0].toUpperCase() : 'E',
+                iconColor: const Color(0xFF10B981),
+                iconUrl: ext.iconUrl,
+                isCommunity: true,
+                isPinned: true,
+              ),
+            const SizedBox(height: 14),
+          ],
 
-          // MangaDex Source Card (ONLY if installed)
-          if (hasMangaDex)
+          // SECTION 2: DIRECT SOURCES (UNIVERSAL - iOS & ANDROID)
+          _sectionHeaderWithBadge(
+            title: 'DIRECT SOURCES',
+            badgeText: 'Universal',
+            badgeColor: AppColors.primary,
+            icon: Icons.bolt_rounded,
+          ),
+          for (final ds in directSources)
             _buildSourceCard(
-              id: 'mangadex',
-              name: 'MangaDex',
-              lang: 'ALL',
-              description: 'Official API • 100,000+ Manga, Manhwa & Manhua in 40+ languages',
-              iconLetter: 'M',
-              iconColor: const Color(0xFFFF6740),
+              id: ds.id,
+              name: ds.name,
+              lang: ds.lang,
+              badge: ds.badge,
+              description: ds.description,
+              iconLetter: ds.iconLetter,
+              iconColor: Color(ds.colorValue),
+              isPinned: _sourceManager.isPinned(ds.id),
             ),
 
-          // Asura Scans Source Card (ONLY if installed)
-          if (hasAsura)
-            _buildSourceCard(
-              id: 'asura',
-              name: 'Asura Scans',
-              lang: 'EN',
-              description: 'Direct API • Solo Leveling, Mount Hua, Disaster-Class Hero & action manhwa',
-              iconLetter: 'A',
-              iconColor: const Color(0xFF6366F1),
+          if (Platform.isIOS) ...[
+            // On iPhone / iOS: Clean direct access card with zero APK/extension download prompts
+            const SizedBox(height: 14),
+            Container(
+              padding: const EdgeInsets.all(14),
+              margin: const EdgeInsets.only(bottom: 12),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.surfaceHigh),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withValues(alpha: .15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.apple_rounded, color: AppColors.primary, size: 24),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Direct Built-in Sources',
+                          style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'MangaDex, MangaPill, Asura Scans, Flame Comics, and Weeb Central run natively on iOS with offline reading, continuous scroll, and categories.',
+                          style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.35),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ] else ...[
+            const SizedBox(height: 14),
+
+            // SECTION 3: COMMUNITY EXTENSIONS (TACHIYOMI APKs)
+            _sectionHeaderWithBadge(
+              title: 'COMMUNITY EXTENSIONS',
+              badgeText: Platform.isAndroid ? 'Tachiyomi (${installedExts.length})' : 'Tachiyomi',
+              badgeColor: const Color(0xFF10B981),
+              icon: Icons.extension_rounded,
             ),
 
-          // All other installed community extensions
-          for (final ext in extraExts)
-            _buildSourceCard(
-              id: ext.pkg,
-              name: ext.name,
-              lang: ext.lang,
-              description: ext.sourceNames.isNotEmpty
-                  ? 'Sources: ${ext.sourceNames.join(', ')}'
-                  : 'Installed Community Extension (${ext.lang})',
-              iconLetter: ext.name.isNotEmpty ? ext.name[0].toUpperCase() : 'E',
-              iconColor: const Color(0xFF10B981),
-              iconUrl: ext.iconUrl,
-            ),
-
-          if (allInstalledCount == 0)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 24),
-              child: Center(
+            if (installedExts.isNotEmpty)
+              for (final ext in installedExts)
+                _buildSourceCard(
+                  id: ext.pkg,
+                  name: ext.name,
+                  lang: ext.lang,
+                  badge: 'EXT • ${ext.lang}',
+                  description: ext.sourceNames.isNotEmpty
+                      ? 'Sources: ${ext.sourceNames.join(', ')}'
+                      : 'Installed Community Extension (${ext.lang})',
+                  iconLetter: ext.name.isNotEmpty ? ext.name[0].toUpperCase() : 'E',
+                  iconColor: const Color(0xFF10B981),
+                  iconUrl: ext.iconUrl,
+                  isCommunity: true,
+                  isPinned: _sourceManager.isPinned(ext.pkg),
+                )
+            else
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Text(
-                  'No sources active yet. Go to Extensions to install.',
+                  'No community extensions installed. Explore 1,400+ extensions below.',
                   style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
                 ),
               ),
-            ),
 
-          const SizedBox(height: 16),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.surfaceHigh),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.explore_outlined, color: AppColors.primary, size: 24),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Want more sources?', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600)),
-                      const SizedBox(height: 2),
-                      Text(
-                        'Browse 1,400+ community extensions in the Extensions tab above.',
-                        style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
-                      ),
-                    ],
+            // Explore More Banner
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColors.surfaceHigh),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.explore_outlined, color: AppColors.primary, size: 24),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Explore Community Catalog', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 2),
+                        Text(
+                          'Browse 1,400+ online extensions across 40+ languages.',
+                          style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: () => _tabController.animateTo(1),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.surfaceHigh,
-                    foregroundColor: AppColors.primary,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    minimumSize: const Size(0, 32),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    onPressed: () => _tabController.animateTo(1),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.surfaceHigh,
+                      foregroundColor: AppColors.primary,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      minimumSize: const Size(0, 32),
+                    ),
+                    child: Text('Explore', style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600)),
                   ),
-                  child: Text('Explore', style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600)),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
+          ],
+          const SizedBox(height: 24),
         ],
       ],
     );
@@ -427,18 +472,13 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       );
     }
 
-    final showAsura = (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == 'asura') && _asuraResults.isNotEmpty;
-    final showMangaDex = (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == 'mangadex') && _mangaDexResults.isNotEmpty;
-    final hasCommunityResults = _communityResults.values.any((list) => list.isNotEmpty);
+    final entriesWithResults = _searchResults.entries.where((e) => e.value.isNotEmpty).toList();
 
-    if (!showAsura && !showMangaDex && !hasCommunityResults) {
-      final filterName = _selectedSourceFilter == 'asura'
-          ? ' on Asura Scans'
-          : _selectedSourceFilter == 'mangadex'
-              ? ' on MangaDex'
-              : (_selectedSourceFilter != 'ALL'
-                  ? ' on ${_extService.getExtensionByPkg(_selectedSourceFilter)?.name ?? _selectedSourceFilter}'
-                  : '');
+    if (entriesWithResults.isEmpty) {
+      final filterLabel = _selectedSourceFilter == 'ALL'
+          ? ''
+          : ' on ${_sourceManager.getDirectSource(_selectedSourceFilter)?.name ?? _extService.getExtensionByPkg(_selectedSourceFilter)?.name ?? _selectedSourceFilter}';
+
       return Padding(
         padding: const EdgeInsets.all(32),
         child: Center(
@@ -448,7 +488,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               const Icon(Icons.search_off_rounded, size: 40, color: AppColors.muted),
               const SizedBox(height: 10),
               Text(
-                'No titles found for "$_searchQuery"$filterName',
+                'No titles found for "$_searchQuery"$filterLabel',
                 style: GoogleFonts.inter(fontSize: 14, color: AppColors.muted),
               ),
             ],
@@ -460,40 +500,26 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        if (showAsura) ...[
-          _sourceResultSection(
-            sourceName: 'Asura Scans',
-            badgeColor: const Color(0xFF6366F1),
-            items: _asuraResults,
+        for (final entry in entriesWithResults) ...[
+          _buildSourceResultSection(
+            sourceId: entry.key,
+            items: entry.value,
           ),
           const SizedBox(height: 16),
         ],
-        if (showMangaDex) ...[
-          _sourceResultSection(
-            sourceName: 'MangaDex',
-            badgeColor: const Color(0xFFFF6740),
-            items: _mangaDexResults,
-          ),
-          if (hasCommunityResults) const SizedBox(height: 16),
-        ],
-        for (final entry in _communityResults.entries)
-          if (entry.value.isNotEmpty) ...[
-            _sourceResultSection(
-              sourceName: _extService.getExtensionByPkg(entry.key)?.name ?? entry.key,
-              badgeColor: const Color(0xFF10B981),
-              items: entry.value,
-            ),
-            const SizedBox(height: 16),
-          ],
       ],
     );
   }
 
-  Widget _sourceResultSection({
-    required String sourceName,
-    required Color badgeColor,
+  Widget _buildSourceResultSection({
+    required String sourceId,
     required List<MangaItem> items,
   }) {
+    final ds = _sourceManager.getDirectSource(sourceId);
+    final ext = _extService.getExtensionByPkg(sourceId);
+    final sourceName = ds?.name ?? ext?.name ?? sourceId;
+    final badgeColor = ds != null ? Color(ds.colorValue) : const Color(0xFF10B981);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -583,17 +609,50 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     );
   }
 
-  Widget _sectionHeader(String text) {
+  Widget _sectionHeaderWithBadge({
+    required String title,
+    required String badgeText,
+    required Color badgeColor,
+    required IconData icon,
+  }) {
     return Padding(
-      padding: const EdgeInsets.only(left: 4, bottom: 8, top: 4),
-      child: Text(
-        text,
-        style: GoogleFonts.inter(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 1.2,
-          color: AppColors.muted,
-        ),
+      padding: const EdgeInsets.only(left: 2, bottom: 8, top: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 14, color: badgeColor),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 1.1,
+                color: AppColors.muted,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+            decoration: BoxDecoration(
+              color: badgeColor.withValues(alpha: .15),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              badgeText,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: badgeColor,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -602,10 +661,13 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     required String id,
     required String name,
     required String lang,
+    required String badge,
     required String description,
     required String iconLetter,
     required Color iconColor,
     String? iconUrl,
+    bool isCommunity = false,
+    bool isPinned = false,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -674,27 +736,43 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                               borderRadius: BorderRadius.circular(4),
                             ),
                             child: Text(
-                              lang,
+                              badge,
                               style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w600, color: AppColors.primary),
                             ),
                           ),
                           const Spacer(),
+                          // Pin / Favorite Button
                           IconButton(
-                            icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18),
-                            tooltip: 'Uninstall $name',
+                            icon: Icon(
+                              isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                              color: isPinned ? Colors.amber : AppColors.muted,
+                              size: 18,
+                            ),
+                            tooltip: isPinned ? 'Unpin source' : 'Pin to top',
                             visualDensity: VisualDensity.compact,
                             padding: EdgeInsets.zero,
                             constraints: const BoxConstraints(),
-                            onPressed: () {
-                              _extService.uninstallPackage(id);
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text('Uninstalled $name'),
-                                  duration: const Duration(seconds: 1),
-                                ),
-                              );
-                            },
+                            onPressed: () => _sourceManager.togglePin(id),
                           ),
+                          if (isCommunity) ...[
+                            const SizedBox(width: 8),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18),
+                              tooltip: 'Uninstall $name',
+                              visualDensity: VisualDensity.compact,
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              onPressed: () {
+                                _extService.uninstallPackage(id);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text('Uninstalled $name'),
+                                    duration: const Duration(seconds: 1),
+                                  ),
+                                );
+                              },
+                            ),
+                          ],
                         ],
                       ),
                       const SizedBox(height: 3),

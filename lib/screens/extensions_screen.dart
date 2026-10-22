@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../services/extension_service.dart';
+import '../services/source_manager.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/skeleton.dart';
@@ -458,6 +460,17 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
     final installed = filtered.where((e) => e.isInstalled).toList();
     final available = filtered.where((e) => !e.isInstalled).toList();
 
+    final q = _query.toLowerCase();
+    final matchDirectSources = SourceManager.directSources.where((ds) {
+      final matchLang = _selectedLang == 'ALL' ||
+          ds.lang.toUpperCase() == _selectedLang ||
+          ds.lang == 'ALL';
+      final matchQuery = q.isEmpty ||
+          ds.name.toLowerCase().contains(q) ||
+          ds.id.toLowerCase().contains(q);
+      return matchLang && matchQuery;
+    }).toList();
+
     final body = Column(
       children: [
         if (widget.isEmbedded)
@@ -539,9 +552,11 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                         });
                       },
                       style: GoogleFonts.inter(fontSize: 13, color: AppColors.text),
-                      decoration: const InputDecoration(
-                        hintText: 'Search 1,400+ extensions (e.g. Asura, Dex, Flame)...',
-                        hintStyle: TextStyle(color: AppColors.muted, fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: Platform.isIOS
+                            ? 'Search sources (e.g. Asura, Dex, Flame)...'
+                            : 'Search 1,400+ extensions (e.g. Asura, Dex, Flame)...',
+                        hintStyle: const TextStyle(color: AppColors.muted, fontSize: 13),
                         border: InputBorder.none,
                         isDense: true,
                       ),
@@ -648,7 +663,9 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: Text(
-                                        'All extensions install directly in-app. Browse manga catalogs and read chapters with zero external redirects.',
+                                        Platform.isIOS
+                                            ? 'Direct Built-in Sources: MangaDex, Asura Scans, Flame Comics, and Weeb Central are directly integrated into Shiori. Community APK extensions are not supported on iOS.'
+                                            : 'All extensions install directly in-app. Browse manga catalogs and read chapters with zero external redirects.',
                                         style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.4),
                                       ),
                                     ),
@@ -661,16 +678,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                             SliverToBoxAdapter(
                               child: Builder(
                                 builder: (context) {
-                                  final hasMangaDex = _service.hasMangaDex;
-                                  final hasAsura = _service.hasAsura;
-
-                                  final q = _query.toLowerCase();
-                                  final matchMangaDex = (_selectedLang == 'ALL' || _selectedLang == 'EN') &&
-                                      (q.isEmpty || 'mangadex'.contains(q));
-                                  final matchAsura = (_selectedLang == 'ALL' || _selectedLang == 'EN') &&
-                                      (q.isEmpty || 'asura scans'.contains(q) || 'asura'.contains(q));
-
-                                  if (!matchMangaDex && !matchAsura) return const SizedBox.shrink();
+                                  if (matchDirectSources.isEmpty) return const SizedBox.shrink();
 
                                   return Padding(
                                     padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -678,25 +686,15 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
                                         _header('DIRECT IN-APP SOURCES'),
-                                        if (matchMangaDex)
+                                        for (final ds in matchDirectSources)
                                           _buildDirectSourceTile(
-                                            id: 'mangadex',
-                                            name: 'MangaDex',
-                                            description: 'Official API • 100,000+ Manga, Manhwa & Manhua',
-                                            lang: 'ALL',
-                                            iconLetter: 'M',
-                                            iconColor: const Color(0xFFFF6740),
-                                            isInstalled: hasMangaDex,
-                                          ),
-                                        if (matchAsura)
-                                          _buildDirectSourceTile(
-                                            id: 'asura',
-                                            name: 'Asura Scans',
-                                            description: 'Fast CDN • Solo Leveling, Mount Hua & action manhwa',
-                                            lang: 'EN',
-                                            iconLetter: 'A',
-                                            iconColor: const Color(0xFF6366F1),
-                                            isInstalled: hasAsura,
+                                            id: ds.id,
+                                            name: ds.name,
+                                            description: ds.description,
+                                            lang: ds.lang,
+                                            iconLetter: ds.iconLetter,
+                                            iconColor: Color(ds.colorValue),
+                                            isInstalled: true,
                                           ),
                                         const SizedBox(height: 12),
                                       ],
@@ -706,8 +704,8 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                               ),
                             ),
 
-                            // Keiyoushi Community Extensions (1,400+ Android APK packages)
-                            if (filtered.isNotEmpty) ...[
+                            // Keiyoushi Community Extensions (Android APK packages)
+                            if (!Platform.isIOS && filtered.isNotEmpty) ...[
                               SliverToBoxAdapter(
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -724,13 +722,13 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                               const SliverToBoxAdapter(child: SizedBox(height: 24)),
                             ],
 
-                            if (installed.isEmpty && available.isEmpty)
+                            if (Platform.isIOS ? matchDirectSources.isEmpty : (matchDirectSources.isEmpty && installed.isEmpty && available.isEmpty))
                               SliverToBoxAdapter(
                                 child: Padding(
                                   padding: const EdgeInsets.all(40),
                                   child: EmptyState(
                                     icon: Icons.search_off_rounded,
-                                    title: 'No extensions found',
+                                    title: Platform.isIOS ? 'No sources found' : 'No extensions found',
                                     message: 'Try searching for another name or changing the language filter from $_selectedLang.',
                                   ),
                                 ),
@@ -754,10 +752,15 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Extensions', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w600)),
-            if (allExts.isNotEmpty)
+            Text(Platform.isIOS ? 'Sources' : 'Extensions', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w600)),
+            if (allExts.isNotEmpty && !Platform.isIOS)
               Text(
                 '${allExts.length} extensions available from Keiyoushi',
+                style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+              ),
+            if (Platform.isIOS)
+              Text(
+                '4 direct sources integrated natively',
                 style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
               ),
           ],
@@ -767,42 +770,43 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
             icon: _service.isLoading
                 ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
                 : const Icon(Icons.refresh_rounded, color: AppColors.text),
-            tooltip: 'Refresh Repository',
+            tooltip: Platform.isIOS ? 'Refresh Sources' : 'Refresh Repository',
             onPressed: _service.isLoading ? null : () => _service.fetchExtensions(force: true),
           ),
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert_rounded, color: AppColors.muted),
-            color: AppColors.surface,
-            onSelected: (val) {
-              if (val == 'repo') {
-                _addRepoDialog();
-              } else if (val == 'uninstall_all') {
-                _confirmUninstallAll();
-              }
-            },
-            itemBuilder: (ctx) => [
-              const PopupMenuItem(
-                value: 'repo',
-                child: Row(
-                  children: [
-                    Icon(Icons.hub_rounded, size: 18, color: AppColors.primary),
-                    SizedBox(width: 10),
-                    Text('Repository Settings'),
-                  ],
+          if (!Platform.isIOS)
+            PopupMenuButton<String>(
+              icon: const Icon(Icons.more_vert_rounded, color: AppColors.muted),
+              color: AppColors.surface,
+              onSelected: (val) {
+                if (val == 'repo') {
+                  _addRepoDialog();
+                } else if (val == 'uninstall_all') {
+                  _confirmUninstallAll();
+                }
+              },
+              itemBuilder: (ctx) => [
+                const PopupMenuItem(
+                  value: 'repo',
+                  child: Row(
+                    children: [
+                      Icon(Icons.hub_rounded, size: 18, color: AppColors.primary),
+                      SizedBox(width: 10),
+                      Text('Repository Settings'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'uninstall_all',
-                child: Row(
-                  children: [
-                    Icon(Icons.delete_sweep_rounded, size: 18, color: Colors.redAccent),
-                    SizedBox(width: 10),
-                    Text('Uninstall All Sources', style: TextStyle(color: Colors.redAccent)),
-                  ],
+                const PopupMenuItem(
+                  value: 'uninstall_all',
+                  child: Row(
+                    children: [
+                      Icon(Icons.delete_sweep_rounded, size: 18, color: Colors.redAccent),
+                      SizedBox(width: 10),
+                      Text('Uninstall All Sources', style: TextStyle(color: Colors.redAccent)),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
+              ],
+            ),
         ],
       ),
       body: body,

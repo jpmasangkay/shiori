@@ -106,4 +106,30 @@ void main() {
       expect(ApiService.instance.isChapterBookmarked('ch_1'), isTrue);
     });
   });
+
+  group('Strict No-Fallback Policy', () {
+    test('getManga throws for unknown source ID without falling back to MangaDex', () async {
+      expect(
+        () => ApiService.instance.getManga('unknown_random_id_12345'),
+        throwsA(isA<Exception>()),
+      );
+    });
+
+    test('getChapters returns empty list for unknown source ID without querying MangaDex', () async {
+      final chapters = await ApiService.instance.getChapters('unknown_source_manga_999');
+      expect(chapters, isEmpty);
+    });
+
+    test('getChapterPages throws for unknown chapter source ID without querying MangaDex', () async {
+      expect(
+        () => ApiService.instance.getChapterPages('unknown_chapter_999'),
+        throwsA(isA<Exception>()),
+      );
+    });
+
+    test('searchManga returns empty list for unknown or failing source', () async {
+      final results = await ApiService.instance.searchManga(query: 'test', source: 'non_existent_source_xyz');
+      expect(results, isEmpty);
+    });
+  });
 }
