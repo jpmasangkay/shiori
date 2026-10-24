@@ -1,15 +1,15 @@
 package eu.kanade.tachiyomi.source.model
 
-interface SMangaUpdate {
-    var manga: SManga
-    var chapters: List<SChapter>
-
+open class SMangaUpdate(
+    var manga: SManga = SManga.create(),
+    var chapters: List<SChapter> = emptyList()
+) {
     companion object {
-        fun create(): SMangaUpdate = SMangaUpdateImpl()
+        fun create(): SMangaUpdate = SMangaUpdate()
     }
 }
 
 class SMangaUpdateImpl(
-    override var manga: SManga = SManga.create(),
-    override var chapters: List<SChapter> = emptyList()
-) : SMangaUpdate
+    manga: SManga = SManga.create(),
+    chapters: List<SChapter> = emptyList()
+) : SMangaUpdate(manga, chapters)

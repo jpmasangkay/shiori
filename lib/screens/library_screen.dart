@@ -68,6 +68,20 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
     }
   }
 
+  Future<void> _refreshLibraryWithUpdates() async {
+    await _loadUserLibrary(silent: false);
+    final newChapters = await ApiService.instance.checkForLibraryUpdates();
+    if (mounted && newChapters > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Found $newChapters new chapters in your library!'),
+          backgroundColor: AppColors.surfaceHigh,
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   List<MangaItem> _visibleItems(DisplaySettings s) {
     List<MangaItem> items;
     if (_category == null) {
@@ -409,7 +423,6 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
                   label: 'Filter, sort and display',
                   onTap: () => showDisplaySheet(context),
                 ),
-                BarIcon(Icons.refresh_rounded, label: 'Refresh', onTap: _loadUserLibrary),
               ],
             ),
             _buildCloudSyncBanner(),
@@ -440,7 +453,7 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
                         key: const ValueKey('library_content'),
                         color: AppColors.primary,
                         backgroundColor: AppColors.surface,
-                        onRefresh: _loadUserLibrary,
+                        onRefresh: _refreshLibraryWithUpdates,
                         child: items.isEmpty
                             ? LayoutBuilder(
                                 builder: (_, c) => SingleChildScrollView(
@@ -572,10 +585,12 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
       itemCount: items.length,
       itemBuilder: (_, i) {
         final manga = items[i];
+        final unread = ApiService.instance.getUnreadCount(manga.id);
         return CoverCard(
           title: manga.title,
           imageUrl: manga.cover,
           mode: s.mode,
+          unreadCount: unread,
           onTap: () => _openManga(manga),
           onLongPress: () => _showMangaCategoryDialog(manga),
         );
@@ -590,6 +605,7 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
       itemCount: items.length,
       itemBuilder: (_, i) {
         final manga = items[i];
+        final unread = ApiService.instance.getUnreadCount(manga.id);
         return InkWell(
           onTap: () => _openManga(manga),
           onLongPress: () => _showMangaCategoryDialog(manga),
@@ -624,6 +640,23 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
                     ],
                   ),
                 ),
+                if (unread > 0)
+                  Container(
+                    margin: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      unread > 99 ? '99+' : '$unread',
+                      style: GoogleFonts.inter(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.onPrimary,
+                      ),
+                    ),
+                  ),
                 IconButton(
                   icon: const Icon(Icons.label_outline_rounded, size: 18, color: AppColors.muted),
                   tooltip: 'Set categories',
@@ -717,6 +750,7 @@ class CoverCard extends StatelessWidget {
     required this.title,
     required this.mode,
     this.imageUrl,
+    this.unreadCount,
     this.onTap,
     this.onLongPress,
   });
@@ -724,6 +758,7 @@ class CoverCard extends StatelessWidget {
   final String title;
   final DisplayMode mode;
   final String? imageUrl;
+  final int? unreadCount;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
@@ -766,6 +801,33 @@ class CoverCard extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w500, height: 16 / 12),
+              ),
+            ),
+          if (unreadCount != null && unreadCount! > 0)
+            Positioned(
+              top: 6,
+              right: 6,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: .5),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Text(
+                  unreadCount! > 99 ? '99+' : '$unreadCount',
+                  style: GoogleFonts.inter(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.onPrimary,
+                  ),
+                ),
               ),
             ),
         ],

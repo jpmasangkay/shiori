@@ -4,6 +4,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/download_service.dart';
 import '../services/extension_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -39,7 +40,18 @@ class _DetailScreenState extends State<DetailScreen> {
   void initState() {
     super.initState();
     _manga = widget.manga;
+    DownloadService.instance.addListener(_onDownloadsChanged);
     _loadMangaData();
+  }
+
+  @override
+  void dispose() {
+    DownloadService.instance.removeListener(_onDownloadsChanged);
+    super.dispose();
+  }
+
+  void _onDownloadsChanged() {
+    if (mounted) setState(() {});
   }
 
   Future<void> _loadMangaData() async {
@@ -142,12 +154,32 @@ class _DetailScreenState extends State<DetailScreen> {
     if (chapterId == null) return;
 
     // Build reading chapters in chronological ascending order
+    double? parseChapterNum(ChapterItem c) {
+      if (c.number != null && c.number!.isNotEmpty) {
+        final parsed = double.tryParse(c.number!);
+        if (parsed != null) return parsed;
+      }
+      final match = RegExp(r'(?:chapter|ch\.?|ep\.?|episode)\s*(\d+(?:\.\d+)?)', caseSensitive: false).firstMatch(c.title);
+      if (match != null) return double.tryParse(match.group(1)!);
+      final matchAny = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(c.title);
+      if (matchAny != null) return double.tryParse(matchAny.group(1)!);
+      return null;
+    }
+
     final readingChapters = [..._apiChapters];
+    final firstNum = _apiChapters.isNotEmpty ? parseChapterNum(_apiChapters.first) : null;
+    final lastNum = _apiChapters.isNotEmpty ? parseChapterNum(_apiChapters.last) : null;
+    final isSourceDescending = (firstNum != null && lastNum != null && firstNum > lastNum);
+
     readingChapters.sort((a, b) {
-      final aNum = double.tryParse(a.number ?? '') ?? 0;
-      final bNum = double.tryParse(b.number ?? '') ?? 0;
-      if (aNum != bNum) return aNum.compareTo(bNum);
-      return a.displayTitle.compareTo(b.displayTitle);
+      final aNum = parseChapterNum(a);
+      final bNum = parseChapterNum(b);
+      if (aNum != null && bNum != null && aNum != bNum) {
+        return aNum.compareTo(bNum);
+      }
+      final idxA = _apiChapters.indexOf(a);
+      final idxB = _apiChapters.indexOf(b);
+      return isSourceDescending ? idxB.compareTo(idxA) : idxA.compareTo(idxB);
     });
 
     var idx = readingChapters.indexWhere((c) => c.id == chapterId);
@@ -243,6 +275,23 @@ class _DetailScreenState extends State<DetailScreen> {
                     await ApiService.instance.markChaptersRead(_manga.id, prevIds, read: true);
                     setState(() => _readChapterIds.addAll(prevIds));
                   }
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  DownloadService.instance.isChapterDownloaded(chapter.id)
+                      ? Icons.delete_outline_rounded
+                      : Icons.download_rounded,
+                  color: AppColors.primary,
+                ),
+                title: Text(
+                  DownloadService.instance.isChapterDownloaded(chapter.id)
+                      ? 'Delete Download'
+                      : 'Download Chapter',
+                ),
+                onTap: () {
+                  Navigator.pop(context);
+                  _handleChapterDownload(chapter);
                 },
               ),
             ],
@@ -433,11 +482,16 @@ class _DetailScreenState extends State<DetailScreen> {
                     final c = chaptersList[i];
                     final isRead = _readChapterIds.contains(c.id);
                     final isBookmarked = ApiService.instance.isChapterBookmarked(c.id);
+                    final downloadStatus = DownloadService.instance.getStatus(c.id);
+                    final downloadProgress = DownloadService.instance.getProgress(c.id);
 
                     return _ApiChapterTile(
                       chapter: c,
                       isRead: isRead,
                       isBookmarked: isBookmarked,
+                      downloadStatus: downloadStatus,
+                      downloadProgress: downloadProgress,
+                      onToggleDownload: () => _handleChapterDownload(c),
                       onTap: () => _openReader(
                         chapterId: c.id,
                         chapterNumber: c.number,
@@ -470,6 +524,68 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  void _handleChapterDownload(ChapterItem c) {
+    final status = DownloadService.instance.getStatus(c.id);
+    if (status == DownloadStatus.downloaded) {
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          title: Text('Delete ${c.displayTitle}?'),
+          content: const Text('Remove downloaded chapter from local storage?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                DownloadService.instance.deleteDownloadedChapter(c.id);
+              },
+              style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
+      );
+    } else if (status == DownloadStatus.downloading || status == DownloadStatus.queued) {
+      DownloadService.instance.cancelDownload(c.id);
+    } else {
+      DownloadService.instance.downloadChapter(_manga, c);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Downloading ${c.displayTitle}...'), duration: const Duration(seconds: 1)),
+      );
+    }
+  }
+
+  void _downloadBatch(int count) {
+    final unread = _apiChapters.where((c) => !_readChapterIds.contains(c.id)).toList();
+    final toDownload = (unread.isNotEmpty ? unread : _apiChapters).take(count).toList();
+    for (final c in toDownload) {
+      DownloadService.instance.downloadChapter(_manga, c);
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Queued ${toDownload.length} chapters for download'), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  void _downloadUnread() {
+    final unread = _apiChapters.where((c) => !_readChapterIds.contains(c.id)).toList();
+    for (final c in unread) {
+      DownloadService.instance.downloadChapter(_manga, c);
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Queued ${unread.length} unread chapters for download'), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  void _downloadAll() {
+    for (final c in _apiChapters) {
+      DownloadService.instance.downloadChapter(_manga, c);
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Queued ${_apiChapters.length} chapters for download'), duration: const Duration(seconds: 2)),
+    );
+  }
+
   Widget _hero(double top) {
     final m = _manga;
     final s = m.source.toLowerCase();
@@ -498,26 +614,27 @@ class _DetailScreenState extends State<DetailScreen> {
       sourceColor = const Color(0xFFE50914);
     }
 
-    return SizedBox(
-      height: 290,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          // Background blur
-          CoverImage(imageUrl: m.cover, saturation: .5),
-          BackdropFilter(
-            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
-            child: const ColoredBox(color: Color.fromRGBO(5, 6, 9, .78)),
-          ),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Colors.transparent, AppColors.bg],
+    return ClipRect(
+      child: SizedBox(
+        height: 290,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Background cover with blur
+            ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
+              child: CoverImage(imageUrl: m.cover, saturation: .5),
+            ),
+            const ColoredBox(color: Color.fromRGBO(5, 6, 9, .78)),
+            DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [Colors.transparent, AppColors.bg],
+                ),
               ),
             ),
-          ),
           // Content
           Positioned(
             left: 16,
@@ -637,8 +754,9 @@ class _DetailScreenState extends State<DetailScreen> {
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _actionRow() {
     final assignedCategories = ApiService.instance.getMangaCategoryIds(_manga.id);
@@ -789,6 +907,28 @@ class _DetailScreenState extends State<DetailScreen> {
             onTap: () => setState(() => _descending = !_descending),
           ),
           PopupMenuButton<String>(
+            icon: const Icon(Icons.download_rounded, size: 20, color: AppColors.muted),
+            color: AppColors.surface,
+            tooltip: 'Download options',
+            onSelected: (val) {
+              if (val == 'next_5') {
+                _downloadBatch(5);
+              } else if (val == 'next_10') {
+                _downloadBatch(10);
+              } else if (val == 'unread') {
+                _downloadUnread();
+              } else if (val == 'all') {
+                _downloadAll();
+              }
+            },
+            itemBuilder: (_) => [
+              const PopupMenuItem(value: 'next_5', child: Text('Download next 5')),
+              const PopupMenuItem(value: 'next_10', child: Text('Download next 10')),
+              const PopupMenuItem(value: 'unread', child: Text('Download unread')),
+              const PopupMenuItem(value: 'all', child: Text('Download all')),
+            ],
+          ),
+          PopupMenuButton<String>(
             icon: const Icon(Icons.more_vert_rounded, size: 20, color: AppColors.muted),
             color: AppColors.surface,
             onSelected: (val) async {
@@ -854,19 +994,67 @@ class _ApiChapterTile extends StatelessWidget {
     required this.chapter,
     required this.isRead,
     required this.isBookmarked,
+    required this.downloadStatus,
+    required this.downloadProgress,
     required this.onTap,
     required this.onToggleRead,
     required this.onToggleBookmark,
+    required this.onToggleDownload,
     required this.onLongPress,
   });
 
   final ChapterItem chapter;
   final bool isRead;
   final bool isBookmarked;
+  final DownloadStatus downloadStatus;
+  final double downloadProgress;
   final VoidCallback onTap;
   final VoidCallback onToggleRead;
   final VoidCallback onToggleBookmark;
+  final VoidCallback onToggleDownload;
   final VoidCallback onLongPress;
+
+  Widget _buildDownloadIcon() {
+    switch (downloadStatus) {
+      case DownloadStatus.downloaded:
+        return IconButton(
+          icon: const Icon(Icons.check_circle_rounded, size: 20, color: AppColors.primary),
+          tooltip: 'Downloaded (tap to delete)',
+          onPressed: onToggleDownload,
+        );
+      case DownloadStatus.downloading:
+        return Padding(
+          padding: const EdgeInsets.all(12),
+          child: SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              value: downloadProgress > 0 ? downloadProgress : null,
+              strokeWidth: 2,
+              color: AppColors.primary,
+            ),
+          ),
+        );
+      case DownloadStatus.queued:
+        return IconButton(
+          icon: const Icon(Icons.schedule_rounded, size: 20, color: AppColors.muted),
+          tooltip: 'Queued for download',
+          onPressed: onToggleDownload,
+        );
+      case DownloadStatus.failed:
+        return IconButton(
+          icon: const Icon(Icons.error_outline_rounded, size: 20, color: Colors.redAccent),
+          tooltip: 'Download failed (tap to retry)',
+          onPressed: onToggleDownload,
+        );
+      case DownloadStatus.notDownloaded:
+        return IconButton(
+          icon: Icon(Icons.download_rounded, size: 20, color: AppColors.muted.withValues(alpha: .5)),
+          tooltip: 'Download chapter',
+          onPressed: onToggleDownload,
+        );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -917,6 +1105,7 @@ class _ApiChapterTile extends StatelessWidget {
                 ],
               ),
             ),
+            _buildDownloadIcon(),
             IconButton(
               icon: Icon(
                 isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,

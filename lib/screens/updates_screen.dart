@@ -64,6 +64,19 @@ class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserv
     }
   }
 
+  Future<void> _onRefresh() async {
+    final newCount = await ApiService.instance.checkForLibraryUpdates();
+    await _fetch();
+    if (mounted && newCount > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Checked library: $newCount new chapters found!'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasRealUpdates = _groups.values.any((list) => (list as List).isNotEmpty);
@@ -73,14 +86,18 @@ class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserv
         AppTopBar(
           title: 'Updates',
           actions: [
-            BarIcon(Icons.refresh_rounded, label: 'Refresh', onTap: _fetch),
+            BarIcon(
+              Icons.sync_rounded,
+              label: 'Check updates',
+              onTap: _onRefresh,
+            ),
           ],
         ),
         Expanded(
           child: RefreshIndicator(
             color: AppColors.primary,
             backgroundColor: AppColors.surface,
-            onRefresh: _fetch,
+            onRefresh: _onRefresh,
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 250),
               child: _loading && !hasRealUpdates
@@ -233,10 +250,6 @@ class _ApiUpdateRow extends StatelessWidget {
                   ),
                 ],
               ),
-            ),
-            IconButton(
-              icon: const Icon(Icons.file_download_outlined, size: 20, color: AppColors.muted),
-              onPressed: onTap,
             ),
           ],
         ),

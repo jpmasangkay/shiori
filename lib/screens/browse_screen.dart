@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
@@ -40,6 +41,13 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     _tabController = TabController(length: 2, vsync: this);
     _extService.addListener(_onServiceUpdate);
     _sourceManager.addListener(_onServiceUpdate);
+
+    SharedPreferences.getInstance().then((prefs) {
+      final saved = prefs.getString('browse_selected_source_filter');
+      if (saved != null && mounted) {
+        setState(() => _selectedSourceFilter = saved);
+      }
+    });
   }
 
   @override
@@ -250,7 +258,6 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           if (hasPinned) ...[
             _sectionHeaderWithBadge(
               title: 'PINNED SOURCES',
-              badgeText: '${pinnedDirect.length + pinnedExts.length}',
               badgeColor: Colors.amber,
               icon: Icons.push_pin_rounded,
             ),
@@ -270,10 +277,10 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 id: ext.pkg,
                 name: ext.name,
                 lang: ext.lang,
-                badge: 'EXT • ${ext.lang}',
+                badge: ext.lang,
                 description: ext.sourceNames.isNotEmpty
-                    ? 'Sources: ${ext.sourceNames.join(', ')}'
-                    : 'Installed Community Extension (${ext.lang})',
+                    ? ext.sourceNames.join(', ')
+                    : ext.name,
                 iconLetter: ext.name.isNotEmpty ? ext.name[0].toUpperCase() : 'E',
                 iconColor: const Color(0xFF10B981),
                 iconUrl: ext.iconUrl,
@@ -305,7 +312,6 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           ],
 
           if (Platform.isIOS) ...[
-            // On iPhone / iOS: Clean direct access card with zero APK/extension download prompts
             const SizedBox(height: 14),
             Container(
               padding: const EdgeInsets.all(14),
@@ -337,7 +343,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          'MangaDex, MangaPill, Asura Scans, Flame Comics, Weeb Central, MangaKatana, Mangakakalot and more run natively on iOS with offline reading, continuous scroll, and categories.',
+                          'MangaDex, MangaPill, Asura Scans, Flame Comics, Weeb Central, MangaKatana, MangaRead and more run natively on iOS with offline reading, continuous scroll, and categories.',
                           style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.35),
                         ),
                       ],
@@ -349,10 +355,9 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           ] else ...[
             const SizedBox(height: 14),
 
-            // SECTION 3: COMMUNITY EXTENSIONS (TACHIYOMI APKs)
+            // SECTION 3: COMMUNITY EXTENSIONS
             _sectionHeaderWithBadge(
               title: 'COMMUNITY EXTENSIONS',
-              badgeText: Platform.isAndroid ? 'Tachiyomi (${installedExts.length})' : 'Tachiyomi',
               badgeColor: const Color(0xFF10B981),
               icon: Icons.extension_rounded,
             ),
@@ -363,10 +368,10 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   id: ext.pkg,
                   name: ext.name,
                   lang: ext.lang,
-                  badge: 'EXT • ${ext.lang}',
+                  badge: ext.lang,
                   description: ext.sourceNames.isNotEmpty
-                      ? 'Sources: ${ext.sourceNames.join(', ')}'
-                      : 'Installed Community Extension (${ext.lang})',
+                      ? ext.sourceNames.join(', ')
+                      : ext.name,
                   iconLetter: ext.name.isNotEmpty ? ext.name[0].toUpperCase() : 'E',
                   iconColor: const Color(0xFF10B981),
                   iconUrl: ext.iconUrl,
@@ -377,7 +382,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Text(
-                  'No community extensions installed. Explore 1,400+ extensions below.',
+                  'No community extensions installed. Explore extensions below.',
                   style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
                 ),
               ),
@@ -437,6 +442,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       onSelected: (val) {
         if (val) {
           setState(() => _selectedSourceFilter = filterId);
+          SharedPreferences.getInstance().then((p) => p.setString('browse_selected_source_filter', filterId));
           if (_searchQuery.isNotEmpty) {
             _runGlobalSearch(_searchQuery);
           }
@@ -605,7 +611,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
 
   Widget _sectionHeaderWithBadge({
     required String title,
-    required String badgeText,
+    String? badgeText,
     required Color badgeColor,
     required IconData icon,
   }) {
@@ -628,24 +634,26 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               ),
             ),
           ),
-          const SizedBox(width: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(
-              color: badgeColor.withValues(alpha: .15),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              badgeText,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.inter(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                color: badgeColor,
+          if (badgeText != null && badgeText.isNotEmpty) ...[
+            const SizedBox(width: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: badgeColor.withValues(alpha: .15),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                badgeText,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.inter(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w600,
+                  color: badgeColor,
+                ),
               ),
             ),
-          ),
+          ],
         ],
       ),
     );

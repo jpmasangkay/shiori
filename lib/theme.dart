@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// Design tokens ported from the Figma Make `index.css` `:root` block.
 class AppColors {
   AppColors._();
 
   static const bg = Color(0xFF111318);
+  static const amoledBg = Color(0xFF000000);
   static const surface = Color(0xFF1D2026);
+  static const amoledSurface = Color(0xFF0D0E12);
   static const surfaceHigh = Color(0xFF282A2F);
+  static const amoledSurfaceHigh = Color(0xFF16181F);
   static const text = Color(0xFFE2E2E9);
   static const muted = Color(0xFF8E9099);
   static const read = Color(0xFF6C707A);
@@ -18,19 +23,65 @@ class AppColors {
   static const black = Color(0xFF060709);
 }
 
-ThemeData buildTheme() {
+class ThemeController extends ChangeNotifier {
+  ThemeController._();
+  static final ThemeController instance = ThemeController._();
+
+  static const String _keyAmoled = 'amoled_black_enabled';
+  bool _amoled = false;
+
+  bool get isAmoled => _amoled;
+
+  Color get currentBg => _amoled ? AppColors.amoledBg : AppColors.bg;
+  Color get currentSurface => _amoled ? AppColors.amoledSurface : AppColors.surface;
+  Color get currentSurfaceHigh => _amoled ? AppColors.amoledSurfaceHigh : AppColors.surfaceHigh;
+
+  Future<void> init() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _amoled = prefs.getBool(_keyAmoled) ?? false;
+      _updateSystemUI();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  Future<void> setAmoled(bool enabled) async {
+    _amoled = enabled;
+    _updateSystemUI();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyAmoled, enabled);
+    notifyListeners();
+  }
+
+  void _updateSystemUI() {
+    SystemChrome.setSystemUIOverlayStyle(
+      SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        systemNavigationBarColor: _amoled ? Colors.black : AppColors.surface,
+        systemNavigationBarIconBrightness: Brightness.light,
+      ),
+    );
+  }
+}
+
+ThemeData buildTheme({bool amoled = false}) {
+  final bgColor = amoled ? AppColors.amoledBg : AppColors.bg;
+  final surfaceColor = amoled ? AppColors.amoledSurface : AppColors.surface;
+  final surfaceHighColor = amoled ? AppColors.amoledSurfaceHigh : AppColors.surfaceHigh;
+
   final base = ThemeData(
     brightness: Brightness.dark,
     useMaterial3: true,
-    scaffoldBackgroundColor: AppColors.bg,
-    colorScheme: const ColorScheme.dark(
+    scaffoldBackgroundColor: bgColor,
+    colorScheme: ColorScheme.dark(
       primary: AppColors.primary,
       onPrimary: AppColors.onPrimary,
-      surface: AppColors.bg,
+      surface: bgColor,
       onSurface: AppColors.text,
       outline: AppColors.outline,
-      surfaceContainer: AppColors.surface,
-      surfaceContainerHigh: AppColors.surfaceHigh,
+      surfaceContainer: surfaceColor,
+      surfaceContainerHigh: surfaceHighColor,
     ),
   );
 
@@ -44,7 +95,7 @@ ThemeData buildTheme() {
     splashFactory: InkRipple.splashFactory,
     navigationBarTheme: NavigationBarThemeData(
       height: 80,
-      backgroundColor: AppColors.surface,
+      backgroundColor: surfaceColor,
       surfaceTintColor: Colors.transparent,
       indicatorColor: AppColors.active,
       indicatorShape: RoundedRectangleBorder(
@@ -65,6 +116,6 @@ ThemeData buildTheme() {
         );
       }),
     ),
-    dividerColor: AppColors.surface,
+    dividerColor: surfaceColor,
   );
 }

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
@@ -27,11 +28,14 @@ class SourceCatalogScreen extends StatefulWidget {
 
 class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   final _searchController = TextEditingController();
+  final _scrollController = ScrollController();
   Timer? _debounce;
   String _selectedType = 'all';
   final _selectedOrder = 'popular';
   List<MangaItem> _items = [];
   bool _loading = true;
+  bool _loadingMore = false;
+  bool _hasMore = true;
   String? _error;
   int _page = 1;
 
@@ -45,6 +49,30 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_onScroll);
+    _initTypeAndFetch();
+  }
+
+  Future<void> _initTypeAndFetch() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString('catalog_type_${widget.sourceId}') ?? prefs.getString('default_catalog_type');
+      if (saved != null && _types.any((t) => t.$1 == saved)) {
+        if (mounted) _selectedType = saved;
+      }
+    } catch (_) {}
+    if (mounted) _fetch();
+  }
+
+  void _changeType(String typeKey) {
+    setState(() {
+      _selectedType = typeKey;
+      _page = 1;
+    });
+    SharedPreferences.getInstance().then((p) {
+      p.setString('catalog_type_${widget.sourceId}', typeKey);
+      p.setString('default_catalog_type', typeKey);
+    });
     _fetch();
   }
 
@@ -52,13 +80,22 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   void dispose() {
     _debounce?.cancel();
     _searchController.dispose();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.hasClients &&
+        _scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 350) {
+      if (!_loading && !_loadingMore && _hasMore) {
+        _loadMore();
+      }
+    }
   }
 
   void _onSearchChanged(String text) {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 400), () {
-      setState(() => _page = 1);
       _fetch();
     });
   }
@@ -67,21 +104,42 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
     setState(() {
       _loading = true;
       _error = null;
+      _page = 1;
+      _hasMore = true;
     });
 
     try {
-      final results = await ApiService.instance.searchManga(
-        query: _searchController.text.trim(),
+      final query = _searchController.text.trim();
+      var results = await ApiService.instance.searchManga(
+        query: query,
         type: _selectedType == 'all' ? null : _selectedType,
         order: _selectedOrder,
-        page: _page,
+        page: 1,
         limit: 24,
         source: widget.sourceId,
       );
+
+      // If user searched for a keyword but the type filter caused 0 results,
+      // fallback to searching all types so titles are never hidden or limited
+      if (results.isEmpty && query.isNotEmpty && _selectedType != 'all') {
+        final allResults = await ApiService.instance.searchManga(
+          query: query,
+          type: null,
+          order: _selectedOrder,
+          page: 1,
+          limit: 24,
+          source: widget.sourceId,
+        );
+        if (allResults.isNotEmpty) {
+          results = allResults;
+        }
+      }
+
       if (mounted) {
         setState(() {
           _items = results;
           _loading = false;
+          _hasMore = results.length >= 8;
         });
       }
     } catch (err) {
@@ -90,6 +148,38 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           _error = err.toString().replaceFirst('Exception: ', '');
           _loading = false;
         });
+      }
+    }
+  }
+
+  Future<void> _loadMore() async {
+    if (_loadingMore || !_hasMore) return;
+    setState(() => _loadingMore = true);
+    final nextPage = _page + 1;
+
+    try {
+      final query = _searchController.text.trim();
+      final results = await ApiService.instance.searchManga(
+        query: query,
+        type: _selectedType == 'all' ? null : _selectedType,
+        order: _selectedOrder,
+        page: nextPage,
+        limit: 24,
+        source: widget.sourceId,
+      );
+      if (mounted) {
+        setState(() {
+          _page = nextPage;
+          final existingIds = _items.map((e) => e.id).toSet();
+          final newItems = results.where((e) => !existingIds.contains(e.id)).toList();
+          _items.addAll(newItems);
+          _loadingMore = false;
+          _hasMore = results.isNotEmpty && results.length >= 8;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _loadingMore = false);
       }
     }
   }
@@ -114,13 +204,6 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
             ),
           ],
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded, color: AppColors.text),
-            onPressed: _fetch,
-            tooltip: 'Refresh',
-          ),
-        ],
       ),
       body: Column(
         children: [
@@ -179,13 +262,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                       label: Text(typeLabel),
                       selected: _selectedType == typeKey,
                       onSelected: (sel) {
-                        if (sel) {
-                          setState(() {
-                            _selectedType = typeKey;
-                            _page = 1;
-                          });
-                          _fetch();
-                        }
+                        if (sel) _changeType(typeKey);
                       },
                       backgroundColor: AppColors.surface,
                       selectedColor: AppColors.active,
@@ -256,6 +333,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
     }
 
     if (_items.isEmpty) {
+      final typeLabel = _types.firstWhere((t) => t.$1 == _selectedType, orElse: () => ('all', 'titles')).$2;
       return Center(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 28),
@@ -265,28 +343,43 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
               const Icon(Icons.search_off_rounded, size: 48, color: AppColors.muted),
               const SizedBox(height: 12),
               Text(
-                'No titles found on ${widget.sourceName}',
+                'No $typeLabel found on ${widget.sourceName}',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.text),
               ),
               const SizedBox(height: 6),
               Text(
-                'This source may be blocked by Cloudflare, be offline, or have no results for this query. Try another search or a different extension.',
+                _selectedType != 'all'
+                    ? '${widget.sourceName} may not carry $typeLabel or specializes in other comic categories. Try selecting "All" or a different category.'
+                    : 'This source returned no results for this query. Try another search or pull to refresh.',
                 textAlign: TextAlign.center,
                 style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.4),
               ),
               const SizedBox(height: 18),
-              FilledButton.icon(
-                onPressed: () => Navigator.pop(context),
-                icon: const Icon(Icons.arrow_back_rounded, size: 16),
-                label: const Text('Browse Direct Sources'),
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: AppColors.onPrimary,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              if (_selectedType != 'all')
+                FilledButton.icon(
+                  onPressed: () => _changeType('all'),
+                  icon: const Icon(Icons.filter_alt_off_rounded, size: 16),
+                  label: const Text('Show All Titles'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: AppColors.onPrimary,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                )
+              else
+                FilledButton.icon(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.arrow_back_rounded, size: 16),
+                  label: const Text('Back to Sources'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: AppColors.onPrimary,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
                 ),
-              ),
             ],
           ),
         ),
@@ -301,6 +394,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
       backgroundColor: AppColors.surface,
       onRefresh: _fetch,
       child: GridView.builder(
+        controller: _scrollController,
         padding: const EdgeInsets.fromLTRB(12, 6, 12, 20),
         gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: cols,
@@ -308,8 +402,20 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           crossAxisSpacing: 8,
           childAspectRatio: 2 / 3,
         ),
-        itemCount: _items.length,
+        itemCount: _items.length + (_loadingMore ? 1 : 0),
         itemBuilder: (_, i) {
+          if (i >= _items.length) {
+            return const Center(
+              child: Padding(
+                padding: EdgeInsets.all(16.0),
+                child: SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                ),
+              ),
+            );
+          }
           final manga = _items[i];
           return InkWell(
             onTap: () {

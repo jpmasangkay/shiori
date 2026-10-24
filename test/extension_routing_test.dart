@@ -71,5 +71,31 @@ void main() {
       );
       expect(results, isEmpty);
     });
+
+    test('MangaItem accurately distinguishes manga, manhwa, and manhua', () {
+      final manhwa = MangaItem(
+        id: 'ext:eu.kanade.tachiyomi.extension.all.comick:solo',
+        title: 'Solo Leveling',
+        type: 'manhwa',
+        tags: const ['Action', 'Manhwa', 'Webtoon'],
+      );
+      expect(manhwa.type, 'manhwa');
+
+      final manhua = MangaItem(
+        id: 'ext:eu.kanade.tachiyomi.extension.all.comick:martial',
+        title: 'Martial Peak',
+        type: 'manhua',
+        tags: const ['Martial Arts', 'Manhua'],
+      );
+      expect(manhua.type, 'manhua');
+
+      final manga = MangaItem(
+        id: 'ext:eu.kanade.tachiyomi.extension.all.comick:op',
+        title: 'One Piece',
+        type: 'manga',
+        tags: const ['Action', 'Manga'],
+      );
+      expect(manga.type, 'manga');
+    });
   });
 }

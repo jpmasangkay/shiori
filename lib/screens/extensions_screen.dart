@@ -239,10 +239,10 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('PACKAGE ID', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.muted)),
+                  Text('EXTENSION ID', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.muted)),
                   const SizedBox(height: 2),
                   SelectableText(
-                    ext.pkg,
+                    ext.pkg.replaceFirst(RegExp(r'^eu\.kanade\.tachiyomi\.(?:extension\.)?'), ''),
                     style: GoogleFonts.robotoMono(fontSize: 11, color: AppColors.text),
                   ),
                   if (ext.sourceNames.isNotEmpty) ...[
@@ -480,16 +480,9 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    allExts.isNotEmpty ? '${allExts.length} community extensions available' : 'Keiyoushi Repository',
+                    'Community repository',
                     style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
                   ),
-                ),
-                IconButton(
-                  icon: _service.isLoading
-                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
-                      : const Icon(Icons.refresh_rounded, size: 20, color: AppColors.text),
-                  tooltip: 'Refresh Repository',
-                  onPressed: _service.isLoading ? null : () => _service.fetchExtensions(force: true),
                 ),
                 PopupMenuButton<String>(
                   icon: const Icon(Icons.more_vert_rounded, size: 20, color: AppColors.muted),
@@ -709,7 +702,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                               SliverToBoxAdapter(
                                 child: Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 16),
-                                  child: _header('KEIYOUSHI COMMUNITY EXTENSIONS (${filtered.length})'),
+                                  child: _header('COMMUNITY EXTENSIONS'),
                                 ),
                               ),
                               SliverPadding(
@@ -753,26 +746,19 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(Platform.isIOS ? 'Sources' : 'Extensions', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w600)),
-            if (allExts.isNotEmpty && !Platform.isIOS)
+            if (!Platform.isIOS)
               Text(
-                '${allExts.length} extensions available from Keiyoushi',
+                'Community extensions',
                 style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
               ),
             if (Platform.isIOS)
               Text(
-                '4 direct sources integrated natively',
+                'Direct sources integrated natively',
                 style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
               ),
           ],
         ),
         actions: [
-          IconButton(
-            icon: _service.isLoading
-                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
-                : const Icon(Icons.refresh_rounded, color: AppColors.text),
-            tooltip: Platform.isIOS ? 'Refresh Sources' : 'Refresh Repository',
-            onPressed: _service.isLoading ? null : () => _service.fetchExtensions(force: true),
-          ),
           if (!Platform.isIOS)
             PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert_rounded, color: AppColors.muted),
@@ -1048,7 +1034,9 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      ext.sourceNames.isNotEmpty ? ext.sourceNames.take(3).join(', ') : ext.pkg,
+                      ext.sourceNames.isNotEmpty
+                          ? ext.sourceNames.take(3).join(', ')
+                          : ext.pkg.replaceFirst(RegExp(r'^eu\.kanade\.tachiyomi\.(?:extension\.)?'), ''),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),

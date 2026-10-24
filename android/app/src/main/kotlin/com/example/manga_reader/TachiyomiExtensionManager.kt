@@ -11,7 +11,9 @@ import eu.kanade.tachiyomi.network.NetworkHelper
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFactory
+import eu.kanade.tachiyomi.source.model.Filter
 import eu.kanade.tachiyomi.source.model.FilterList
+import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
@@ -20,8 +22,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.addSingleton
+import okhttp3.OkHttpClient
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.zip.ZipFile
 
 class TachiyomiExtensionManager(private val context: Context) {
     private val TAG = "TachiyomiExtMgr"
@@ -32,23 +36,41 @@ class TachiyomiExtensionManager(private val context: Context) {
     }
 
     private fun setupInjekt() {
+        val app = try {
+            context.applicationContext as? Application
+        } catch (_: Throwable) { null }
+        if (app != null) {
+            try { Injekt.addSingleton<Application>(app) } catch (_: Throwable) {}
+        }
+        try { Injekt.addSingleton<Context>(context.applicationContext) } catch (_: Throwable) {}
+
+        val netHelper = try {
+            NetworkHelper(context.applicationContext)
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to create NetworkHelper: ${e.message}")
+            null
+        }
+        if (netHelper != null) {
+            try { Injekt.addSingleton<NetworkHelper>(netHelper) } catch (_: Throwable) {}
+            try { Injekt.addSingleton<OkHttpClient>(netHelper.client) } catch (_: Throwable) {}
+        }
+
         try {
-            Injekt.addSingleton<Application>(context.applicationContext as Application)
-            Injekt.addSingleton<Context>(context.applicationContext)
-            Injekt.addSingleton<NetworkHelper>(NetworkHelper(context.applicationContext))
             Injekt.addSingleton<SharedPreferences>(
                 context.getSharedPreferences("tachiyomi_ext_shared", Context.MODE_PRIVATE)
             )
+        } catch (_: Throwable) {}
+
+        try {
             Injekt.addSingleton<Json>(
                 Json {
                     ignoreUnknownKeys = true
                     isLenient = true
                     coerceInputValues = true
+                    explicitNulls = false
                 }
             )
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing Injekt: ${e.message}", e)
-        }
+        } catch (_: Throwable) {}
     }
 
     private fun findApkPath(pkg: String, hintPath: String?): String? {
@@ -67,7 +89,8 @@ class TachiyomiExtensionManager(private val context: Context) {
         val possibleDirs = listOfNotNull(
             File(context.cacheDir, "shiori_extensions"),
             File(context.filesDir, "shiori_extensions"),
-            context.externalCacheDir?.let { File(it, "shiori_extensions") }
+            context.externalCacheDir?.let { File(it, "shiori_extensions") },
+            System.getProperty("java.io.tmpdir")?.let { File(it, "shiori_extensions") }
         )
 
         for (dir in possibleDirs) {
@@ -104,6 +127,68 @@ class TachiyomiExtensionManager(private val context: Context) {
                 return appInfo.sourceDir
             }
         } catch (_: Exception) {}
+
+        return null
+    }
+
+    private fun extractExtensionClassFromApk(apkPath: String, classLoader: ClassLoader): String? {
+        // 1. Direct check for modern Keiyoushi source
+        try {
+            val cls = Class.forName("keiyoushi.source.Generated", false, classLoader)
+            if (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls)) {
+                Log.i(TAG, "Resolved extension class: keiyoushi.source.Generated")
+                return "keiyoushi.source.Generated"
+            }
+        } catch (_: Throwable) {}
+
+        // 2. Scan AndroidManifest.xml string table inside the APK zip
+        try {
+            ZipFile(apkPath).use { zip ->
+                val entry = zip.getEntry("AndroidManifest.xml")
+                if (entry != null) {
+                    val bytes = zip.getInputStream(entry).readBytes()
+                    val sUtf16 = String(bytes, Charsets.UTF_16LE)
+                    val sLatin1 = String(bytes, Charsets.ISO_8859_1)
+                    val pattern = Regex("[a-zA-Z0-9_]+(?:\\.[a-zA-Z0-9_]+)+")
+                    val candidates = mutableSetOf<String>()
+                    pattern.findAll(sUtf16).forEach { candidates.add(it.value) }
+                    pattern.findAll(sLatin1).forEach { candidates.add(it.value) }
+
+                    for (candidate in candidates) {
+                        if (candidate.startsWith("android.") || candidate.startsWith("http") || candidate.contains("schemas.")) continue
+                        try {
+                            val cls = Class.forName(candidate, false, classLoader)
+                            if (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls)) {
+                                Log.i(TAG, "Resolved extension class via manifest scan: $candidate")
+                                return candidate
+                            }
+                        } catch (_: Throwable) {}
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Manifest scan failed for $apkPath: ${e.message}")
+        }
+
+        // 3. Fallback: Dex entries scan
+        try {
+            @Suppress("DEPRECATION")
+            val dexFile = dalvik.system.DexFile(apkPath)
+            val entries = dexFile.entries()
+            while (entries.hasMoreElements()) {
+                val candidate = entries.nextElement()
+                if (candidate.startsWith("android.") || candidate.startsWith("kotlin.") || candidate.startsWith("okhttp3.")) continue
+                try {
+                    val cls = Class.forName(candidate, false, classLoader)
+                    if (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls)) {
+                        Log.i(TAG, "Resolved extension class via dex scan: $candidate")
+                        return candidate
+                    }
+                } catch (_: Throwable) {}
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Dex scan failed for $apkPath: ${e.message}")
+        }
 
         return null
     }
@@ -157,6 +242,30 @@ class TachiyomiExtensionManager(private val context: Context) {
         }
 
         if (className.isNullOrEmpty()) {
+            className = extractExtensionClassFromApk(apkPath, classLoader)
+        }
+
+        if (className.isNullOrEmpty()) {
+            // Check common package naming conventions
+            val simpleName = pkg.substringAfterLast('.')
+            val capitalized = simpleName.replaceFirstChar { it.uppercase() }
+            val potentialNames = listOf(
+                "$pkg.$capitalized",
+                "$pkg.$simpleName",
+                "eu.kanade.tachiyomi.extension.$simpleName.$capitalized"
+            )
+            for (pName in potentialNames) {
+                try {
+                    val cls = Class.forName(pName, false, classLoader)
+                    if (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls)) {
+                        className = pName
+                        break
+                    }
+                } catch (_: Throwable) {}
+            }
+        }
+
+        if (className.isNullOrEmpty()) {
             throw IllegalStateException("Cannot resolve extension class name for $pkg in $apkPath")
         }
 
@@ -186,31 +295,222 @@ class TachiyomiExtensionManager(private val context: Context) {
         return source
     }
 
-    suspend fun fetchPopularManga(pkg: String, page: Int, hintPath: String? = null): List<Map<String, Any?>> =
-        withContext(Dispatchers.IO) {
-            val source = getOrLoadSource(pkg, hintPath)
-            val mangasPage = try {
+    fun removeSource(pkg: String) {
+        sourceCache.remove(pkg)
+    }
+
+    fun clearCache() {
+        sourceCache.clear()
+    }
+
+    private fun applyTypeFilter(filters: FilterList, type: String?) {
+        if (type.isNullOrBlank() || type.equals("all", ignoreCase = true)) return
+        val target = type.lowercase().trim()
+
+        for (filter in filters) {
+            when (filter) {
+                is Filter.Select<*> -> {
+                    val nameLower = filter.name.lowercase()
+                    if (nameLower.contains("origin") || nameLower.contains("type") || 
+                        nameLower.contains("demographic") || nameLower.contains("format") ||
+                        nameLower.contains("country")) {
+                        for (i in filter.values.indices) {
+                            val valStr = filter.values[i]?.toString()?.lowercase() ?: ""
+                            if (target == "manhwa" && (valStr.contains("manhwa") || valStr.contains("korean"))) {
+                                filter.state = i
+                                break
+                            } else if (target == "manhua" && (valStr.contains("manhua") || valStr.contains("chinese"))) {
+                                filter.state = i
+                                break
+                            } else if (target == "manga" && (valStr.contains("manga") || valStr.contains("japanese"))) {
+                                filter.state = i
+                                break
+                            }
+                        }
+                    }
+                }
+                is Filter.Group<*> -> {
+                    for (item in filter.state) {
+                        if (item is Filter.CheckBox) {
+                            val itemLower = item.name.lowercase()
+                            if (target == "manhwa" && (itemLower.contains("manhwa") || itemLower.contains("webtoon"))) {
+                                item.state = true
+                            } else if (target == "manhua" && itemLower.contains("manhua")) {
+                                item.state = true
+                            } else if (target == "manga" && itemLower == "manga") {
+                                item.state = true
+                            }
+                        } else if (item is Filter.TriState) {
+                            val itemLower = item.name.lowercase()
+                            if (target == "manhwa" && (itemLower.contains("manhwa") || itemLower.contains("webtoon"))) {
+                                item.state = Filter.TriState.STATE_INCLUDE
+                            } else if (target == "manhua" && itemLower.contains("manhua")) {
+                                item.state = Filter.TriState.STATE_INCLUDE
+                            } else if (target == "manga" && itemLower == "manga") {
+                                item.state = Filter.TriState.STATE_INCLUDE
+                            }
+                        }
+                    }
+                }
+                else -> {}
+            }
+        }
+    }
+
+    suspend fun fetchPopularManga(
+        pkg: String,
+        page: Int,
+        type: String? = null,
+        hintPath: String? = null
+    ): List<Map<String, Any?>> = withContext(Dispatchers.IO) {
+        val source = getOrLoadSource(pkg, hintPath)
+
+        // If a specific type (manhwa, manhua) is requested, attempt filter search with getSearchManga
+        if (!type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
+            try {
+                val filters = source.getFilterList()
+                applyTypeFilter(filters, type)
+                val filterSearchPage = try {
+                    source.getSearchManga(page, "", filters)
+                } catch (e: NoSuchMethodError) {
+                    source.fetchSearchManga(page, "", filters).toBlocking().first()
+                } catch (e: AbstractMethodError) {
+                    source.fetchSearchManga(page, "", filters).toBlocking().first()
+                }
+                if (filterSearchPage.mangas.isNotEmpty()) {
+                    return@withContext filterSearchPage.mangas.map { sMangaToMap(it) }
+                }
+            } catch (e: Throwable) {
+                Log.d(TAG, "Filtering popular manga with type '$type' via getSearchManga failed for $pkg: ${e.message}")
+            }
+        }
+
+        var lastError: Throwable? = null
+        var mangasPage = try {
+            try {
                 source.getPopularManga(page)
             } catch (e: NoSuchMethodError) {
                 source.fetchPopularManga(page).toBlocking().first()
             } catch (e: AbstractMethodError) {
                 source.fetchPopularManga(page).toBlocking().first()
             }
-            mangasPage.mangas.map { sMangaToMap(it) }
+        } catch (e: Throwable) {
+            lastError = e
+            Log.w(TAG, "getPopularManga failed for $pkg: ${e.message}")
+            null
         }
 
-    suspend fun searchManga(pkg: String, query: String, page: Int, hintPath: String? = null): List<Map<String, Any?>> =
-        withContext(Dispatchers.IO) {
-            val source = getOrLoadSource(pkg, hintPath)
-            val mangasPage = try {
-                source.getSearchManga(page, query, FilterList())
-            } catch (e: NoSuchMethodError) {
-                source.fetchSearchManga(page, query, FilterList()).toBlocking().first()
-            } catch (e: AbstractMethodError) {
-                source.fetchSearchManga(page, query, FilterList()).toBlocking().first()
+        if (mangasPage == null || mangasPage.mangas.isEmpty()) {
+            try {
+                mangasPage = try {
+                    source.getLatestUpdates(page)
+                } catch (e: NoSuchMethodError) {
+                    source.fetchLatestUpdates(page).toBlocking().first()
+                } catch (e: AbstractMethodError) {
+                    source.fetchLatestUpdates(page).toBlocking().first()
+                }
+            } catch (e: Throwable) {
+                if (lastError == null) lastError = e
+                Log.w(TAG, "getLatestUpdates failed for $pkg: ${e.message}")
             }
-            mangasPage.mangas.map { sMangaToMap(it) }
         }
+
+        if (mangasPage == null && lastError != null) {
+            throw lastError
+        }
+
+        val items = mangasPage?.mangas?.map { sMangaToMap(it) } ?: emptyList()
+        if (items.isNotEmpty() && !type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
+            val target = type.lowercase()
+            val filtered = items.filter { item ->
+                val genre = (item["genre"] as? String)?.lowercase() ?: ""
+                val title = (item["title"] as? String)?.lowercase() ?: ""
+                val url = (item["url"] as? String)?.lowercase() ?: ""
+                val combined = "$genre $title $url"
+                if (target == "manhwa") combined.contains("manhwa") || combined.contains("webtoon")
+                else if (target == "manhua") combined.contains("manhua")
+                else !combined.contains("manhwa") && !combined.contains("manhua")
+            }
+            if (filtered.isNotEmpty()) return@withContext filtered
+        }
+        items
+    }
+
+    suspend fun searchManga(
+        pkg: String,
+        query: String,
+        page: Int,
+        type: String? = null,
+        hintPath: String? = null
+    ): List<Map<String, Any?>> = withContext(Dispatchers.IO) {
+        val source = getOrLoadSource(pkg, hintPath)
+        val trimmed = query.trim()
+
+        if (trimmed.isEmpty()) {
+            return@withContext fetchPopularManga(pkg, page, type, hintPath)
+        }
+
+        // Extensions like Comick, MangaDex throw an Exception if query < 3 chars.
+        // Instead of letting it crash and show "No titles found", match locally on popular list.
+        if (trimmed.length < 3) {
+            val popular = fetchPopularManga(pkg, 1, type, hintPath)
+            val filtered = popular.filter {
+                (it["title"] as? String)?.contains(trimmed, ignoreCase = true) == true
+            }
+            return@withContext if (filtered.isNotEmpty()) filtered else popular
+        }
+
+        val filters = try {
+            source.getFilterList()
+        } catch (e: Throwable) {
+            Log.w(TAG, "getFilterList failed for $pkg: ${e.message}")
+            FilterList()
+        }
+        applyTypeFilter(filters, type)
+
+        var mangasPage: MangasPage? = null
+        try {
+            mangasPage = try {
+                source.getSearchManga(page, trimmed, filters)
+            } catch (e: NoSuchMethodError) {
+                source.fetchSearchManga(page, trimmed, filters).toBlocking().first()
+            } catch (e: AbstractMethodError) {
+                source.fetchSearchManga(page, trimmed, filters).toBlocking().first()
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "searchManga with filters failed for $pkg: ${e.message}")
+            try {
+                val cleanFilters = source.getFilterList()
+                mangasPage = try {
+                    source.getSearchManga(page, trimmed, cleanFilters)
+                } catch (inner: NoSuchMethodError) {
+                    source.fetchSearchManga(page, trimmed, cleanFilters).toBlocking().first()
+                } catch (inner: AbstractMethodError) {
+                    source.fetchSearchManga(page, trimmed, cleanFilters).toBlocking().first()
+                }
+            } catch (inner: Throwable) {
+                Log.w(TAG, "searchManga with clean filters failed for $pkg: ${inner.message}")
+            }
+        }
+
+        val results = mangasPage?.mangas?.map { sMangaToMap(it) } ?: emptyList()
+
+        if (results.isNotEmpty() && !type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
+            val target = type.lowercase()
+            val filtered = results.filter { item ->
+                val genre = (item["genre"] as? String)?.lowercase() ?: ""
+                val title = (item["title"] as? String)?.lowercase() ?: ""
+                val url = (item["url"] as? String)?.lowercase() ?: ""
+                val combined = "$genre $title $url"
+                if (target == "manhwa") combined.contains("manhwa") || combined.contains("webtoon")
+                else if (target == "manhua") combined.contains("manhua")
+                else true
+            }
+            return@withContext if (filtered.isNotEmpty()) filtered else results
+        }
+
+        results
+    }
 
     suspend fun fetchMangaDetails(pkg: String, url: String, title: String?, hintPath: String? = null): Map<String, Any?> =
         withContext(Dispatchers.IO) {
@@ -220,12 +520,22 @@ class TachiyomiExtensionManager(private val context: Context) {
                 if (!title.isNullOrEmpty()) this.title = title
             }
             val details = try {
-                source.getMangaDetails(sManga)
-            } catch (e: NoSuchMethodError) {
-                source.fetchMangaDetails(sManga).toBlocking().first()
-            } catch (e: AbstractMethodError) {
-                source.fetchMangaDetails(sManga).toBlocking().first()
+                try {
+                    source.getMangaDetails(sManga)
+                } catch (e: NoSuchMethodError) {
+                    source.fetchMangaDetails(sManga).toBlocking().first()
+                } catch (e: AbstractMethodError) {
+                    source.fetchMangaDetails(sManga).toBlocking().first()
+                }
+            } catch (e: Throwable) {
+                try {
+                    source.fetchMangaDetails(sManga).toBlocking().first()
+                } catch (_: Throwable) {
+                    throw e
+                }
             }
+            if (details.url.isEmpty()) details.url = url
+            if (details.title.isEmpty() && !title.isNullOrEmpty()) details.title = title
             sMangaToMap(details)
         }
 
@@ -237,11 +547,19 @@ class TachiyomiExtensionManager(private val context: Context) {
                 if (!title.isNullOrEmpty()) this.title = title
             }
             val chapters = try {
-                source.getChapterList(sManga)
-            } catch (e: NoSuchMethodError) {
-                source.fetchChapterList(sManga).toBlocking().first()
-            } catch (e: AbstractMethodError) {
-                source.fetchChapterList(sManga).toBlocking().first()
+                try {
+                    source.getChapterList(sManga)
+                } catch (e: NoSuchMethodError) {
+                    source.fetchChapterList(sManga).toBlocking().first()
+                } catch (e: AbstractMethodError) {
+                    source.fetchChapterList(sManga).toBlocking().first()
+                }
+            } catch (e: Throwable) {
+                try {
+                    source.fetchChapterList(sManga).toBlocking().first()
+                } catch (_: Throwable) {
+                    throw e
+                }
             }
             chapters.map { sChapterToMap(it) }
         }
@@ -253,11 +571,19 @@ class TachiyomiExtensionManager(private val context: Context) {
                 this.url = chapterUrl
             }
             val pages = try {
-                source.getPageList(sChapter)
-            } catch (e: NoSuchMethodError) {
-                source.fetchPageList(sChapter).toBlocking().first()
-            } catch (e: AbstractMethodError) {
-                source.fetchPageList(sChapter).toBlocking().first()
+                try {
+                    source.getPageList(sChapter)
+                } catch (e: NoSuchMethodError) {
+                    source.fetchPageList(sChapter).toBlocking().first()
+                } catch (e: AbstractMethodError) {
+                    source.fetchPageList(sChapter).toBlocking().first()
+                }
+            } catch (e: Throwable) {
+                try {
+                    source.fetchPageList(sChapter).toBlocking().first()
+                } catch (_: Throwable) {
+                    throw e
+                }
             }
 
             pages.map { page ->

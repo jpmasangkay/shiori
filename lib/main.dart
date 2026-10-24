@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import 'screens/browse_screen.dart';
 import 'screens/history_screen.dart';
@@ -7,19 +6,16 @@ import 'screens/library_screen.dart';
 import 'screens/more_screen.dart';
 import 'screens/updates_screen.dart';
 import 'services/api_service.dart';
+import 'services/download_service.dart';
+import 'services/tracker_service.dart';
 import 'theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.light,
-      systemNavigationBarColor: AppColors.surface,
-      systemNavigationBarIconBrightness: Brightness.light,
-    ),
-  );
+  await ThemeController.instance.init();
   await ApiService.instance.init();
+  await DownloadService.instance.init();
+  await TrackerService.instance.init();
   runApp(const ShioriApp());
 }
 
@@ -28,11 +24,17 @@ class ShioriApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Shiori',
-      debugShowCheckedModeBanner: false,
-      theme: buildTheme(),
-      home: const RootShell(),
+    return ListenableBuilder(
+      listenable: ThemeController.instance,
+      builder: (context, _) {
+        final amoled = ThemeController.instance.isAmoled;
+        return MaterialApp(
+          title: 'Shiori',
+          debugShowCheckedModeBanner: false,
+          theme: buildTheme(amoled: amoled),
+          home: const RootShell(),
+        );
+      },
     );
   }
 }

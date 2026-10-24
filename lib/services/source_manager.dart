@@ -32,7 +32,7 @@ class SourceManager extends ChangeNotifier {
   static const String _pinnedKey = 'shiori_pinned_sources_v1';
   static const String _disabledDirectKey = 'shiori_disabled_direct_sources_v1';
 
-  /// Built-in direct sources are only offered on iOS (where Tachiyomi APK
+  /// Built-in direct sources are only offered on iOS (where community APK
   /// extensions cannot run). Android uses community extensions instead.
   static List<DirectSourceInfo> get directSources =>
       (!kIsWeb && Platform.isIOS) ? allDirectSources : const [];
@@ -117,6 +117,16 @@ class SourceManager extends ChangeNotifier {
       return allDirectSources.firstWhere((s) => s.id == sourceId);
     } catch (_) {
       return null;
+    }
+  }
+
+  Future<void> unpin(String sourceId) async {
+    if (_pinnedSourceIds.remove(sourceId)) {
+      notifyListeners();
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setStringList(_pinnedKey, _pinnedSourceIds.toList());
+      } catch (_) {}
     }
   }
 

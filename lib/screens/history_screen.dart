@@ -49,12 +49,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        AppTopBar(
+        const AppTopBar(
           title: 'History',
           branded: true,
-          actions: [
-            BarIcon(Icons.refresh_rounded, label: 'Refresh', onTap: _fetch),
-          ],
         ),
         Expanded(
           child: _loading

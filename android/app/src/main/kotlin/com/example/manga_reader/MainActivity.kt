@@ -117,6 +117,44 @@ class MainActivity : FlutterActivity() {
                         result.error("INVALID_ARG", "packageName is null", null)
                     }
                 }
+                "uninstallPackage" -> {
+                    val pkg = call.argument<String>("packageName")
+                    if (pkg != null) {
+                        try {
+                            extensionManager.removeSource(pkg)
+                            val clean = pkg.replace(Regex("[^a-zA-Z0-9_.]"), "_")
+                            listOfNotNull(
+                                File(cacheDir, "shiori_extensions"),
+                                File(filesDir, "shiori_extensions"),
+                                externalCacheDir?.let { File(it, "shiori_extensions") },
+                                System.getProperty("java.io.tmpdir")?.let { File(it, "shiori_extensions") }
+                            ).forEach { dir ->
+                                if (dir.exists()) {
+                                    File(dir, "$clean.apk").delete()
+                                    File(dir, "$pkg.apk").delete()
+                                }
+                            }
+                            val isInstalledAsApp = try {
+                                packageManager.getPackageInfo(pkg, 0)
+                                true
+                            } catch (_: Exception) {
+                                false
+                            }
+                            if (isInstalledAsApp && pkg != packageName) {
+                                val uninstallIntent = Intent(Intent.ACTION_DELETE).apply {
+                                    data = Uri.parse("package:$pkg")
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                startActivity(uninstallIntent)
+                            }
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.error("UNINSTALL_ERROR", e.message, null)
+                        }
+                    } else {
+                        result.error("INVALID_ARG", "packageName is null", null)
+                    }
+                }
                 else -> result.notImplemented()
             }
         }
@@ -134,9 +172,10 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "fetchPopularManga" -> {
                     val page = call.argument<Int>("page") ?: 1
+                    val type = call.argument<String>("type")
                     mainScope.launch {
                         try {
-                            val items = extensionManager.fetchPopularManga(pkg, page, apkPath)
+                            val items = extensionManager.fetchPopularManga(pkg, page, type, apkPath)
                             result.success(items)
                         } catch (e: Throwable) {
                             result.error("FETCH_ERROR", extractErrorMessage(e), null)
@@ -146,12 +185,13 @@ class MainActivity : FlutterActivity() {
                 "searchManga" -> {
                     val query = call.argument<String>("query") ?: ""
                     val page = call.argument<Int>("page") ?: 1
+                    val type = call.argument<String>("type")
                     mainScope.launch {
                         try {
                             val items = if (query.trim().isEmpty()) {
-                                extensionManager.fetchPopularManga(pkg, page, apkPath)
+                                extensionManager.fetchPopularManga(pkg, page, type, apkPath)
                             } else {
-                                extensionManager.searchManga(pkg, query, page, apkPath)
+                                extensionManager.searchManga(pkg, query, page, type, apkPath)
                             }
                             result.success(items)
                         } catch (e: Throwable) {

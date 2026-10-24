@@ -1,7 +1,41 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../theme.dart';
+
+/// Standard browser headers for CDN image fetching to bypass Cloudflare and referer blocks.
+Map<String, String> imageHeadersForUrl(String url) {
+  final uri = Uri.tryParse(url);
+  final host = uri?.host.toLowerCase() ?? '';
+  String referer = 'https://$host/';
+  if (host.contains('comick') || host.contains('meo')) {
+    referer = 'https://comick.art/';
+  } else if (host.contains('mangadex')) {
+    referer = 'https://mangadex.org/';
+  } else if (host.contains('asura')) {
+    referer = 'https://asuracomic.net/';
+  } else if (host.contains('flame')) {
+    referer = 'https://flamecomics.xyz/';
+  } else if (host.contains('weebcentral')) {
+    referer = 'https://weebcentral.com/';
+  } else if (host.contains('readdetectiveconan') || host.contains('mangapill')) {
+    referer = 'https://mangapill.com/';
+  } else if (host.contains('mangakatana')) {
+    referer = 'https://mangakatana.com/';
+  } else if (host.contains('mangaread')) {
+    referer = 'https://www.mangaread.org/';
+  } else if (host.contains('manganato') || host.contains('chapmanganato')) {
+    referer = 'https://chapmanganato.to/';
+  } else if (host.contains('mangakakalot')) {
+    referer = 'https://mangakakalot.com/';
+  }
+  return {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Referer': referer,
+    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+  };
+}
 
 /// Equivalent of the CSS `filter: saturate(x)`.
 ColorFilter saturate(double s) {
@@ -33,12 +67,14 @@ class CoverImage extends StatelessWidget {
 
     return ColorFiltered(
       colorFilter: saturate(saturation),
-      child: Image.network(
-        url,
+      child: CachedNetworkImage(
+        imageUrl: url,
+        httpHeaders: imageHeadersForUrl(url),
         fit: fit ?? BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
-        errorBuilder: (_, _, _) => const _CoverPlaceholder(),
+        placeholder: (_, _) => const _CoverPlaceholder(),
+        errorWidget: (_, _, _) => const _CoverPlaceholder(),
       ),
     );
   }

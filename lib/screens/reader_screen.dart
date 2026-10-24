@@ -1,11 +1,14 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/tracker_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
@@ -78,6 +81,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   ReaderMode _mode = ReaderMode.webtoon;
   BoxFit _fitMode = BoxFit.fitWidth;
+  bool _enableTapZones = true;
+  bool _invertTapZones = false;
 
   final _scrollController = ScrollController();
   late PageController _pageController;
@@ -118,6 +123,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _pageController = _newPageController(0);
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
 
+    SharedPreferences.getInstance().then((prefs) {
+      if (mounted) {
+        setState(() {
+          _enableTapZones = prefs.getBool('reader_enable_tap_zones') ?? true;
+          _invertTapZones = prefs.getBool('reader_invert_tap_zones') ?? false;
+        });
+      }
+    });
+
     // Setup chapters list
     if (widget.chapters.isNotEmpty) {
       _chapters = List<ChapterItem>.from(widget.chapters);
@@ -139,6 +153,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     _webtoonLoadedIndices.add(_currentChapterIndex);
     _loadChapter(_currentChapterIndex);
+  }
+
+  void _setEnableTapZones(bool val) {
+    setState(() => _enableTapZones = val);
+    SharedPreferences.getInstance().then((prefs) => prefs.setBool('reader_enable_tap_zones', val));
+  }
+
+  void _setInvertTapZones(bool val) {
+    setState(() => _invertTapZones = val);
+    SharedPreferences.getInstance().then((prefs) => prefs.setBool('reader_invert_tap_zones', val));
   }
 
   @override
@@ -196,7 +220,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _precacheFirstPages(List<String> pages) {
     if (!mounted) return;
     for (var i = 0; i < math.min(3, pages.length); i++) {
-      precacheImage(CachedNetworkImageProvider(pages[i]), context, onError: (_, _) {});
+      final p = pages[i];
+      if (p.startsWith('file://')) {
+        precacheImage(FileImage(File(p.replaceFirst('file://', ''))), context, onError: (_, _) {});
+      } else {
+        precacheImage(CachedNetworkImageProvider(p, headers: imageHeadersForUrl(p)), context, onError: (_, _) {});
+      }
     }
   }
 
@@ -222,6 +251,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final finished = _chapters[finishedIdx];
     // Automatically mark the finished chapter as read
     ApiService.instance.markChapterRead(widget.mangaId, finished.id, read: true);
+    // Auto sync reading progress to AniList Tracker
+    TrackerService.instance.onChapterFinished(
+      mangaTitle: widget.mangaTitle,
+      chapterNumber: finished.number,
+    );
   }
 
   /// Jump to another chapter (bottom bar buttons / transition card). The
@@ -463,6 +497,41 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   _setMode(ReaderMode.leftToRight);
                 },
               ),
+              const Divider(color: AppColors.surfaceHigh, height: 24),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                child: Text(
+                  'NAVIGATION & TOUCH CONTROLS',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ),
+              SwitchListTile(
+                value: _enableTapZones,
+                activeThumbColor: AppColors.primary,
+                title: const Text('Tap Zones Navigation'),
+                subtitle: const Text('Tap sides to turn page, center for reader menu'),
+                onChanged: (val) {
+                  _setEnableTapZones(val);
+                  Navigator.pop(context);
+                },
+              ),
+              SwitchListTile(
+                value: _invertTapZones,
+                activeThumbColor: AppColors.primary,
+                title: const Text('Invert Tap Zones'),
+                subtitle: const Text('Flips left and right tap zone actions'),
+                onChanged: _enableTapZones
+                    ? (val) {
+                        _setInvertTapZones(val);
+                        Navigator.pop(context);
+                      }
+                    : null,
+              ),
             ],
           ),
         ),
@@ -470,18 +539,84 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  void _handleTap(TapUpDetails details, BoxConstraints constraints) {
+    if (_mode == ReaderMode.webtoon || !_enableTapZones) {
+      setState(() => _chrome = !_chrome);
+      return;
+    }
+    final x = details.localPosition.dx;
+    final w = constraints.maxWidth;
+    final leftBound = w * 0.30;
+    final rightBound = w * 0.70;
+
+    final isRtl = _mode == ReaderMode.rightToLeft;
+    bool nextOnRight = !isRtl;
+    if (_invertTapZones) nextOnRight = !nextOnRight;
+
+    if (x < leftBound) {
+      if (nextOnRight) {
+        _prevPage();
+      } else {
+        _nextPage();
+      }
+    } else if (x > rightBound) {
+      if (nextOnRight) {
+        _nextPage();
+      } else {
+        _prevPage();
+      }
+    } else {
+      setState(() => _chrome = !_chrome);
+    }
+  }
+
+  void _prevPage() {
+    if (_pageController.hasClients && _pageController.page != null) {
+      final cur = _pageController.page!.round();
+      if (cur > 0) {
+        _pageController.previousPage(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      } else if (_hasPrevChapter) {
+        _switchToChapter(_currentChapterIndex - 1);
+      }
+    }
+  }
+
+  void _nextPage() {
+    if (_pageController.hasClients && _pageController.page != null) {
+      final cur = _pageController.page!.round();
+      final pages = _pagesCache[_currentChapter.id];
+      final total = (pages?.length ?? 0) + (_hasNextChapter ? 1 : 0);
+      if (cur + 1 < total) {
+        _pageController.nextPage(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOut,
+        );
+      } else if (_hasNextChapter) {
+        _switchToChapter(_currentChapterIndex + 1);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isAmoled = ThemeController.instance.isAmoled;
     return Scaffold(
-      backgroundColor: AppColors.black,
+      backgroundColor: isAmoled ? Colors.black : AppColors.black,
       body: Stack(
         fit: StackFit.expand,
         children: [
           // Content reader layer
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => setState(() => _chrome = !_chrome),
-            child: _buildReaderBody(),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              return GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapUp: (details) => _handleTap(details, constraints),
+                child: _buildReaderBody(),
+              );
+            },
           ),
           // Top Bar
           AnimatedPositioned(
@@ -626,8 +761,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Widget _buildFeedItem(_FeedItem item) {
     switch (item.type) {
       case _ItemType.page:
+        final url = item.url!;
+        if (url.startsWith('file://')) {
+          final file = File(url.replaceFirst('file://', ''));
+          return Image.file(
+            file,
+            fit: BoxFit.fitWidth,
+            width: double.infinity,
+            errorBuilder: (_, _, _) => Container(
+              height: 200,
+              color: AppColors.surface,
+              child: Center(
+                child: Text('Page ${(item.pageIndex ?? 0) + 1} failed to load',
+                    style: const TextStyle(color: AppColors.muted)),
+              ),
+            ),
+          );
+        }
         return CachedNetworkImage(
-          imageUrl: item.url!,
+          imageUrl: url,
+          httpHeaders: imageHeadersForUrl(url),
           fit: BoxFit.fitWidth,
           width: double.infinity,
           placeholder: (_, _) => Container(
@@ -725,7 +878,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _scheduleAutoAdvance(int fromIdx, int cardPage) {
     if (_advancing) return;
     _advancing = true;
-    Future.delayed(const Duration(milliseconds: 250), () {
+    Future.delayed(const Duration(milliseconds: 1500), () {
       _advancing = false;
       if (!mounted || _mode == ReaderMode.webtoon || _currentChapterIndex != fromIdx) return;
       if (!_pageController.hasClients || _pageController.page?.round() != cardPage) return;
@@ -758,6 +911,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
           if (_page != idx + 1) {
             setState(() => _page = idx + 1);
             _syncProgress(idx + 1);
+            // Prefetch next chapter when nearing the end
+            if (idx >= pages.length - 3 && chapterIdx + 1 < _chapters.length) {
+              _loadChapter(chapterIdx + 1);
+            }
           }
         } else if (hasNext) {
           _scheduleAutoAdvance(chapterIdx, idx);
@@ -765,18 +922,32 @@ class _ReaderScreenState extends State<ReaderScreen> {
       },
       itemBuilder: (_, i) {
         if (i < pages.length) {
+          final pageUrl = pages[i];
+          Widget imgWidget;
+          if (pageUrl.startsWith('file://')) {
+            imgWidget = Image.file(
+              File(pageUrl.replaceFirst('file://', '')),
+              fit: _fitMode,
+              errorBuilder: (_, _, _) => Center(
+                child: Text('Page ${i + 1} failed to load', style: const TextStyle(color: AppColors.muted)),
+              ),
+            );
+          } else {
+            imgWidget = CachedNetworkImage(
+              imageUrl: pageUrl,
+              httpHeaders: imageHeadersForUrl(pageUrl),
+              fit: _fitMode,
+              placeholder: (_, _) => const Center(
+                child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
+              ),
+              errorWidget: (_, _, _) => Center(
+                child: Text('Page ${i + 1} failed to load', style: const TextStyle(color: AppColors.muted)),
+              ),
+            );
+          }
           return Center(
             child: InteractiveViewer(
-              child: CachedNetworkImage(
-                imageUrl: pages[i],
-                fit: _fitMode,
-                placeholder: (_, _) => const Center(
-                  child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
-                ),
-                errorWidget: (_, _, _) => Center(
-                  child: Text('Page ${i + 1} failed to load', style: const TextStyle(color: AppColors.muted)),
-                ),
-              ),
+              child: imgWidget,
             ),
           );
         }

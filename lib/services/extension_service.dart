@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'source_manager.dart';
+
 class MangaExtension {
   final String id;
   final String name;
@@ -187,16 +189,11 @@ class ExtensionService extends ChangeNotifier {
   void _updateInstalledState() {
     for (final ext in _extensions) {
       final pkgLower = ext.pkg.toLowerCase().trim();
-      final nameLower = ext.name.toLowerCase().trim();
       final idLower = ext.id.toLowerCase().trim();
-      ext.isInstalled = _installedPackages.any((p) {
-        final pl = p.toLowerCase().trim();
-        return pl == pkgLower ||
-            pl == nameLower ||
-            pl == idLower ||
-            pkgLower.contains(pl) ||
-            pl.contains(pkgLower);
-      }) || _installedExtensionsMap.containsKey(pkgLower);
+      ext.isInstalled = _installedPackages.contains(pkgLower) ||
+          _installedPackages.contains(idLower) ||
+          _installedExtensionsMap.containsKey(pkgLower) ||
+          _installedExtensionsMap.containsKey(idLower);
     }
   }
 
@@ -225,9 +222,10 @@ class ExtensionService extends ChangeNotifier {
     try {
       final decoded = json.decode(jsonStr);
       final list = <MangaExtension>[];
+      List<dynamic> items = [];
+
       if (decoded is Map<String, dynamic>) {
         final extListRaw = decoded['extensionList'];
-        List<dynamic> items = [];
         if (extListRaw is Map<String, dynamic>) {
           if (extListRaw['extensions'] is List) {
             items = extListRaw['extensions'] as List<dynamic>;
@@ -238,59 +236,101 @@ class ExtensionService extends ChangeNotifier {
           }
         } else if (extListRaw is List) {
           items = extListRaw;
+        } else if (decoded['extensions'] is List) {
+          items = decoded['extensions'] as List<dynamic>;
         }
+      } else if (decoded is List) {
+        items = decoded;
+      }
 
-        for (final item in items) {
-          if (item is Map<String, dynamic>) {
-            final res = item['resources'] as Map<String, dynamic>? ?? {};
-            final apkUrl = res['apkUrl']?.toString() ?? '';
-            final iconUrl = res['iconUrl']?.toString() ?? '';
-            final rawSources = (item['sources'] as List<dynamic>?) ?? [];
-            final sources = rawSources
-                .map((s) => (s as Map<String, dynamic>)['name']?.toString() ?? '')
-                .where((n) => n.isNotEmpty)
-                .toList();
-            final homeUrl = rawSources.isNotEmpty
-                ? ((rawSources[0] as Map<String, dynamic>)['homeUrl']?.toString() ??
-                    (rawSources[0] as Map<String, dynamic>)['baseUrl']?.toString() ??
-                    '')
-                : (item['baseUrl']?.toString() ?? item['homeUrl']?.toString() ?? '');
-            final pkg = item['packageName']?.toString() ?? '';
-            final name = item['name']?.toString() ?? '';
-            final version = item['versionName']?.toString() ?? '';
-            final versionCode = int.tryParse(item['versionCode']?.toString() ?? '') ?? 0;
-            final isNsfw = item['contentWarning'] == 'CONTENT_WARNING_NSFW';
+      for (final item in items) {
+        if (item is Map<String, dynamic>) {
+          final pkg = (item['packageName'] ?? item['pkg'] ?? item['package'] ?? '').toString().trim();
+          final name = (item['name'] ?? '').toString().trim();
+          if (pkg.isEmpty || name.isEmpty) continue;
 
-            String lang = 'ALL';
-            if (rawSources.isNotEmpty) {
-              final srcLang = (rawSources[0] as Map<String, dynamic>)['language']?.toString().trim();
-              if (srcLang != null && srcLang.isNotEmpty && srcLang.toLowerCase() != 'all') {
-                lang = srcLang.toUpperCase();
-              }
-            }
-            if (lang == 'ALL') {
-              final parts = pkg.split('.');
-              if (parts.length >= 4 && parts[3].toLowerCase() != 'all') {
-                lang = parts[3].toUpperCase();
-              }
-            }
-
-            if (name.isNotEmpty && pkg.isNotEmpty) {
-              list.add(MangaExtension(
-                id: pkg,
-                name: name,
-                pkg: pkg,
-                version: version,
-                versionCode: versionCode,
-                apkUrl: apkUrl,
-                iconUrl: iconUrl,
-                lang: lang,
-                isNsfw: isNsfw,
-                sourceNames: sources,
-                homeUrl: homeUrl,
-              ));
+          final res = item['resources'] as Map<String, dynamic>? ?? {};
+          var apkUrl = res['apkUrl']?.toString() ?? '';
+          if (apkUrl.isEmpty && item['apk'] != null) {
+            final apkStr = item['apk'].toString().trim();
+            if (apkStr.startsWith('http')) {
+              apkUrl = apkStr;
+            } else {
+              apkUrl = 'https://raw.githubusercontent.com/keiyoushi/extensions/repo/apk/$apkStr';
             }
           }
+
+          var iconUrl = res['iconUrl']?.toString() ?? '';
+          if (iconUrl.isEmpty) {
+            if (item['icon'] != null) {
+              final iconStr = item['icon'].toString().trim();
+              if (iconStr.startsWith('http')) {
+                iconUrl = iconStr;
+              } else {
+                iconUrl = 'https://raw.githubusercontent.com/keiyoushi/extensions/repo/icon/$iconStr';
+              }
+            } else {
+              iconUrl = 'https://raw.githubusercontent.com/keiyoushi/extensions/repo/icon/$pkg.png';
+            }
+          }
+
+          final rawSources = (item['sources'] as List<dynamic>?) ?? [];
+          final sources = rawSources
+              .map((s) => (s as Map<String, dynamic>)['name']?.toString() ?? '')
+              .where((n) => n.isNotEmpty)
+              .toList();
+
+          final homeUrl = rawSources.isNotEmpty
+              ? ((rawSources[0] as Map<String, dynamic>)['homeUrl']?.toString() ??
+                  (rawSources[0] as Map<String, dynamic>)['baseUrl']?.toString() ??
+                  '')
+              : (item['baseUrl']?.toString() ?? item['homeUrl']?.toString() ?? '');
+
+          final version = (item['versionName'] ?? item['version'] ?? '').toString();
+          final versionCode = int.tryParse(item['versionCode']?.toString() ?? '') ??
+              int.tryParse(item['code']?.toString() ?? '') ??
+              0;
+
+          final isNsfw = item['contentWarning'] == 'CONTENT_WARNING_NSFW' ||
+              item['nsfw'] == 1 ||
+              item['isNsfw'] == true;
+
+          String lang = 'ALL';
+          if (rawSources.isNotEmpty) {
+            final srcLang = ((rawSources[0] as Map<String, dynamic>)['language'] ??
+                    (rawSources[0] as Map<String, dynamic>)['lang'])
+                ?.toString()
+                .trim();
+            if (srcLang != null && srcLang.isNotEmpty && srcLang.toLowerCase() != 'all') {
+              lang = srcLang.toUpperCase();
+            }
+          }
+          if (lang == 'ALL' && item['lang'] != null) {
+            final l = item['lang'].toString().trim();
+            if (l.isNotEmpty && l.toLowerCase() != 'all') {
+              lang = l.toUpperCase();
+            }
+          }
+          if (lang == 'ALL') {
+            final parts = pkg.split('.');
+            if (parts.length >= 4 && parts[3].toLowerCase() != 'all') {
+              lang = parts[3].toUpperCase();
+            }
+          }
+
+          list.add(MangaExtension(
+            id: pkg,
+            name: name,
+            pkg: pkg,
+            version: version,
+            versionCode: versionCode,
+            apkUrl: apkUrl,
+            iconUrl: iconUrl,
+            lang: lang,
+            isNsfw: isNsfw,
+            sourceNames: sources,
+            homeUrl: homeUrl,
+          ));
         }
       }
       return list;
@@ -406,17 +446,49 @@ class ExtensionService extends ChangeNotifier {
 
   Future<void> uninstallExtension(MangaExtension ext) async {
     final key = (ext.pkg.isNotEmpty ? ext.pkg : ext.id).toLowerCase().trim();
+    final pkgLower = ext.pkg.toLowerCase().trim();
+    final idLower = ext.id.toLowerCase().trim();
+
     _installedPackages.remove(key);
-    _installedPackages.remove(ext.pkg.toLowerCase().trim());
-    _installedPackages.remove(ext.id.toLowerCase().trim());
+    _installedPackages.remove(pkgLower);
+    _installedPackages.remove(idLower);
+    _installedPackages.removeWhere((p) =>
+        p == key ||
+        p == pkgLower ||
+        p == idLower ||
+        (pkgLower.isNotEmpty && p.contains(pkgLower)));
+
     _installedExtensionsMap.remove(key);
+    _installedExtensionsMap.remove(pkgLower);
+    _installedExtensionsMap.remove(idLower);
+    _installedExtensionsMap.removeWhere((k, _) =>
+        k == key ||
+        k == pkgLower ||
+        k == idLower ||
+        (pkgLower.isNotEmpty && k.contains(pkgLower)));
+
     ext.isInstalled = false;
 
-    // Remove downloaded file if present
+    // Unpin from browse favorites
+    if (ext.pkg.isNotEmpty) SourceManager.instance.unpin(ext.pkg);
+    if (ext.id.isNotEmpty) SourceManager.instance.unpin(ext.id);
+
+    // Call native uninstall to remove from Android OS and purge native source cache
+    if (Platform.isAndroid && ext.pkg.isNotEmpty) {
+      try {
+        await _installerChannel.invokeMethod('uninstallPackage', {'packageName': ext.pkg});
+      } catch (e) {
+        debugPrint('Native uninstall error: $e');
+      }
+    }
+
+    // Remove downloaded files if present
     try {
       final cleanName = ext.pkg.replaceAll(RegExp(r'[^a-zA-Z0-9_\.]'), '_');
-      final file = File('${Directory.systemTemp.path}/shiori_extensions/$cleanName.apk');
-      if (await file.exists()) await file.delete();
+      final f1 = File('${Directory.systemTemp.path}/shiori_extensions/$cleanName.apk');
+      if (await f1.exists()) await f1.delete();
+      final f2 = File('${Directory.systemTemp.path}/shiori_extensions/${ext.pkg}.apk');
+      if (await f2.exists()) await f2.delete();
     } catch (_) {}
 
     _updateInstalledState();
@@ -434,6 +506,25 @@ class ExtensionService extends ChangeNotifier {
     });
     _installedExtensionsMap.remove(lower);
     _installedExtensionsMap.removeWhere((k, _) => k == lower || k.contains(lower) || lower.contains(k));
+
+    SourceManager.instance.unpin(pkgOrId);
+    SourceManager.instance.unpin(lower);
+
+    if (Platform.isAndroid && pkgOrId.isNotEmpty) {
+      try {
+        await _installerChannel.invokeMethod('uninstallPackage', {'packageName': pkgOrId});
+      } catch (e) {
+        debugPrint('Native uninstall error: $e');
+      }
+    }
+
+    try {
+      final cleanName = pkgOrId.replaceAll(RegExp(r'[^a-zA-Z0-9_\.]'), '_');
+      final f1 = File('${Directory.systemTemp.path}/shiori_extensions/$cleanName.apk');
+      if (await f1.exists()) await f1.delete();
+      final f2 = File('${Directory.systemTemp.path}/shiori_extensions/$pkgOrId.apk');
+      if (await f2.exists()) await f2.delete();
+    } catch (_) {}
 
     _updateInstalledState();
     await _persistInstalledState();
@@ -498,7 +589,9 @@ class ExtensionService extends ChangeNotifier {
       if (url.isNotEmpty) {
         final uri = Uri.parse(url);
         final client = http.Client();
-        final request = http.Request('GET', uri)..followRedirects = true;
+        final request = http.Request('GET', uri)
+          ..headers['User-Agent'] = 'Mozilla/5.0 (Linux; Android 14; SM-S921W) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36'
+          ..followRedirects = true;
         final response = await client.send(request);
 
         if (response.statusCode == 200) {
@@ -523,6 +616,20 @@ class ExtensionService extends ChangeNotifier {
           }
           await sink.flush();
           await sink.close();
+
+          // Also ensure direct pkg.apk copy exists for instant lookup
+          if (cleanName != ext.pkg) {
+            try {
+              final pkgFile = File('${dir.path}/${ext.pkg}.apk');
+              if (!await pkgFile.exists()) {
+                await apkFile.copy(pkgFile.path);
+              }
+            } catch (_) {}
+          }
+        } else {
+          debugPrint('Failed to download APK: HTTP ${response.statusCode}');
+          client.close();
+          return false;
         }
         client.close();
       } else {
@@ -543,11 +650,10 @@ class ExtensionService extends ChangeNotifier {
       return true;
     } catch (e) {
       debugPrint('downloadAndInstallExtension error: $e');
-      // Even if network download encountered an issue, activate extension in-app
-      await installExtension(ext);
-      return true;
+      return false;
     } finally {
       _downloadingPackages.remove(key);
+      _downloadProgress.remove(key);
       notifyListeners();
     }
   }

@@ -4,6 +4,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
+import '../widgets/common.dart';
+import 'download_service.dart';
 import 'extension_bridge.dart';
 import 'extension_service.dart';
 
@@ -23,6 +25,7 @@ class ApiService extends ChangeNotifier {
   final Set<String> _bookmarkedChapterIds = {};
   final List<CategoryItem> _userCategories = [];
   final Map<String, List<String>> _mangaCategories = {};
+  final Map<String, int> _mangaChapterCounts = {};
 
   String get baseUrl => _baseUrl;
   String? get token => _token;
@@ -166,6 +169,18 @@ class ApiService extends ChangeNotifier {
       } catch (_) {}
     }
 
+    // Load manga chapter counts for unread badges
+    final chapterCountsJson = prefs.getString('shiori_manga_chapter_counts');
+    if (chapterCountsJson != null && chapterCountsJson.isNotEmpty) {
+      try {
+        final Map<String, dynamic> map = jsonDecode(chapterCountsJson);
+        _mangaChapterCounts.clear();
+        map.forEach((k, v) {
+          if (v is num) _mangaChapterCounts[k] = v.toInt();
+        });
+      } catch (_) {}
+    }
+
     _initialized = true;
     checkHealth();
     if (isLoggedIn) {
@@ -226,6 +241,30 @@ class ApiService extends ChangeNotifier {
       await prefs.setString('shiori_manga_categories', jsonEncode(_mangaCategories));
     } catch (_) {}
   }
+
+  Future<void> _persistChapterCounts() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('shiori_manga_chapter_counts', jsonEncode(_mangaChapterCounts));
+    } catch (_) {}
+  }
+
+  void recordChapterCount(String mangaId, int count) {
+    if (count > 0 && (_mangaChapterCounts[mangaId] ?? 0) < count) {
+      _mangaChapterCounts[mangaId] = count;
+      _persistChapterCounts();
+      notifyListeners();
+    }
+  }
+
+  int getUnreadCount(String mangaId) {
+    final total = _mangaChapterCounts[mangaId] ?? 0;
+    final read = _readChapters[mangaId]?.length ?? 0;
+    final diff = total - read;
+    return diff > 0 ? diff : 0;
+  }
+
+  Map<String, String> getHeadersForUrl(String url) => imageHeadersForUrl(url);
 
   Future<void> setBaseUrl(String url) async {
     var cleaned = url.trim();
@@ -421,22 +460,22 @@ class ApiService extends ChangeNotifier {
 
     // 1. Built-in direct web scrapers (ONLY for explicit built-in sources)
     if (s == 'flamecomics' || s == 'flame') {
-      return _searchFlameComics(query: query, page: page, limit: limit);
+      return _searchFlameComics(query: query, type: type, page: page, limit: limit);
     }
     if (s == 'weebcentral' || s == 'weeb') {
-      return _searchWeebCentral(query: query, page: page, limit: limit);
+      return _searchWeebCentral(query: query, type: type, page: page, limit: limit);
     }
     if (s == 'mangapill' || s == 'pill') {
-      return _searchMangaPill(query: query, page: page, limit: limit);
+      return _searchMangaPill(query: query, type: type, page: page, limit: limit);
     }
     if (s == 'mangakatana' || s == 'katana') {
-      return _searchMangaKatana(query: query, page: page, limit: limit);
+      return _searchMangaKatana(query: query, type: type, page: page, limit: limit);
     }
     if (s == 'mangaread' || s == 'mread') {
-      return _searchMangaRead(query: query, page: page, limit: limit);
+      return _searchMangaRead(query: query, type: type, page: page, limit: limit);
     }
     if (s == 'asura') {
-      return _searchAsura(query: query, page: page);
+      return _searchAsura(query: query, type: type, page: page);
     }
 
     // 2. MangaDex API (ONLY if explicitly mangadex)
@@ -464,8 +503,17 @@ class ApiService extends ChangeNotifier {
 
     try {
       final results = (query != null && query.trim().isNotEmpty)
-          ? await ExtensionBridge.instance.searchManga(pkg: effectivePkg, query: query.trim(), page: page)
-          : await ExtensionBridge.instance.fetchPopularManga(pkg: effectivePkg, page: page);
+          ? await ExtensionBridge.instance.searchManga(
+              pkg: effectivePkg,
+              query: query.trim(),
+              page: page,
+              type: type,
+            )
+          : await ExtensionBridge.instance.fetchPopularManga(
+              pkg: effectivePkg,
+              page: page,
+              type: type,
+            );
 
       if (results.isNotEmpty) return results;
     } catch (e) {
@@ -525,6 +573,14 @@ class ApiService extends ChangeNotifier {
   }
 
   Future<List<ChapterItem>> getChapters(String mangaId, {String lang = 'en'}) async {
+    final chapters = await _getChaptersInternal(mangaId, lang: lang);
+    if (chapters.isNotEmpty) {
+      recordChapterCount(mangaId, chapters.length);
+    }
+    return chapters;
+  }
+
+  Future<List<ChapterItem>> _getChaptersInternal(String mangaId, {String lang = 'en'}) async {
     if (mangaId.startsWith('asura:')) return _getAsuraChapters(mangaId);
     if (mangaId.startsWith('flame:')) return _getFlameChapters(mangaId);
     if (mangaId.startsWith('weeb:')) return _getWeebChapters(mangaId);
@@ -571,6 +627,19 @@ class ApiService extends ChangeNotifier {
   }
 
   Future<ChapterPages> getChapterPages(String chapterId) async {
+    // 1. Check offline downloaded pages first
+    if (DownloadService.instance.isChapterDownloaded(chapterId)) {
+      final files = await DownloadService.instance.getDownloadedPages(chapterId);
+      if (files.isNotEmpty) {
+        final localUrls = files.map((f) => 'file://${f.path}').toList();
+        return ChapterPages(
+          chapterId: chapterId,
+          pages: localUrls,
+          dataSaver: localUrls,
+        );
+      }
+    }
+
     if (chapterId.startsWith('asura:')) return _getAsuraChapterPages(chapterId);
     if (chapterId.startsWith('flame:')) return _getFlameChapterPages(chapterId);
     if (chapterId.startsWith('weeb:')) return _getWeebChapterPages(chapterId);
@@ -682,6 +751,8 @@ class ApiService extends ChangeNotifier {
 
       if (lang != null && lang.isNotEmpty && lang.toLowerCase() != 'all') {
         qParams['availableTranslatedLanguage[]'] = lang.toLowerCase();
+      } else {
+        qParams['availableTranslatedLanguage[]'] = 'en';
       }
 
       final uri = Uri.parse('https://api.mangadex.org/manga').replace(queryParameters: qParams);
@@ -867,8 +938,12 @@ class ApiService extends ChangeNotifier {
     );
   }
 
-  Future<List<MangaItem>> _searchAsura({String? query, int page = 1}) async {
+  Future<List<MangaItem>> _searchAsura({String? query, String? type, int page = 1}) async {
     try {
+      if (type != null && type.isNotEmpty && type != 'all' && type != 'manhwa') {
+        // Asura Scans specializes in Korean Manhwa
+        return [];
+      }
       final uri = Uri.parse('https://api.asurascans.com/api/series').replace(queryParameters: {
         if (query != null && query.isNotEmpty) 'search': query,
         'page': page.toString(),
@@ -991,7 +1066,7 @@ class ApiService extends ChangeNotifier {
 
   // ---- Flame Comics Scraper ----
 
-  Future<List<MangaItem>> _searchFlameComics({String? query, int page = 1, int limit = 24}) async {
+  Future<List<MangaItem>> _searchFlameComics({String? query, String? type, int page = 1, int limit = 24}) async {
     try {
       final res = await http.get(
         Uri.parse('https://flamecomics.xyz/browse'),
@@ -1032,6 +1107,17 @@ class ApiService extends ChangeNotifier {
             source: 'flamecomics',
           );
         }).toList();
+
+        if (type != null && type.isNotEmpty && type != 'all') {
+          final t = type.toLowerCase();
+          items = items.where((m) {
+            final mt = m.type.toLowerCase();
+            if (t == 'manhwa') return mt.contains('manhwa') || mt == 'webtoon' || mt == 'comic';
+            if (t == 'manga') return mt.contains('manga');
+            if (t == 'manhua') return mt.contains('manhua');
+            return mt == t;
+          }).toList();
+        }
 
         if (query != null && query.trim().isNotEmpty) {
           final q = query.trim().toLowerCase();
@@ -1179,13 +1265,24 @@ class ApiService extends ChangeNotifier {
 
   // ---- Weeb Central Scraper ----
 
-  Future<List<MangaItem>> _searchWeebCentral({String? query, int page = 1, int limit = 24}) async {
+  Future<List<MangaItem>> _searchWeebCentral({String? query, String? type, int page = 1, int limit = 24}) async {
     try {
+      final String typeParam;
+      if (type == 'manhwa') {
+        typeParam = '&included_type=Manhwa';
+      } else if (type == 'manhua') {
+        typeParam = '&included_type=Manhua';
+      } else if (type == 'manga') {
+        typeParam = '&included_type=Manga';
+      } else {
+        typeParam = '';
+      }
+
       final String url;
       if (query != null && query.trim().isNotEmpty) {
-        url = 'https://weebcentral.com/search/data?text=${Uri.encodeComponent(query.trim())}&page=$page';
+        url = 'https://weebcentral.com/search/data?text=${Uri.encodeComponent(query.trim())}$typeParam&page=$page';
       } else {
-        url = 'https://weebcentral.com/search/data?sort=Popularity&order=Ascending&page=$page';
+        url = 'https://weebcentral.com/search/data?sort=Popularity&order=Ascending$typeParam&page=$page';
       }
       final res = await http.get(
         Uri.parse(url),
@@ -1217,6 +1314,7 @@ class ApiService extends ChangeNotifier {
             id: 'weeb:$sId:$slug',
             title: title,
             cover: coverUrl,
+            type: type ?? 'manga',
             source: 'weebcentral',
           ));
         }
@@ -1864,6 +1962,29 @@ class ApiService extends ChangeNotifier {
     };
   }
 
+  /// Checks for new chapters for all manga in library, updating unread badges
+  Future<int> checkForLibraryUpdates() async {
+    final library = await getLibrary();
+    if (library.isEmpty) return 0;
+
+    int newChaptersCount = 0;
+    // Process in batches of 4
+    for (var i = 0; i < library.length; i += 4) {
+      final chunk = library.skip(i).take(4);
+      await Future.wait(chunk.map((manga) async {
+        try {
+          final oldCount = _mangaChapterCounts[manga.id] ?? 0;
+          final chapters = await getChapters(manga.id);
+          if (oldCount > 0 && chapters.length > oldCount) {
+            newChaptersCount += (chapters.length - oldCount);
+          }
+        } catch (_) {}
+      }));
+    }
+    notifyListeners();
+    return newChaptersCount;
+  }
+
   // ---- Generic Web Manga Scraper for Community Extensions ----
 
   Future<List<MangaItem>> _searchWebManga(
@@ -2098,15 +2219,36 @@ class ApiService extends ChangeNotifier {
     throw Exception('Failed to load chapter pages from $pkg');
   }
 
+  static String _unescapeHtml(String text) {
+    return text
+        .replaceAll('&amp;', '&')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#039;', "'")
+        .replaceAll('&#39;', "'")
+        .replaceAll('&apos;', "'")
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&#8217;', "'")
+        .replaceAll('&#8216;', "'")
+        .replaceAll('&#8220;', '"')
+        .replaceAll('&#8221;', '"')
+        .replaceAll('&hellip;', '...');
+  }
+
   // ---- MangaPill Direct Scraper ----
 
-  Future<List<MangaItem>> _searchMangaPill({String? query, int page = 1, int limit = 24}) async {
+  Future<List<MangaItem>> _searchMangaPill({String? query, String? type, int page = 1, int limit = 24}) async {
     try {
+      if (type == 'manhwa' || type == 'manhua') {
+        // MangaPill only hosts Japanese Manga
+        return [];
+      }
+
       final String url;
       if (query != null && query.trim().isNotEmpty) {
         url = 'https://mangapill.com/search?q=${Uri.encodeComponent(query.trim())}&page=$page';
       } else {
-        url = 'https://mangapill.com/search?q=a&page=$page';
+        url = 'https://mangapill.com/mangas/new?page=$page';
       }
 
       final res = await http.get(
@@ -2132,7 +2274,7 @@ class ApiService extends ChangeNotifier {
           final mId = m.group(1)!;
           final slug = m.group(2)!;
           final cover = m.group(3)!;
-          final title = m.group(4)!.trim();
+          final title = _unescapeHtml(m.group(4)!.trim());
 
           final id = 'pill:$mId:$slug';
           if (seen.contains(id)) continue;
@@ -2142,6 +2284,7 @@ class ApiService extends ChangeNotifier {
             id: id,
             title: title,
             cover: cover,
+            type: 'manga',
             source: 'mangapill',
           ));
           if (items.length >= limit) break;
@@ -2182,8 +2325,8 @@ class ApiService extends ChangeNotifier {
 
       return MangaItem(
         id: id,
-        title: title,
-        description: desc,
+        title: _unescapeHtml(title),
+        description: _unescapeHtml(desc),
         cover: cover,
         source: 'mangapill',
       );
@@ -2272,11 +2415,15 @@ class ApiService extends ChangeNotifier {
 
   // ---- MangaKatana Direct Scraper (iOS & Web) ----
 
-  Future<List<MangaItem>> _searchMangaKatana({String? query, int page = 1, int limit = 24}) async {
+  Future<List<MangaItem>> _searchMangaKatana({String? query, String? type, int page = 1, int limit = 24}) async {
     try {
       final String url;
       if (query != null && query.trim().isNotEmpty) {
-        url = 'https://mangakatana.com/?search=${Uri.encodeComponent(query.trim())}&search_by=book_name';
+        url = 'https://mangakatana.com/page/$page?search=${Uri.encodeComponent(query.trim())}&search_by=book_name';
+      } else if (type == 'manhwa') {
+        url = 'https://mangakatana.com/genre/manhwa/page/$page';
+      } else if (type == 'manhua') {
+        url = 'https://mangakatana.com/genre/manhua/page/$page';
       } else {
         url = 'https://mangakatana.com/manga?filter=1&order=latest&page=$page';
       }
@@ -2314,6 +2461,7 @@ class ApiService extends ChangeNotifier {
             id: id,
             title: title,
             cover: cover,
+            type: type ?? (url.contains('manhwa') ? 'manhwa' : (url.contains('manhua') ? 'manhua' : 'manga')),
             source: 'mangakatana',
           ));
           if (items.length >= limit) break;
@@ -2454,13 +2602,19 @@ class ApiService extends ChangeNotifier {
 
   // ---- MangaRead Direct Scraper (iOS & Web) ----
 
-  Future<List<MangaItem>> _searchMangaRead({String? query, int page = 1, int limit = 24}) async {
+  Future<List<MangaItem>> _searchMangaRead({String? query, String? type, int page = 1, int limit = 24}) async {
     try {
       final String url;
       if (query != null && query.trim().isNotEmpty) {
-        url = 'https://www.mangaread.org/?s=${Uri.encodeComponent(query.trim())}&post_type=wp-manga';
+        url = 'https://www.mangaread.org/page/$page/?s=${Uri.encodeComponent(query.trim())}&post_type=wp-manga';
+      } else if (type == 'manhwa') {
+        url = 'https://www.mangaread.org/genres/manhwa/page/$page/?m_orderby=latest';
+      } else if (type == 'manhua') {
+        url = 'https://www.mangaread.org/genres/manhua/page/$page/?m_orderby=latest';
+      } else if (type == 'manga') {
+        url = 'https://www.mangaread.org/genres/manga/page/$page/?m_orderby=latest';
       } else {
-        url = 'https://www.mangaread.org/manga/?m_orderby=latest';
+        url = 'https://www.mangaread.org/manga/page/$page/?m_orderby=latest';
       }
 
       final res = await http.get(
@@ -2474,7 +2628,7 @@ class ApiService extends ChangeNotifier {
       if (res.statusCode == 200) {
         final html = res.body;
         final cardRegex = RegExp(
-          r'<div class="post-title"[^>]*>[\s\S]*?<a href="https://www\.mangaread\.org/manga/([^/]+)/"[^>]*>([^<]+)</a>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"',
+          r'<div[^>]*class="[^"]*(?:item-thumb|tab-thumb)[^"]*"[^>]*>[\s\S]*?<a href="https://www\.mangaread\.org/manga/([^/]+)/"[^>]*title="([^"]*)"[^>]*>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"',
           caseSensitive: false,
         );
 
@@ -2484,7 +2638,7 @@ class ApiService extends ChangeNotifier {
 
         for (final m in matches) {
           final slug = m.group(1)!;
-          final title = m.group(2)!.trim();
+          final title = _unescapeHtml(m.group(2)!.trim());
           final cover = m.group(3)!.trim();
 
           final id = 'mread:$slug';
@@ -2495,6 +2649,7 @@ class ApiService extends ChangeNotifier {
             id: id,
             title: title,
             cover: cover,
+            type: type ?? (url.contains('manhwa') ? 'manhwa' : (url.contains('manhua') ? 'manhua' : 'manga')),
             source: 'mangaread',
           ));
           if (items.length >= limit) break;
@@ -2522,19 +2677,19 @@ class ApiService extends ChangeNotifier {
     if (res.statusCode == 200) {
       final html = res.body;
       final titleMatch = RegExp(r'<div class="post-title">[\s\S]*?<h1>([^<]+)</h1>').firstMatch(html);
-      final title = titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' ');
+      final title = _unescapeHtml(titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' '));
 
       final descMatch = RegExp(r'<div class="description-summary">[\s\S]*?<p>([\s\S]*?)</p>').firstMatch(html);
-      final desc = descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
+      final desc = _unescapeHtml(descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '');
 
       final coverMatch = RegExp(r'<div class="summary_image"[^>]*>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"').firstMatch(html);
       final cover = coverMatch?.group(1)?.trim() ?? '';
 
       final authorMatches = RegExp(r'<div class="author-content">[\s\S]*?<a[^>]*>([^<]+)</a>').allMatches(html);
-      final authors = authorMatches.map((m) => m.group(1)!.trim()).toList();
+      final authors = authorMatches.map((m) => _unescapeHtml(m.group(1)!.trim())).toList();
 
       final genreMatches = RegExp(r'<div class="genres-content">[\s\S]*?<a[^>]*>([^<]+)</a>').allMatches(html);
-      final tags = genreMatches.map((m) => m.group(1)!.trim()).toList();
+      final tags = genreMatches.map((m) => _unescapeHtml(m.group(1)!.trim())).toList();
 
       return MangaItem(
         id: id,
