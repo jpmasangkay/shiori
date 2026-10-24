@@ -1,7 +1,9 @@
 package eu.kanade.tachiyomi.source.online
 
 import eu.kanade.tachiyomi.network.GET
+import eu.kanade.tachiyomi.network.HttpException
 import eu.kanade.tachiyomi.network.asObservableSuccess
+import eu.kanade.tachiyomi.network.awaitSingle
 import eu.kanade.tachiyomi.network.awaitSuccess
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.model.FilterList
@@ -64,18 +66,51 @@ abstract class HttpSource : CatalogueSource {
     open fun getMangaUrl(manga: SManga): String = baseUrl + manga.url
     open fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
 
+    open fun setUrlWithoutDomain(manga: SManga, url: String) {
+        manga.url = getUrlWithoutDomain(url)
+    }
+
+    open fun setUrlWithoutDomain(chapter: SChapter, url: String) {
+        chapter.url = getUrlWithoutDomain(url)
+    }
+
+    open fun getUrlWithoutDomain(orig: String): String {
+        return try {
+            val uri = java.net.URI(orig.replace(" ", "%20"))
+            var out = uri.path ?: ""
+            if (uri.query != null) {
+                out += "?" + uri.query
+            }
+            if (uri.fragment != null) {
+                out += "#" + uri.fragment
+            }
+            out
+        } catch (_: Throwable) {
+            orig
+        }
+    }
+
     // Popular
     open fun popularMangaRequest(page: Int): Request = GET(baseUrl, headers)
     open fun popularMangaParse(response: Response): MangasPage = MangasPage(emptyList(), false)
 
     override suspend fun getPopularManga(page: Int): MangasPage {
-        val response = client.newCall(popularMangaRequest(page)).awaitSuccess()
-        return popularMangaParse(response)
+        return fetchPopularManga(page).awaitSingle()
     }
 
     override fun fetchPopularManga(page: Int): Observable<MangasPage> {
-        return Observable.fromCallable {
-            kotlinx.coroutines.runBlocking { getPopularManga(page) }
+        return Observable.defer {
+            try {
+                val response = client.newCall(popularMangaRequest(page)).execute()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    try { response.close() } catch (_: Throwable) {}
+                    throw HttpException(code)
+                }
+                Observable.just(popularMangaParse(response))
+            } catch (e: Throwable) {
+                Observable.error(e)
+            }
         }
     }
 
@@ -84,13 +119,22 @@ abstract class HttpSource : CatalogueSource {
     open fun searchMangaParse(response: Response): MangasPage = MangasPage(emptyList(), false)
 
     override suspend fun getSearchManga(page: Int, query: String, filters: FilterList): MangasPage {
-        val response = client.newCall(searchMangaRequest(page, query, filters)).awaitSuccess()
-        return searchMangaParse(response)
+        return fetchSearchManga(page, query, filters).awaitSingle()
     }
 
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
-        return Observable.fromCallable {
-            kotlinx.coroutines.runBlocking { getSearchManga(page, query, filters) }
+        return Observable.defer {
+            try {
+                val response = client.newCall(searchMangaRequest(page, query, filters)).execute()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    try { response.close() } catch (_: Throwable) {}
+                    throw HttpException(code)
+                }
+                Observable.just(searchMangaParse(response))
+            } catch (e: Throwable) {
+                Observable.error(e)
+            }
         }
     }
 
@@ -99,13 +143,22 @@ abstract class HttpSource : CatalogueSource {
     open fun latestUpdatesParse(response: Response): MangasPage = MangasPage(emptyList(), false)
 
     override suspend fun getLatestUpdates(page: Int): MangasPage {
-        val response = client.newCall(latestUpdatesRequest(page)).awaitSuccess()
-        return latestUpdatesParse(response)
+        return fetchLatestUpdates(page).awaitSingle()
     }
 
     override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
-        return Observable.fromCallable {
-            kotlinx.coroutines.runBlocking { getLatestUpdates(page) }
+        return Observable.defer {
+            try {
+                val response = client.newCall(latestUpdatesRequest(page)).execute()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    try { response.close() } catch (_: Throwable) {}
+                    throw HttpException(code)
+                }
+                Observable.just(latestUpdatesParse(response))
+            } catch (e: Throwable) {
+                Observable.error(e)
+            }
         }
     }
 
@@ -136,22 +189,42 @@ abstract class HttpSource : CatalogueSource {
     }
 
     override suspend fun getMangaDetails(manga: SManga): SManga {
-        return getMangaUpdate(manga, emptyList(), fetchDetails = true, fetchChapters = false).manga
+        return fetchMangaDetails(manga).awaitSingle()
     }
 
     override fun fetchMangaDetails(manga: SManga): Observable<SManga> {
-        return Observable.fromCallable {
-            kotlinx.coroutines.runBlocking { getMangaDetails(manga) }
+        return Observable.defer {
+            try {
+                val response = client.newCall(mangaDetailsRequest(manga)).execute()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    try { response.close() } catch (_: Throwable) {}
+                    throw HttpException(code)
+                }
+                Observable.just(mangaDetailsParse(response).apply { initialized = true })
+            } catch (e: Throwable) {
+                Observable.error(e)
+            }
         }
     }
 
     override suspend fun getChapterList(manga: SManga): List<SChapter> {
-        return getMangaUpdate(manga, emptyList(), fetchDetails = false, fetchChapters = true).chapters
+        return fetchChapterList(manga).awaitSingle()
     }
 
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
-        return Observable.fromCallable {
-            kotlinx.coroutines.runBlocking { getChapterList(manga) }
+        return Observable.defer {
+            try {
+                val response = client.newCall(chapterListRequest(manga)).execute()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    try { response.close() } catch (_: Throwable) {}
+                    throw HttpException(code)
+                }
+                Observable.just(chapterListParse(response))
+            } catch (e: Throwable) {
+                Observable.error(e)
+            }
         }
     }
 
@@ -160,27 +233,51 @@ abstract class HttpSource : CatalogueSource {
     open fun pageListParse(response: Response): List<Page> = emptyList()
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
-        val response = client.newCall(pageListRequest(chapter)).awaitSuccess()
-        return pageListParse(response)
+        return fetchPageList(chapter).awaitSingle()
     }
 
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
-        return Observable.fromCallable {
-            kotlinx.coroutines.runBlocking { getPageList(chapter) }
+        return Observable.defer {
+            try {
+                val response = client.newCall(pageListRequest(chapter)).execute()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    try { response.close() } catch (_: Throwable) {}
+                    throw HttpException(code)
+                }
+                Observable.just(pageListParse(response))
+            } catch (e: Throwable) {
+                Observable.error(e)
+            }
         }
     }
 
     open fun imageUrlRequest(page: Page): Request = GET(page.url, headers)
     open fun imageUrlParse(response: Response): String = ""
 
+    open fun imageRequest(page: Page): Request = GET(page.imageUrl ?: page.url, headers)
+
+    open val supportsRelatedMangas: Boolean get() = false
+    open val disableRelatedMangas: Boolean get() = false
+    open val disableRelatedMangasBySearch: Boolean get() = false
+
     override suspend fun getImageUrl(page: Page): String {
-        val response = client.newCall(imageUrlRequest(page)).awaitSuccess()
-        return imageUrlParse(response)
+        return fetchImageUrl(page).awaitSingle()
     }
 
     override fun fetchImageUrl(page: Page): Observable<String> {
-        return Observable.fromCallable {
-            kotlinx.coroutines.runBlocking { getImageUrl(page) }
+        return Observable.defer {
+            try {
+                val response = client.newCall(imageUrlRequest(page)).execute()
+                if (!response.isSuccessful) {
+                    val code = response.code
+                    try { response.close() } catch (_: Throwable) {}
+                    throw HttpException(code)
+                }
+                Observable.just(imageUrlParse(response))
+            } catch (e: Throwable) {
+                Observable.error(e)
+            }
         }
     }
 
@@ -193,8 +290,8 @@ abstract class ParsedHttpSource : HttpSource() {
         val mangas = document.select(popularMangaSelector()).map { element ->
             popularMangaFromElement(element)
         }
-        val hasNextPage = popularMangaNextPageSelector()?.let { selector ->
-            document.select(selector).first() != null
+        val hasNextPage = popularMangaNextPageSelector()?.takeIf { it.isNotBlank() }?.let { selector ->
+            try { document.select(selector).first() != null } catch (_: Throwable) { false }
         } ?: false
         return MangasPage(mangas, hasNextPage)
     }
@@ -208,8 +305,8 @@ abstract class ParsedHttpSource : HttpSource() {
         val mangas = document.select(latestUpdatesSelector()).map { element ->
             latestUpdatesFromElement(element)
         }
-        val hasNextPage = latestUpdatesNextPageSelector()?.let { selector ->
-            document.select(selector).first() != null
+        val hasNextPage = latestUpdatesNextPageSelector()?.takeIf { it.isNotBlank() }?.let { selector ->
+            try { document.select(selector).first() != null } catch (_: Throwable) { false }
         } ?: false
         return MangasPage(mangas, hasNextPage)
     }
@@ -223,8 +320,8 @@ abstract class ParsedHttpSource : HttpSource() {
         val mangas = document.select(searchMangaSelector()).map { element ->
             searchMangaFromElement(element)
         }
-        val hasNextPage = searchMangaNextPageSelector()?.let { selector ->
-            document.select(selector).first() != null
+        val hasNextPage = searchMangaNextPageSelector()?.takeIf { it.isNotBlank() }?.let { selector ->
+            try { document.select(selector).first() != null } catch (_: Throwable) { false }
         } ?: false
         return MangasPage(mangas, hasNextPage)
     }

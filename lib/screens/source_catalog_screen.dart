@@ -5,6 +5,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/extension_bridge.dart';
+import '../services/extension_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/skeleton.dart';
@@ -112,7 +114,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
       final query = _searchController.text.trim();
       var results = await ApiService.instance.searchManga(
         query: query,
-        type: _selectedType == 'all' ? null : _selectedType,
+        type: query.isNotEmpty ? null : (_selectedType == 'all' ? null : _selectedType),
         order: _selectedOrder,
         page: 1,
         limit: 24,
@@ -161,7 +163,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
       final query = _searchController.text.trim();
       final results = await ApiService.instance.searchManga(
         query: query,
-        type: _selectedType == 'all' ? null : _selectedType,
+        type: query.isNotEmpty ? null : (_selectedType == 'all' ? null : _selectedType),
         order: _selectedOrder,
         page: nextPage,
         limit: 24,
@@ -204,6 +206,23 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
             ),
           ],
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.public_rounded, size: 20),
+            tooltip: 'Open in WebView',
+            onPressed: () async {
+              final baseUrl = await ExtensionBridge.instance.getSourceBaseUrl(pkg: widget.sourceId);
+              final ext = ExtensionService.instance.getExtensionByPkg(widget.sourceId);
+              final url = (baseUrl != null && baseUrl.isNotEmpty)
+                  ? baseUrl
+                  : (ext != null && ext.homeUrl.isNotEmpty ? ext.homeUrl : null);
+              if (url != null && url.isNotEmpty) {
+                await ExtensionBridge.instance.openInWebView(url: url, title: widget.sourceName);
+                if (mounted) _fetch();
+              }
+            },
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -301,6 +320,16 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
     }
 
     if (_error != null && _items.isEmpty) {
+      final errLower = _error!.toLowerCase();
+      final isCloudflareOrWeb = errLower.contains('403') ||
+          errLower.contains('503') ||
+          errLower.contains('522') ||
+          errLower.contains('cloudflare') ||
+          errLower.contains('cookie') ||
+          errLower.contains('webview') ||
+          errLower.contains('challenge') ||
+          errLower.contains('turnstile') ||
+          errLower.contains('captcha');
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -320,6 +349,30 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                 style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
               ),
               const SizedBox(height: 16),
+              if (isCloudflareOrWeb) ...[
+                FilledButton.icon(
+                  onPressed: () async {
+                    final baseUrl = await ExtensionBridge.instance.getSourceBaseUrl(pkg: widget.sourceId);
+                    final ext = ExtensionService.instance.getExtensionByPkg(widget.sourceId);
+                    final url = (baseUrl != null && baseUrl.isNotEmpty)
+                        ? baseUrl
+                        : (ext != null && ext.homeUrl.isNotEmpty ? ext.homeUrl : null);
+                    if (url != null && url.isNotEmpty) {
+                      await ExtensionBridge.instance.openInWebView(url: url, title: widget.sourceName);
+                      if (mounted) _fetch();
+                    }
+                  },
+                  icon: const Icon(Icons.shield_rounded, size: 18),
+                  label: Text(errLower.contains('cloudflare') || errLower.contains('403')
+                      ? 'Solve Cloudflare in WebView'
+                      : 'Open in WebView'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: AppColors.onPrimary,
+                  ),
+                ),
+                const SizedBox(height: 10),
+              ],
               FilledButton.icon(
                 onPressed: _fetch,
                 icon: const Icon(Icons.refresh_rounded, size: 18),

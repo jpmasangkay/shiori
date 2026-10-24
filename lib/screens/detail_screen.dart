@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/download_service.dart';
+import '../services/extension_bridge.dart';
 import '../services/extension_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -139,6 +140,44 @@ class _DetailScreenState extends State<DetailScreen> {
         setState(() => _inLibrary = !newStatus);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Failed to update library: $err')),
+        );
+      }
+    }
+  }
+
+  Future<void> _openWebView() async {
+    String? webUrl;
+    if (_manga.id.startsWith('ext:')) {
+      final parts = _manga.id.split(':');
+      if (parts.length >= 3) {
+        final pkg = parts[1];
+        final rawMangaUrl = Uri.decodeComponent(parts.sublist(2).join(':'));
+        if (rawMangaUrl.startsWith('http')) {
+          webUrl = rawMangaUrl;
+        } else {
+          final baseUrl = await ExtensionBridge.instance.getSourceBaseUrl(pkg: pkg);
+          if (baseUrl != null && baseUrl.isNotEmpty) {
+            webUrl = baseUrl.endsWith('/') && rawMangaUrl.startsWith('/')
+                ? '$baseUrl${rawMangaUrl.substring(1)}'
+                : '$baseUrl$rawMangaUrl';
+          }
+        }
+      }
+    }
+    if (webUrl == null || webUrl.isEmpty) {
+      final src = _manga.source;
+      final ext = ExtensionService.instance.getExtensionByPkg(src);
+      if (ext != null && ext.homeUrl.isNotEmpty) {
+        webUrl = ext.homeUrl;
+      }
+    }
+    if (webUrl != null && webUrl.isNotEmpty) {
+      await ExtensionBridge.instance.openInWebView(url: webUrl, title: _manga.title);
+      if (mounted) _loadMangaData();
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No web URL available for this title')),
         );
       }
     }
@@ -449,6 +488,32 @@ class _DetailScreenState extends State<DetailScreen> {
                         style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
                       ),
                       const SizedBox(height: 12),
+                      Builder(builder: (context) {
+                        final errLower = _chaptersError!.toLowerCase();
+                        final isCf = errLower.contains('403') ||
+                            errLower.contains('503') ||
+                            errLower.contains('522') ||
+                            errLower.contains('cloudflare') ||
+                            errLower.contains('cookie') ||
+                            errLower.contains('webview') ||
+                            errLower.contains('turnstile') ||
+                            errLower.contains('challenge');
+                        if (isCf) {
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: FilledButton.icon(
+                              onPressed: _openWebView,
+                              icon: const Icon(Icons.shield_rounded, size: 16),
+                              label: const Text('Solve Cloudflare in WebView'),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: AppColors.onPrimary,
+                              ),
+                            ),
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      }),
                       FilledButton.icon(
                         onPressed: _loadMangaData,
                         icon: const Icon(Icons.refresh_rounded, size: 16),
@@ -794,7 +859,11 @@ class _DetailScreenState extends State<DetailScreen> {
               );
             },
           ),
-          const _Action(icon: Icons.public_rounded, label: 'WebView'),
+          _Action(
+            icon: Icons.public_rounded,
+            label: 'WebView',
+            onTap: _openWebView,
+          ),
         ],
       ),
     );

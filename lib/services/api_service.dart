@@ -519,10 +519,12 @@ class ApiService extends ChangeNotifier {
     } catch (e) {
       debugPrint('ExtensionBridge native execution for $effectivePkg encountered: $e');
       if (ext != null && ext.homeUrl.isNotEmpty) {
-        final webResults = await _searchWebManga(ext, query: query, page: page, limit: limit);
-        if (webResults.isNotEmpty) return webResults;
+        try {
+          final webResults = await _searchWebManga(ext, query: query, page: page, limit: limit);
+          if (webResults.isNotEmpty) return webResults;
+        } catch (_) {}
       }
-      return [];
+      rethrow;
     }
 
     // Secondary fallback to web scraper ONLY if homeUrl is present
@@ -602,9 +604,12 @@ class ApiService extends ChangeNotifier {
         debugPrint('ExtensionBridge fetchChapterList failed for $pkg ($rawUrl): $e');
         final ext = ExtensionService.instance.getExtensionByPkg(pkg);
         if (ext != null && ext.homeUrl.isNotEmpty) {
-          return _getWebChapters(pkg, actualId, ext: ext);
+          try {
+            final webChapters = await _getWebChapters(pkg, actualId, ext: ext);
+            if (webChapters.isNotEmpty) return webChapters;
+          } catch (_) {}
         }
-        return [];
+        rethrow;
       }
 
       final ext = ExtensionService.instance.getExtensionByPkg(pkg);

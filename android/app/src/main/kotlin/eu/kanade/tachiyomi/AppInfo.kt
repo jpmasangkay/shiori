@@ -1,6 +1,9 @@
 package eu.kanade.tachiyomi
 
 object AppInfo {
-    fun getVersionCode(): Int = 100
-    fun getVersionName(): String = "1.0.0"
+    const val versionCode: Int = 100
+    const val versionName: String = "1.0.0"
+
+    fun getVersionCode(): Int = versionCode
+    fun getVersionName(): String = versionName
 }

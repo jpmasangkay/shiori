@@ -64,3 +64,43 @@ suspend fun Call.awaitSuccess(): Response {
     }
     return response
 }
+
+@JvmOverloads
+fun Response.asJsoup(html: String? = null): org.jsoup.nodes.Document {
+    val content = html ?: try { body?.string().orEmpty() } catch (_: Throwable) { "" }
+    return org.jsoup.Jsoup.parse(content, request.url.toString())
+}
+
+@JvmOverloads
+fun Response.asJsoupDocument(html: String? = null): org.jsoup.nodes.Document {
+    return asJsoup(html)
+}
+
+suspend fun <T> Observable<T>.awaitSingle(): T {
+    return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+        var value: T? = null
+        var hasValue = false
+        val subscription = this.subscribe(
+            { v ->
+                value = v
+                hasValue = true
+            },
+            { error ->
+                if (continuation.isActive) {
+                    continuation.resumeWithException(error)
+                }
+            },
+            {
+                if (continuation.isActive) {
+                    if (hasValue) {
+                        @Suppress("UNCHECKED_CAST")
+                        continuation.resume(value as T) {}
+                    } else {
+                        continuation.resumeWithException(NoSuchElementException("Observable emitted no items"))
+                    }
+                }
+            }
+        )
+        continuation.invokeOnCancellation { subscription.unsubscribe() }
+    }
+}

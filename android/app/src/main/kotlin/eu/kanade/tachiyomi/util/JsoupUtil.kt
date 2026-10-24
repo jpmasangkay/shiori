@@ -6,11 +6,13 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 
+@JvmOverloads
 fun Response.asJsoup(html: String? = null): Document {
     val content = html ?: try { body?.string().orEmpty() } catch (_: Throwable) { "" }
     return Jsoup.parse(content, request.url.toString())
 }
 
+@JvmOverloads
 fun Response.asJsoupDocument(html: String? = null): Document {
     return asJsoup(html)
 }

@@ -25,6 +25,32 @@ class ExtensionBridge {
     return null;
   }
 
+  Future<void> openInWebView({required String url, String? title}) async {
+    if (!Platform.isAndroid) return;
+    try {
+      await _channel.invokeMethod('openInWebView', {
+        'url': url,
+        'title': title ?? '',
+      });
+    } catch (e) {
+      debugPrint('ExtensionBridge openInWebView error: $e');
+    }
+  }
+
+  Future<String?> getSourceBaseUrl({required String pkg}) async {
+    if (!Platform.isAndroid) return null;
+    try {
+      final apkPath = _findApkPath(pkg);
+      return await _channel.invokeMethod<String>('getSourceBaseUrl', {
+        'pkg': pkg,
+        'apkPath': apkPath,
+      });
+    } catch (e) {
+      debugPrint('ExtensionBridge getSourceBaseUrl error: $e');
+      return null;
+    }
+  }
+
   Future<List<MangaItem>> fetchPopularManga({
     required String pkg,
     int page = 1,

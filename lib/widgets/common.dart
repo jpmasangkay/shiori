@@ -17,8 +17,16 @@ Map<String, String> imageHeadersForUrl(String url) {
     referer = 'https://asuracomic.net/';
   } else if (host.contains('flame')) {
     referer = 'https://flamecomics.xyz/';
-  } else if (host.contains('weebcentral')) {
+  } else if (host.contains('weebcentral') || host.contains('planeptune')) {
     referer = 'https://weebcentral.com/';
+  } else if (host.contains('pstatic') || host.contains('webtoon')) {
+    referer = 'https://www.webtoons.com/';
+  } else if (host.contains('bato') || host.contains('battwo') || host.contains('batotoo')) {
+    referer = 'https://bato.to/';
+  } else if (host.contains('mangapark')) {
+    referer = 'https://mangapark.net/';
+  } else if (host.contains('fanfox') || host.contains('mangafox')) {
+    referer = 'https://fanfox.net/';
   } else if (host.contains('readdetectiveconan') || host.contains('mangapill')) {
     referer = 'https://mangapill.com/';
   } else if (host.contains('mangakatana')) {

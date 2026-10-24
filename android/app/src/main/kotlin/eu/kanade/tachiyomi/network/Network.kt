@@ -18,13 +18,16 @@ import java.util.concurrent.TimeUnit
 class HttpException(val code: Int) : IllegalStateException("HTTP error $code")
 
 open class NetworkHelper(val context: Context) {
+    open val cookieJar: okhttp3.CookieJar by lazy { AndroidCookieJar() }
+
     open val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .cookieJar(cookieJar)
             .connectTimeout(30, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(30, TimeUnit.SECONDS)
             .addInterceptor(eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor())
-            .addInterceptor(eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor())
+            .addInterceptor(eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor(defaultUserAgentProvider()))
             .addInterceptor(eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor(context))
             .addInterceptor(okhttp3.CompressionInterceptor())
             .addInterceptor(okhttp3.brotli.BrotliInterceptor)
@@ -37,11 +40,13 @@ open class NetworkHelper(val context: Context) {
     open val defaultClient: OkHttpClient
         get() = client
 
-    open val cookieJar: okhttp3.CookieJar
-        get() = client.cookieJar
-
-    open fun defaultUserAgentProvider(): String =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    open fun defaultUserAgentProvider(): String {
+        return try {
+            android.webkit.WebSettings.getDefaultUserAgent(context)
+        } catch (_: Throwable) {
+            "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
+        }
+    }
 }
 
 typealias UncaughtExceptionInterceptor = eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor

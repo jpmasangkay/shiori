@@ -161,6 +161,27 @@ class MainActivity : FlutterActivity() {
 
         // Native Tachiyomi Extension Execution Channel
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, EXTENSIONS_CHANNEL).setMethodCallHandler { call, result ->
+            if (call.method == "openInWebView") {
+                val url = call.argument<String>("url") ?: ""
+                val title = call.argument<String>("title") ?: ""
+                if (url.isNotEmpty()) {
+                    try {
+                        val intent = Intent(this, WebViewActivity::class.java).apply {
+                            putExtra(WebViewActivity.EXTRA_URL, url)
+                            putExtra(WebViewActivity.EXTRA_TITLE, title)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.error("WEBVIEW_ERROR", e.message, null)
+                    }
+                } else {
+                    result.error("INVALID_ARG", "url is empty", null)
+                }
+                return@setMethodCallHandler
+            }
+
             val pkg = call.argument<String>("pkg") ?: ""
             val apkPath = call.argument<String>("apkPath")
 
@@ -170,6 +191,10 @@ class MainActivity : FlutterActivity() {
             }
 
             when (call.method) {
+                "getSourceBaseUrl" -> {
+                    val baseUrl = extensionManager.getSourceBaseUrl(pkg, apkPath)
+                    result.success(baseUrl)
+                }
                 "fetchPopularManga" -> {
                     val page = call.argument<Int>("page") ?: 1
                     val type = call.argument<String>("type")
@@ -262,21 +287,69 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+    }
+
     override fun onResume() {
         super.onResume()
-        if (intent?.getBooleanExtra("test_extensions", false) == true) {
+        val testExt = intent?.getBooleanExtra("test_extensions", false) == true
+        val testSearch = intent?.getBooleanExtra("test_search", false) == true
+        val testDeep = intent?.getBooleanExtra("test_deep", false) == true
+        val targetPkg = intent?.getStringExtra("test_pkg")
+        val testQuery = intent?.getStringExtra("test_query") ?: "solo"
+
+        if (testExt || testSearch || testDeep || targetPkg != null) {
             intent?.removeExtra("test_extensions")
+            intent?.removeExtra("test_search")
+            intent?.removeExtra("test_deep")
+            intent?.removeExtra("test_pkg")
+            intent?.removeExtra("test_query")
+
             mainScope.launch {
-                val pm = packageManager
-                val packages = pm.getInstalledPackages(0)
-                val extPackages = packages
-                    .map { it.packageName }
-                    .filter { it.contains("tachiyomi.extension") || it.startsWith("eu.kanade.tachiyomi") }
+                val extPackages = if (!targetPkg.isNullOrEmpty()) {
+                    listOf(targetPkg)
+                } else {
+                    val pm = packageManager
+                    val packages = pm.getInstalledPackages(0)
+                    packages
+                        .map { it.packageName }
+                        .filter { it.contains("tachiyomi.extension") || it.startsWith("eu.kanade.tachiyomi") }
+                }
+
+                android.util.Log.i("ExtensionTest", "Starting test run for ${extPackages.size} extension(s), query='$testQuery', isSearch=$testSearch, isDeep=$testDeep")
 
                 for (extPkg in extPackages) {
+                    android.util.Log.i("ExtensionTest", "TESTING ($extPkg)...")
                     try {
-                        val popular = extensionManager.fetchPopularManga(extPkg, 1, null)
-                        android.util.Log.i("ExtensionTest", "SUCCESS ($extPkg): ${popular.size} items")
+                        val items = if (testSearch || !targetPkg.isNullOrEmpty()) {
+                            extensionManager.searchManga(extPkg, testQuery, 1, null)
+                        } else {
+                            extensionManager.fetchPopularManga(extPkg, 1, null)
+                        }
+                        android.util.Log.i("ExtensionTest", "SEARCH SUCCESS ($extPkg): ${items.size} items, first: ${items.firstOrNull()?.get("title")}")
+
+                        if (testDeep && items.isNotEmpty()) {
+                            val first = items.first()
+                            val mUrl = first["url"] as? String ?: ""
+                            val mTitle = first["title"] as? String
+                            android.util.Log.i("ExtensionTest", "TESTING DETAILS ($extPkg): url='$mUrl'...")
+                            val details = extensionManager.fetchMangaDetails(extPkg, mUrl, mTitle)
+                            android.util.Log.i("ExtensionTest", "DETAILS SUCCESS ($extPkg): author=${details["author"]}, status=${details["status"]}")
+
+                            android.util.Log.i("ExtensionTest", "TESTING CHAPTERS ($extPkg)...")
+                            val chapters = extensionManager.fetchChapterList(extPkg, mUrl, mTitle)
+                            android.util.Log.i("ExtensionTest", "CHAPTERS SUCCESS ($extPkg): ${chapters.size} chapters, first: ${chapters.firstOrNull()?.get("name")}")
+
+                            val firstChapter = chapters.firstOrNull()
+                            if (firstChapter != null) {
+                                val cUrl = firstChapter["url"] as? String ?: ""
+                                android.util.Log.i("ExtensionTest", "TESTING PAGES ($extPkg): url='$cUrl'...")
+                                val pages = extensionManager.fetchPageList(extPkg, cUrl)
+                                android.util.Log.i("ExtensionTest", "PAGES SUCCESS ($extPkg): ${pages.size} pages, first page: ${pages.firstOrNull()?.take(60)}")
+                            }
+                        }
                     } catch (t: Throwable) {
                         val msg = extractErrorMessage(t)
                         android.util.Log.e("ExtensionTest", "FAILED ($extPkg): $msg", t)
