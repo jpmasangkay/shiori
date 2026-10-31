@@ -11,6 +11,14 @@ private val DEFAULT_HEADERS = Headers.Builder().build()
 private val DEFAULT_CACHE_CONTROL = CacheControl.FORCE_NETWORK
 private val DEFAULT_BODY = RequestBody.create(null, ByteArray(0))
 
+private fun sanitizeUrl(url: String): String {
+    return if (url.contains(" ")) {
+        url.replace(" ", "%20")
+    } else {
+        url
+    }
+}
+
 @JvmOverloads
 fun GET(
     url: String,
@@ -18,7 +26,7 @@ fun GET(
     cache: CacheControl = DEFAULT_CACHE_CONTROL
 ): Request {
     return Request.Builder()
-        .url(url)
+        .url(sanitizeUrl(url))
         .headers(headers)
         .cacheControl(cache)
         .build()
@@ -45,7 +53,7 @@ fun POST(
     cache: CacheControl = DEFAULT_CACHE_CONTROL
 ): Request {
     return Request.Builder()
-        .url(url)
+        .url(sanitizeUrl(url))
         .post(body)
         .headers(headers)
         .cacheControl(cache)
@@ -75,7 +83,7 @@ fun PUT(
     cache: CacheControl = DEFAULT_CACHE_CONTROL
 ): Request {
     return Request.Builder()
-        .url(url)
+        .url(sanitizeUrl(url))
         .put(body)
         .headers(headers)
         .cacheControl(cache)
@@ -105,7 +113,7 @@ fun DELETE(
     cache: CacheControl = DEFAULT_CACHE_CONTROL
 ): Request {
     return Request.Builder()
-        .url(url)
+        .url(sanitizeUrl(url))
         .delete(body)
         .headers(headers)
         .cacheControl(cache)
@@ -134,7 +142,7 @@ fun HEAD(
     cache: CacheControl = DEFAULT_CACHE_CONTROL
 ): Request {
     return Request.Builder()
-        .url(url)
+        .url(sanitizeUrl(url))
         .head()
         .headers(headers)
         .cacheControl(cache)

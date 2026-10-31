@@ -3,12 +3,15 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../models/manga_models.dart';
+import '../widgets/common.dart';
+import 'extension_service.dart';
 
 class ExtensionBridge {
   static final ExtensionBridge instance = ExtensionBridge._();
   ExtensionBridge._();
 
   static const MethodChannel _channel = MethodChannel('com.example.manga_reader/extensions');
+  final Map<String, String> _baseUrlCache = {};
 
   String? _findApkPath(String pkg) {
     try {
@@ -38,13 +41,19 @@ class ExtensionBridge {
   }
 
   Future<String?> getSourceBaseUrl({required String pkg}) async {
+    final cached = _baseUrlCache[pkg];
+    if (cached != null && cached.isNotEmpty) return cached;
     if (!Platform.isAndroid) return null;
     try {
       final apkPath = _findApkPath(pkg);
-      return await _channel.invokeMethod<String>('getSourceBaseUrl', {
+      final base = await _channel.invokeMethod<String>('getSourceBaseUrl', {
         'pkg': pkg,
         'apkPath': apkPath,
       });
+      if (base != null && base.isNotEmpty) {
+        _baseUrlCache[pkg] = base;
+      }
+      return base;
     } catch (e) {
       debugPrint('ExtensionBridge getSourceBaseUrl error: $e');
       return null;
@@ -179,11 +188,38 @@ class ExtensionBridge {
       );
 
       if (rawList == null) return [];
-      return rawList.map((e) => e.toString()).toList();
+      final pages = rawList
+          .map((e) => _normalizeUrl(e.toString()))
+          .where((u) => u.isNotEmpty)
+          .toList();
+      if (pages.isNotEmpty) {
+        final referer = _baseUrlCache[pkg] ??
+            await getSourceBaseUrl(pkg: pkg) ??
+            ExtensionService.instance.getExtensionByPkg(pkg)?.homeUrl ??
+            '';
+        if (referer.isNotEmpty) {
+          ImageReferers.registerAll(pages, referer);
+        }
+      }
+      return pages;
     } catch (e) {
       debugPrint('ExtensionBridge fetchPageList error ($pkg, $chapterUrl): $e');
       rethrow;
     }
+  }
+
+  static String _normalizeUrl(String raw, {String? baseUrl}) {
+    var u = raw.trim();
+    if (u.isEmpty) return '';
+    if (u.startsWith('//')) u = 'https:$u';
+    if (!u.startsWith('http://') && !u.startsWith('https://')) {
+      if (baseUrl != null && baseUrl.startsWith('http')) {
+        final cleanBase = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
+        u = u.startsWith('/') ? '$cleanBase$u' : '$cleanBase/$u';
+      }
+    }
+    if (u.contains(' ')) u = u.replaceAll(' ', '%20');
+    return u;
   }
 
   MangaItem _mapToMangaItem(
@@ -195,7 +231,16 @@ class ExtensionBridge {
   }) {
     final url = raw['url']?.toString() ?? fallbackUrl ?? '';
     final title = raw['title']?.toString() ?? fallbackTitle ?? 'Untitled';
-    final cover = raw['thumbnail_url']?.toString() ?? '';
+    final referer = (raw['referer']?.toString() ?? '').trim().isNotEmpty
+        ? raw['referer']!.toString().trim()
+        : (_baseUrlCache[pkg] ?? ExtensionService.instance.getExtensionByPkg(pkg)?.homeUrl ?? '');
+    if (referer.isNotEmpty) {
+      _baseUrlCache[pkg] = referer;
+    }
+    final cover = _normalizeUrl(raw['thumbnail_url']?.toString() ?? '', baseUrl: referer);
+    if (cover.isNotEmpty && referer.isNotEmpty) {
+      ImageReferers.register(cover, referer);
+    }
     final author = raw['author']?.toString() ?? '';
     final artist = raw['artist']?.toString() ?? '';
     final desc = raw['description']?.toString() ?? '';

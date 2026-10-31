@@ -1,5 +1,3 @@
-import 'dart:io' show Platform;
-
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -32,10 +30,8 @@ class SourceManager extends ChangeNotifier {
   static const String _pinnedKey = 'shiori_pinned_sources_v1';
   static const String _disabledDirectKey = 'shiori_disabled_direct_sources_v1';
 
-  /// Built-in direct sources are only offered on iOS (where community APK
-  /// extensions cannot run). Android uses community extensions instead.
-  static List<DirectSourceInfo> get directSources =>
-      (!kIsWeb && Platform.isIOS) ? allDirectSources : const [];
+  /// Built-in direct web scrapers available across all platforms (Android, iOS, Web).
+  static List<DirectSourceInfo> get directSources => allDirectSources;
 
   static const List<DirectSourceInfo> allDirectSources = [
     DirectSourceInfo(
@@ -43,7 +39,8 @@ class SourceManager extends ChangeNotifier {
       name: 'MangaDex',
       lang: 'ALL',
       badge: 'API • Multi',
-      description: 'Official API • 100,000+ Manga, Manhwa & Manhua in 40+ languages',
+      description:
+          'Official API • 100,000+ Manga, Manhwa & Manhua in 40+ languages',
       iconLetter: 'M',
       colorValue: 0xFFFF6740,
     ),
@@ -52,7 +49,8 @@ class SourceManager extends ChangeNotifier {
       name: 'Asura Scans',
       lang: 'EN',
       badge: 'DIRECT • EN',
-      description: 'Top Action Manhwa • Solo Leveling, Mount Hua, Disaster-Class Hero',
+      description:
+          'Top Action Manhwa • Solo Leveling, Mount Hua, Disaster-Class Hero',
       iconLetter: 'A',
       colorValue: 0xFF6366F1,
     ),
@@ -70,7 +68,8 @@ class SourceManager extends ChangeNotifier {
       name: 'Weeb Central',
       lang: 'EN',
       badge: 'DIRECT • EN',
-      description: 'Huge Manga & Webtoon Archive • Fast high-resolution chapters',
+      description:
+          'Huge Manga & Webtoon Archive • Fast high-resolution chapters',
       iconLetter: 'W',
       colorValue: 0xFF10B981,
     ),
@@ -79,7 +78,8 @@ class SourceManager extends ChangeNotifier {
       name: 'MangaPill',
       lang: 'EN',
       badge: 'DIRECT • EN',
-      description: 'Comprehensive Manga Archive • High-speed chapters & zero ads',
+      description:
+          'Comprehensive Manga Archive • High-speed chapters & zero ads',
       iconLetter: 'P',
       colorValue: 0xFFF59E0B,
     ),
@@ -88,7 +88,8 @@ class SourceManager extends ChangeNotifier {
       name: 'MangaKatana',
       lang: 'EN',
       badge: 'DIRECT • EN',
-      description: 'Massive Manga Archive • Fast high-res chapters & thousands of series',
+      description:
+          'Massive Manga Archive • Fast high-res chapters & thousands of series',
       iconLetter: 'K',
       colorValue: 0xFF06B6D4,
     ),
@@ -97,7 +98,8 @@ class SourceManager extends ChangeNotifier {
       name: 'MangaRead',
       lang: 'EN',
       badge: 'DIRECT • EN',
-      description: 'Webtoons & Manhwa • Solo Leveling Ragnarok, daily high-res updates',
+      description:
+          'Webtoons & Manhwa • Solo Leveling Ragnarok, daily high-res updates',
       iconLetter: 'R',
       colorValue: 0xFF8B5CF6,
     ),
@@ -152,7 +154,10 @@ class SourceManager extends ChangeNotifier {
     notifyListeners();
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setStringList(_disabledDirectKey, _disabledSourceIds.toList());
+      await prefs.setStringList(
+        _disabledDirectKey,
+        _disabledSourceIds.toList(),
+      );
     } catch (_) {}
   }
 

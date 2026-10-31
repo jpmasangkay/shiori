@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
+import '../widgets/common.dart';
 import 'api_service.dart';
 
 enum DownloadStatus {
@@ -335,25 +336,50 @@ class DownloadService extends ChangeNotifier {
 
     var totalBytes = 0;
 
-    // 2. Download each page sequentially
+    // 2. Download each page sequentially with header & fallback-URL retries
     for (var i = 0; i < pageUrls.length; i++) {
       final url = pageUrls[i];
+      final fallbackUrl = (i < pagesRes.dataSaver.length && pagesRes.dataSaver[i] != url)
+          ? pagesRes.dataSaver[i]
+          : null;
+      final candidateUrls = <String>[
+        url,
+        if (fallbackUrl != null && fallbackUrl.isNotEmpty) fallbackUrl,
+      ];
+
       final ext = _extractExtension(url);
       final pageFileName = 'page_${(i + 1).toString().padLeft(4, '0')}.$ext';
       final pageFile = File('${chapterDir.path}/$pageFileName');
 
       if (!await pageFile.exists() || await pageFile.length() == 0) {
-        final headers = ApiService.instance.getHeadersForUrl(url);
-        final response = await http
-            .get(Uri.parse(url), headers: headers)
-            .timeout(const Duration(seconds: 25));
+        Uint8List? downloadedBytes;
+        int? lastStatus;
 
-        if (response.statusCode != 200) {
-          throw Exception('Failed to download page ${i + 1} (HTTP ${response.statusCode})');
+        for (final candidate in candidateUrls) {
+          final variants = imageHeaderVariants(candidate);
+          for (final headers in variants) {
+            try {
+              final response = await http
+                  .get(Uri.parse(candidate), headers: headers)
+                  .timeout(const Duration(seconds: 25));
+              lastStatus = response.statusCode;
+              if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+                downloadedBytes = response.bodyBytes;
+                break;
+              }
+            } catch (_) {}
+          }
+          if (downloadedBytes != null) break;
         }
 
-        await pageFile.writeAsBytes(response.bodyBytes);
-        totalBytes += response.bodyBytes.length;
+        if (downloadedBytes == null) {
+          throw Exception(
+            'Failed to download page ${i + 1}${lastStatus != null ? ' (HTTP $lastStatus)' : ''}',
+          );
+        }
+
+        await pageFile.writeAsBytes(downloadedBytes);
+        totalBytes += downloadedBytes.length;
       } else {
         totalBytes += await pageFile.length();
       }

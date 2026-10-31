@@ -18,5 +18,16 @@ fun Response.asJsoupDocument(html: String? = null): Document {
 }
 
 fun Element.attrOrNull(attributeKey: String): String? {
-    return if (hasAttr(attributeKey)) attr(attributeKey) else null
+    return attr(attributeKey).takeUnless { it.isBlank() }?.trim()
 }
+
+fun Element.selectLast(cssQuery: String): Element? = select(cssQuery).lastOrNull()
+
+fun Element.textOrNull(): String? = text().takeUnless { it.isEmpty() }
+
+fun org.jsoup.select.Elements.textOrNull(): String? = text().takeUnless { it.isEmpty() }
+
+fun Element.ownTextOrNull(): String? = ownText().takeUnless { it.isEmpty() }
+
+fun String.asJsoup(baseUrl: String): Document = Jsoup.parse(this, baseUrl)
+

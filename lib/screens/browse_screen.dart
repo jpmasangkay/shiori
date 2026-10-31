@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -33,7 +32,10 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   String _searchQuery = '';
   String _selectedSourceFilter = 'ALL';
   bool _searching = false;
+  int _searchToken = 0;
+  int _pendingSourcesCount = 0;
   Map<String, List<MangaItem>> _searchResults = {};
+  final Map<String, ({Map<String, List<MangaItem>> results, DateTime expiresAt})> _queryCache = {};
 
   @override
   void initState() {
@@ -64,61 +66,141 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     if (mounted) setState(() {});
   }
 
+  int _matchingSourcesCount() {
+    final directSources = SourceManager.directSources;
+    final installedExts = Platform.isIOS
+        ? <MangaExtension>[]
+        : _extService.installedExtensions.toList();
+    int count = 0;
+    for (final ds in directSources) {
+      if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) count++;
+    }
+    for (final ext in installedExts) {
+      if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) count++;
+    }
+    return count;
+  }
+
   void _onSearchChanged(String val) {
     _searchDebounce?.cancel();
-    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
-      final q = val.trim();
-      setState(() => _searchQuery = q);
-      if (q.isNotEmpty) {
-        _runGlobalSearch(q);
+    final q = val.trim();
+    if (q.isEmpty) {
+      _searchToken++;
+      setState(() {
+        _searchQuery = '';
+        _searching = false;
+        _pendingSourcesCount = 0;
+        _searchResults = {};
+      });
+      return;
+    }
+
+    final cacheKey = '$_selectedSourceFilter|${q.toLowerCase()}';
+    final cached = _queryCache[cacheKey];
+    if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
+      _searchToken++;
+      setState(() {
+        _searchQuery = q;
+        _searching = false;
+        _pendingSourcesCount = 0;
+        _searchResults = Map<String, List<MangaItem>>.from(cached.results);
+      });
+      return;
+    }
+
+    // Immediately show skeleton rows on the very first keystroke frame
+    setState(() {
+      _searchQuery = q;
+      _searching = true;
+      _pendingSourcesCount = _matchingSourcesCount();
+      _searchResults = {};
+    });
+
+    _searchDebounce = Timer(const Duration(milliseconds: 240), () {
+      if (mounted) {
+        _runGlobalSearch(q, bypassCache: false);
       }
     });
   }
 
-  Future<void> _runGlobalSearch(String query) async {
-    setState(() => _searching = true);
+  Future<void> _runGlobalSearch(String query, {bool bypassCache = false}) async {
+    final q = query.trim();
+    if (q.isEmpty) return;
 
+    final cacheKey = '$_selectedSourceFilter|${q.toLowerCase()}';
+    if (!bypassCache) {
+      final cached = _queryCache[cacheKey];
+      if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
+        _searchToken++;
+        if (mounted) {
+          setState(() {
+            _searchQuery = q;
+            _searching = false;
+            _pendingSourcesCount = 0;
+            _searchResults = Map<String, List<MangaItem>>.from(cached.results);
+          });
+        }
+        return;
+      }
+    }
+
+    final token = ++_searchToken;
     final directSources = SourceManager.directSources;
     final installedExts = Platform.isIOS
         ? <MangaExtension>[]
         : _extService.installedExtensions.toList();
 
-    final Map<String, List<MangaItem>> resultMap = {};
-    final List<Future<void>> tasks = [];
-
-    for (final ds in directSources) {
-      if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) {
-        tasks.add(
-          ApiService.instance
-              .searchManga(query: query, source: ds.id)
-              .then((res) {
-                if (res.isNotEmpty) resultMap[ds.id] = res;
-              })
-              .catchError((_) {}),
-        );
-      }
-    }
-
-    for (final ext in installedExts) {
-      if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) {
-        tasks.add(
-          ApiService.instance
-              .searchManga(query: query, source: ext.pkg)
-              .then((res) {
-                if (res.isNotEmpty) resultMap[ext.pkg] = res;
-              })
-              .catchError((_) {}),
-        );
-      }
-    }
-
-    await Future.wait(tasks);
+    final List<String> targetIds = [
+      for (final ds in directSources)
+        if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) ds.id,
+      for (final ext in installedExts)
+        if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) ext.pkg,
+    ];
 
     if (mounted) {
       setState(() {
-        _searchResults = resultMap;
-        _searching = false;
+        _searchQuery = q;
+        _searching = targetIds.isNotEmpty;
+        _pendingSourcesCount = targetIds.length;
+        _searchResults = {};
       });
+    }
+
+    if (targetIds.isEmpty) return;
+
+    final Map<String, List<MangaItem>> accumulated = {};
+    int remaining = targetIds.length;
+
+    for (final sourceId in targetIds) {
+      ApiService.instance
+          .searchManga(query: q, source: sourceId)
+          .timeout(const Duration(seconds: 9), onTimeout: () => <MangaItem>[])
+          .then((res) {
+            if (!mounted || token != _searchToken) return;
+            if (res.isNotEmpty) {
+              accumulated[sourceId] = res;
+              setState(() {
+                _searchResults = Map<String, List<MangaItem>>.from(accumulated);
+              });
+            }
+          })
+          .catchError((_) {})
+          .whenComplete(() {
+            if (!mounted || token != _searchToken) return;
+            remaining--;
+            setState(() {
+              _pendingSourcesCount = remaining < 0 ? 0 : remaining;
+              if (remaining <= 0) {
+                _searching = false;
+                if (accumulated.isNotEmpty) {
+                  _queryCache[cacheKey] = (
+                    results: Map<String, List<MangaItem>>.from(accumulated),
+                    expiresAt: DateTime.now().add(const Duration(minutes: 2)),
+                  );
+                }
+              }
+            });
+          });
     }
   }
 
@@ -441,6 +523,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       selected: isSelected,
       onSelected: (val) {
         if (val) {
+          _searchDebounce?.cancel();
           setState(() => _selectedSourceFilter = filterId);
           SharedPreferences.getInstance().then((p) => p.setString('browse_selected_source_filter', filterId));
           if (_searchQuery.isNotEmpty) {
@@ -465,33 +548,74 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   }
 
   Widget _buildSearchResults() {
-    if (_searching) {
-      return const Padding(
-        padding: EdgeInsets.only(top: 8),
-        child: MangaGridSkeleton(count: 6),
+    final entriesWithResults = _searchResults.entries.where((e) => e.value.isNotEmpty).toList();
+    final stillSearching = _searching || _pendingSourcesCount > 0;
+
+    if (entriesWithResults.isEmpty && stillSearching) {
+      final skeletonCount = _selectedSourceFilter == 'ALL' ? 3 : 2;
+      return FadeSlideIn(
+        key: ValueKey('search_skeleton_${_searchQuery}_$_selectedSourceFilter'),
+        child: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    _selectedSourceFilter == 'ALL'
+                        ? 'Searching across sources...'
+                        : 'Searching source...',
+                    style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w500),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              for (int i = 0; i < skeletonCount; i++) const MangaRowSkeleton(),
+            ],
+          ),
+        ),
       );
     }
-
-    final entriesWithResults = _searchResults.entries.where((e) => e.value.isNotEmpty).toList();
 
     if (entriesWithResults.isEmpty) {
       final filterLabel = _selectedSourceFilter == 'ALL'
           ? ''
           : ' on ${_sourceManager.getDirectSource(_selectedSourceFilter)?.name ?? _extService.getExtensionByPkg(_selectedSourceFilter)?.name ?? _selectedSourceFilter}';
 
-      return Padding(
-        padding: const EdgeInsets.all(32),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.search_off_rounded, size: 40, color: AppColors.muted),
-              const SizedBox(height: 10),
-              Text(
-                'No titles found for "$_searchQuery"$filterLabel',
-                style: GoogleFonts.inter(fontSize: 14, color: AppColors.muted),
-              ),
-            ],
+      return FadeSlideIn(
+        key: ValueKey('search_empty_${_searchQuery}_$_selectedSourceFilter'),
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.search_off_rounded, size: 40, color: AppColors.muted),
+                const SizedBox(height: 10),
+                Text(
+                  'No titles found for "$_searchQuery"$filterLabel',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.inter(fontSize: 14, color: AppColors.muted),
+                ),
+                const SizedBox(height: 14),
+                FilledButton.icon(
+                  onPressed: () => _runGlobalSearch(_searchQuery, bypassCache: true),
+                  icon: const Icon(Icons.refresh_rounded, size: 16),
+                  label: const Text('Retry Search'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.surfaceHigh,
+                    foregroundColor: AppColors.text,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       );
@@ -501,11 +625,34 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (final entry in entriesWithResults) ...[
-          _buildSourceResultSection(
-            sourceId: entry.key,
-            items: entry.value,
+          FadeSlideIn(
+            key: ValueKey('sec_${_searchQuery}_${_selectedSourceFilter}_${entry.key}'),
+            child: _buildSourceResultSection(
+              sourceId: entry.key,
+              items: entry.value,
+            ),
           ),
           const SizedBox(height: 16),
+        ],
+        if (stillSearching) ...[
+          Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: Row(
+              children: [
+                const SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Searching $_pendingSourcesCount more source${_pendingSourcesCount == 1 ? '' : 's'}...',
+                  style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w500),
+                ),
+              ],
+            ),
+          ),
+          const MangaRowSkeleton(count: 4),
         ],
       ],
     );
@@ -556,7 +703,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 borderRadius: BorderRadius.circular(8),
                 onTap: () {
                   Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => DetailScreen(manga: manga)),
+                    smoothRoute(DetailScreen(manga: manga)),
                   );
                 },
                 child: SizedBox(
@@ -697,10 +844,10 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(9),
                     child: iconUrl != null && iconUrl.isNotEmpty
-                        ? CachedNetworkImage(
-                            imageUrl: iconUrl,
+                        ? RetryingNetworkImage(
+                            url: iconUrl,
                             fit: BoxFit.cover,
-                            errorWidget: (context, url, error) => Center(
+                            errorBuilder: (context, retry) => Center(
                               child: Text(
                                 iconLetter,
                                 style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: iconColor),
@@ -796,11 +943,12 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   child: OutlinedButton.icon(
                     onPressed: () {
                       Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => SourceCatalogScreen(
+                        smoothRoute(
+                          SourceCatalogScreen(
                             sourceId: id,
                             sourceName: name,
                             sourceLang: lang,
+                            initialOrder: 'latest',
                           ),
                         ),
                       );
@@ -819,11 +967,12 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 FilledButton.icon(
                   onPressed: () {
                     Navigator.of(context).push(
-                      MaterialPageRoute(
-                        builder: (_) => SourceCatalogScreen(
+                      smoothRoute(
+                        SourceCatalogScreen(
                           sourceId: id,
                           sourceName: name,
                           sourceLang: lang,
+                          initialOrder: 'popular',
                         ),
                       ),
                     );

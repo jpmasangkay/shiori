@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/skeleton.dart';
+import 'detail_screen.dart';
 import 'reader_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
@@ -15,23 +18,29 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<Map<String, dynamic>> _history = [];
-  bool _loading = false;
+  bool _loading = true;
 
   @override
   void initState() {
     super.initState();
     _fetch();
-    ApiService.instance.addListener(_fetch);
+    ApiService.instance.addListener(_onServiceChanged);
   }
 
   @override
   void dispose() {
-    ApiService.instance.removeListener(_fetch);
+    ApiService.instance.removeListener(_onServiceChanged);
     super.dispose();
   }
 
-  Future<void> _fetch() async {
-    setState(() => _loading = true);
+  void _onServiceChanged() {
+    _fetch(silent: true);
+  }
+
+  Future<void> _fetch({bool silent = false}) async {
+    if (!silent && _history.isEmpty) {
+      setState(() => _loading = true);
+    }
     try {
       final items = await ApiService.instance.getHistory();
       if (mounted) {
@@ -54,20 +63,33 @@ class _HistoryScreenState extends State<HistoryScreen> {
           branded: true,
         ),
         Expanded(
-          child: _loading
-              ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
-              : _history.isEmpty
-                  ? _buildEmptyState()
-                  : RefreshIndicator(
-                      color: AppColors.primary,
-                      backgroundColor: AppColors.surface,
-                      onRefresh: _fetch,
-                      child: ListView.builder(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        itemCount: _history.length,
-                        itemBuilder: (_, i) => _buildHistoryRow(_history[i]),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            child: _loading && _history.isEmpty
+                ? ListView.builder(
+                    key: const ValueKey('history_skeleton'),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    itemCount: 8,
+                    itemBuilder: (_, _) => const HistoryRowSkeleton(),
+                  )
+                : _history.isEmpty
+                    ? _buildEmptyState()
+                    : FadeSlideIn(
+                        key: const ValueKey('history_content'),
+                        child: RefreshIndicator(
+                          color: AppColors.primary,
+                          backgroundColor: AppColors.surface,
+                          onRefresh: () => _fetch(silent: true),
+                          child: ListView.builder(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            itemCount: _history.length,
+                            itemBuilder: (_, i) => _buildHistoryRow(_history[i]),
+                          ),
+                        ),
                       ),
-                    ),
+          ),
         ),
       ],
     );
@@ -85,7 +107,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   Widget _buildHistoryRow(Map<String, dynamic> item) {
-    final title = item['mangaTitle'] ?? 'Untitled';
+    final mangaId = item['mangaId']?.toString() ?? '';
+    final title = item['mangaTitle']?.toString() ?? 'Untitled';
+    final cover = item['cover']?.toString();
     final chNum = item['chapterNumber'] ?? '';
     final page = item['page'] ?? 1;
     final total = item['totalPages'] ?? 0;
@@ -94,28 +118,47 @@ class _HistoryScreenState extends State<HistoryScreen> {
     return InkWell(
       onTap: () {
         Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ReaderScreen(
+          smoothRoute(
+            ReaderScreen(
               chapterId: item['chapterId']?.toString() ?? '',
-              mangaId: item['mangaId']?.toString() ?? '',
+              mangaId: mangaId,
               mangaTitle: title,
-              coverUrl: item['cover'],
+              coverUrl: cover,
               chapterNumber: chNum.toString(),
             ),
           ),
-        ).then((_) => _fetch());
+        ).then((_) => _fetch(silent: true));
       },
       child: Container(
         height: 64,
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
         child: Row(
           children: [
-            SizedBox(
-              width: 44,
-              height: 56,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: CoverImage(imageUrl: item['cover'], saturation: .7),
+            GestureDetector(
+              onTap: mangaId.isEmpty
+                  ? null
+                  : () {
+                      Navigator.of(context)
+                          .push(
+                            smoothRoute(
+                              DetailScreen(
+                                manga: MangaItem(
+                                  id: mangaId,
+                                  title: title,
+                                  cover: cover ?? '',
+                                ),
+                              ),
+                            ),
+                          )
+                          .then((_) => _fetch(silent: true));
+                    },
+              child: SizedBox(
+                width: 44,
+                height: 56,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: CoverImage(imageUrl: cover, saturation: .7),
+                ),
               ),
             ),
             const SizedBox(width: 12),

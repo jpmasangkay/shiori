@@ -19,6 +19,11 @@ import eu.kanade.tachiyomi.source.model.Page
 import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import uy.kohesive.injekt.Injekt
@@ -33,6 +38,8 @@ class TachiyomiExtensionManager(private val context: Context) {
     private val sourceCache = ConcurrentHashMap<String, CatalogueSource>()
     private val mangaCache = ConcurrentHashMap<String, SManga>()
     private val chapterCache = ConcurrentHashMap<String, SChapter>()
+    private val updateLocks = ConcurrentHashMap<String, Mutex>()
+    private val mangaUpdateSupport = ConcurrentHashMap<Class<*>, Boolean>()
 
     init {
         setupInjekt()
@@ -138,7 +145,8 @@ class TachiyomiExtensionManager(private val context: Context) {
         // 1. Direct check for modern Keiyoushi source
         try {
             val cls = Class.forName("keiyoushi.source.Generated", false, classLoader)
-            if (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls)) {
+            if (!java.lang.reflect.Modifier.isAbstract(cls.modifiers) &&
+                (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls))) {
                 Log.i(TAG, "Resolved extension class: keiyoushi.source.Generated")
                 return "keiyoushi.source.Generated"
             }
@@ -161,7 +169,8 @@ class TachiyomiExtensionManager(private val context: Context) {
                         if (candidate.startsWith("android.") || candidate.startsWith("http") || candidate.contains("schemas.")) continue
                         try {
                             val cls = Class.forName(candidate, false, classLoader)
-                            if (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls)) {
+                            if (!java.lang.reflect.Modifier.isAbstract(cls.modifiers) &&
+                                (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls))) {
                                 Log.i(TAG, "Resolved extension class via manifest scan: $candidate")
                                 return candidate
                             }
@@ -183,7 +192,8 @@ class TachiyomiExtensionManager(private val context: Context) {
                 if (candidate.startsWith("android.") || candidate.startsWith("kotlin.") || candidate.startsWith("okhttp3.")) continue
                 try {
                     val cls = Class.forName(candidate, false, classLoader)
-                    if (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls)) {
+                    if (!java.lang.reflect.Modifier.isAbstract(cls.modifiers) &&
+                        (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls))) {
                         Log.i(TAG, "Resolved extension class via dex scan: $candidate")
                         return candidate
                     }
@@ -260,7 +270,8 @@ class TachiyomiExtensionManager(private val context: Context) {
             for (pName in potentialNames) {
                 try {
                     val cls = Class.forName(pName, false, classLoader)
-                    if (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls)) {
+                    if (!java.lang.reflect.Modifier.isAbstract(cls.modifiers) &&
+                        (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls))) {
                         className = pName
                         break
                     }
@@ -283,8 +294,12 @@ class TachiyomiExtensionManager(private val context: Context) {
             SourceFactory::class.java.isAssignableFrom(loadedClass) -> {
                 val factory = loadedClass.getDeclaredConstructor().newInstance() as SourceFactory
                 val sources = factory.createSources().filterIsInstance<CatalogueSource>()
-                val pkgParts = pkg.split('.')
-                val pkgLang = if (pkgParts.size >= 4) pkgParts[3].lowercase() else ""
+                val pkgLang = if (pkg.contains(".extension.")) {
+                    pkg.substringAfter(".extension.").substringBefore('.').lowercase()
+                } else {
+                    val parts = pkg.split('.')
+                    if (parts.size >= 5) parts[4].lowercase() else ""
+                }
                 val matching = if (pkgLang.isNotEmpty() && pkgLang != "all") {
                     sources.firstOrNull { it.lang.lowercase() == pkgLang }
                 } else null
@@ -324,6 +339,72 @@ class TachiyomiExtensionManager(private val context: Context) {
         } catch (_: Throwable) {
             null
         }
+    }
+
+    /**
+     * Modern extensions (keiyoushi KeiSource) only implement [HttpSource.getMangaUpdate] and leave
+     * getMangaDetails/getChapterList at the base-class default, which would request
+     * `baseUrl + manga.url` (e.g. "https://comick.live" + "some-slug"). Detect that case.
+     */
+    private fun supportsMangaUpdate(source: CatalogueSource): Boolean {
+        if (source !is HttpSource) return false
+        return mangaUpdateSupport.getOrPut(source.javaClass) {
+            try {
+                // 1. Check class hierarchy for KeiSource or declared getMangaUpdate / fetchMangaUpdate
+                var cls: Class<*>? = source.javaClass
+                while (cls != null && cls != HttpSource::class.java && cls != Any::class.java) {
+                    if (cls.name == "keiyoushi.source.KeiSource" || cls.simpleName == "KeiSource") {
+                        return@getOrPut true
+                    }
+                    if (cls.declaredMethods.any { it.name == "getMangaUpdate" || it.name == "fetchMangaUpdate" }) {
+                        return@getOrPut true
+                    }
+                    cls = cls.superclass
+                }
+                source.javaClass.methods.any {
+                    (it.name == "getMangaUpdate" || it.name == "fetchMangaUpdate") &&
+                    it.declaringClass != HttpSource::class.java
+                }
+            } catch (_: Throwable) {
+                false
+            }
+        }
+    }
+
+    private fun getSafeFilterList(source: CatalogueSource): FilterList {
+        return try {
+            source.getFilterList()
+        } catch (e: Throwable) {
+            Log.w(TAG, "source.getFilterList() failed for ${source.name}: ${e.message}")
+            try {
+                // If it's a KeiSource or similar, try invoking getFilterList(JsonElement?) with null
+                val method = source.javaClass.methods.firstOrNull {
+                    it.name == "getFilterList" && it.parameterTypes.size == 1
+                } ?: source.javaClass.declaredMethods.firstOrNull {
+                    it.name == "getFilterList" && it.parameterTypes.size == 1
+                }
+                if (method != null) {
+                    method.isAccessible = true
+                    method.invoke(source, null) as FilterList
+                } else {
+                    FilterList()
+                }
+            } catch (_: Throwable) {
+                FilterList()
+            }
+        }
+    }
+
+    private suspend fun fetchViaMangaUpdate(
+        pkg: String,
+        source: HttpSource,
+        manga: SManga,
+        chapters: List<SChapter>,
+        fetchDetails: Boolean,
+        fetchChapters: Boolean
+    ) = updateLocks.getOrPut(pkg) { Mutex() }.withLock {
+        // KeiSource rejects concurrent updates for the same manga, so serialize per source.
+        source.getMangaUpdate(manga, chapters, fetchDetails, fetchChapters)
     }
 
     private fun applyTypeFilter(filters: FilterList, type: String?) {
@@ -391,8 +472,18 @@ class TachiyomiExtensionManager(private val context: Context) {
         // If a specific type (manhwa, manhua) is requested, attempt filter search with getSearchManga
         if (!type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
             try {
-                val filters = source.getFilterList()
+                val filters = getSafeFilterList(source)
                 applyTypeFilter(filters, type)
+                filters.filterIsInstance<Filter.Sort>().forEach { sort ->
+                    val values = sort.values
+                    for (i in values.indices) {
+                        val v = values[i].lowercase()
+                        if (v.contains("popular") || v.contains("follow") || v.contains("view")) {
+                            sort.state = Filter.Sort.Selection(i, false)
+                            break
+                        }
+                    }
+                }
                 val filterSearchPage = try {
                     source.getSearchManga(page, "", filters)
                 } catch (e: NoSuchMethodError) {
@@ -401,6 +492,9 @@ class TachiyomiExtensionManager(private val context: Context) {
                     source.fetchSearchManga(page, "", filters).toBlocking().first()
                 }
                 if (filterSearchPage.mangas.isNotEmpty()) {
+                    filterSearchPage.mangas.forEach { m ->
+                        mangaCache["$pkg:${m.url}"] = m
+                    }
                     return@withContext filterSearchPage.mangas.map { sMangaToMap(it, source) }
                 }
             } catch (e: Throwable) {
@@ -485,16 +579,15 @@ class TachiyomiExtensionManager(private val context: Context) {
             return@withContext fetchPopularManga(pkg, page, type, hintPath)
         }
 
-        val filters = try {
-            source.getFilterList()
-        } catch (e: Throwable) {
-            Log.w(TAG, "getFilterList failed for $pkg: ${e.message}")
-            FilterList()
-        }
-
         var mangasPage: MangasPage? = null
         var lastSearchError: Throwable? = null
+
+        // 1. Try search with configured filters (including type filter if requested)
         try {
+            val filters = getSafeFilterList(source)
+            if (!type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
+                applyTypeFilter(filters, type)
+            }
             mangasPage = try {
                 source.getSearchManga(page, trimmed, filters)
             } catch (e: NoSuchMethodError) {
@@ -504,36 +597,36 @@ class TachiyomiExtensionManager(private val context: Context) {
             }
         } catch (e: Throwable) {
             lastSearchError = e
-            Log.w(TAG, "searchManga with filters failed for $pkg: ${e.message}")
+            Log.w(TAG, "Search with filters failed for $pkg (query='$trimmed'): ${e.message}")
+        }
 
-            // If query is short (< 3 chars) and source rejected it, fallback to popular list match
-            if (trimmed.length < 3 || e.message?.contains("3 characters", ignoreCase = true) == true) {
-                try {
-                    val popular = fetchPopularManga(pkg, 1, null, hintPath)
-                    val filtered = popular.filter {
-                        (it["title"] as? String)?.contains(trimmed, ignoreCase = true) == true
-                    }
-                    if (filtered.isNotEmpty()) return@withContext filtered
-                } catch (_: Throwable) {}
-            }
-
+        // 2. If initial search failed or threw and type was specified, retry with clean default filters
+        if (mangasPage == null && !type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
             try {
-                mangasPage = source.fetchSearchManga(page, trimmed, filters).toBlocking().first()
-            } catch (rxErr: Throwable) {
-                try {
-                    val cleanFilters = source.getFilterList()
-                    mangasPage = try {
-                        source.getSearchManga(page, trimmed, cleanFilters)
-                    } catch (inner: NoSuchMethodError) {
-                        source.fetchSearchManga(page, trimmed, cleanFilters).toBlocking().first()
-                    } catch (inner: AbstractMethodError) {
-                        source.fetchSearchManga(page, trimmed, cleanFilters).toBlocking().first()
-                    }
-                } catch (inner: Throwable) {
-                    lastSearchError = inner
-                    Log.w(TAG, "searchManga with clean filters failed for $pkg: ${inner.message}")
+                val cleanFilters = getSafeFilterList(source)
+                mangasPage = try {
+                    source.getSearchManga(page, trimmed, cleanFilters)
+                } catch (inner: NoSuchMethodError) {
+                    source.fetchSearchManga(page, trimmed, cleanFilters).toBlocking().first()
+                } catch (inner: AbstractMethodError) {
+                    source.fetchSearchManga(page, trimmed, cleanFilters).toBlocking().first()
                 }
+                lastSearchError = null
+            } catch (inner: Throwable) {
+                lastSearchError = inner
+                Log.w(TAG, "Search with clean filters failed for $pkg: ${inner.message}")
             }
+        }
+
+        // 3. If query is short (< 3 chars) or source rejected it, fallback to popular list match
+        if (mangasPage == null && (trimmed.length < 3 || lastSearchError?.message?.contains("3 characters", ignoreCase = true) == true)) {
+            try {
+                val popular = fetchPopularManga(pkg, 1, type, hintPath)
+                val filtered = popular.filter {
+                    (it["title"] as? String)?.contains(trimmed, ignoreCase = true) == true
+                }
+                if (filtered.isNotEmpty()) return@withContext filtered
+            } catch (_: Throwable) {}
         }
 
         if (mangasPage == null && lastSearchError != null) {
@@ -544,62 +637,138 @@ class TachiyomiExtensionManager(private val context: Context) {
             mangaCache["$pkg:${m.url}"] = m
         }
 
-        // Return all search results directly matching the user's query
         mangasPage?.mangas?.map { sMangaToMap(it, source) } ?: emptyList()
     }
 
     suspend fun fetchMangaDetails(pkg: String, url: String, title: String?, hintPath: String? = null): Map<String, Any?> =
         withContext(Dispatchers.IO) {
             val source = getOrLoadSource(pkg, hintPath)
-            val sManga = mangaCache["$pkg:$url"] ?: SManga.create().apply {
-                this.url = url
+            val cleanUrl = if (url.startsWith("/comic/")) {
+                url.removePrefix("/comic/").trim('/')
+            } else if (url.contains("/comic/")) {
+                url.substringAfterLast("/comic/").trim('/')
+            } else {
+                url
+            }
+            val sManga = mangaCache["$pkg:$url"] ?: mangaCache["$pkg:$cleanUrl"] ?: SManga.create().apply {
+                this.url = cleanUrl
                 if (!title.isNullOrEmpty()) this.title = title
             }
-            val details = try {
+
+            var details: SManga? = null
+            var lastError: Throwable? = null
+
+            if (supportsMangaUpdate(source)) {
                 try {
-                    source.getMangaDetails(sManga)
-                } catch (e: NoSuchMethodError) {
-                    source.fetchMangaDetails(sManga).toBlocking().first()
-                } catch (e: AbstractMethodError) {
-                    source.fetchMangaDetails(sManga).toBlocking().first()
-                }
-            } catch (e: Throwable) {
-                try {
-                    source.fetchMangaDetails(sManga).toBlocking().first()
-                } catch (_: Throwable) {
-                    throw e
+                    details = fetchViaMangaUpdate(pkg, source as HttpSource, sManga, emptyList(), true, false).manga
+                } catch (e: Throwable) {
+                    lastError = e
+                    Log.w(TAG, "fetchViaMangaUpdate failed for details of $url ($pkg): ${e.message}")
                 }
             }
-            if (details.url.isEmpty()) details.url = url
+
+            if (details == null) {
+                try {
+                    details = try {
+                        source.getMangaDetails(sManga)
+                    } catch (e: NoSuchMethodError) {
+                        source.fetchMangaDetails(sManga).toBlocking().first()
+                    } catch (e: AbstractMethodError) {
+                        source.fetchMangaDetails(sManga).toBlocking().first()
+                    }
+                } catch (e: Throwable) {
+                    try {
+                        details = source.fetchMangaDetails(sManga).toBlocking().first()
+                    } catch (rxErr: Throwable) {
+                        if (lastError == null) lastError = e
+                        Log.w(TAG, "source.getMangaDetails failed for $url ($pkg): ${e.message}")
+                    }
+                }
+            }
+
+            // Fallback to fetchViaMangaUpdate if standard getMangaDetails failed and wasn't tried yet
+            if (details == null && !supportsMangaUpdate(source) && source is HttpSource) {
+                try {
+                    details = fetchViaMangaUpdate(pkg, source, sManga, emptyList(), true, false).manga
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Fallback fetchViaMangaUpdate also failed for $url ($pkg): ${e.message}")
+                }
+            }
+
+            if (details == null) {
+                throw (lastError ?: IllegalStateException("Failed to load details for $url"))
+            }
+
+            if (details.url.isEmpty()) details.url = cleanUrl
             if (details.title.isEmpty() && !title.isNullOrEmpty()) details.title = title
+            if (details.thumbnail_url.isNullOrEmpty() && !sManga.thumbnail_url.isNullOrEmpty()) {
+                details.thumbnail_url = sManga.thumbnail_url
+            }
             if (details.memo == null && sManga.memo != null) {
                 details.memo = sManga.memo
             }
             mangaCache["$pkg:$url"] = details
+            mangaCache["$pkg:$cleanUrl"] = details
             sMangaToMap(details, source)
         }
 
     suspend fun fetchChapterList(pkg: String, url: String, title: String?, hintPath: String? = null): List<Map<String, Any?>> =
         withContext(Dispatchers.IO) {
             val source = getOrLoadSource(pkg, hintPath)
-            val sManga = mangaCache["$pkg:$url"] ?: SManga.create().apply {
-                this.url = url
+            val cleanUrl = if (url.startsWith("/comic/")) {
+                url.removePrefix("/comic/").trim('/')
+            } else if (url.contains("/comic/")) {
+                url.substringAfterLast("/comic/").trim('/')
+            } else {
+                url
+            }
+            val sManga = mangaCache["$pkg:$url"] ?: mangaCache["$pkg:$cleanUrl"] ?: SManga.create().apply {
+                this.url = cleanUrl
                 if (!title.isNullOrEmpty()) this.title = title
             }
-            val chapters = try {
+
+            var chapters: List<SChapter>? = null
+            var lastError: Throwable? = null
+
+            if (supportsMangaUpdate(source)) {
                 try {
-                    source.getChapterList(sManga)
-                } catch (e: NoSuchMethodError) {
-                    source.fetchChapterList(sManga).toBlocking().first()
-                } catch (e: AbstractMethodError) {
-                    source.fetchChapterList(sManga).toBlocking().first()
+                    chapters = fetchViaMangaUpdate(pkg, source as HttpSource, sManga, emptyList(), false, true).chapters
+                } catch (e: Throwable) {
+                    lastError = e
+                    Log.w(TAG, "fetchViaMangaUpdate failed for chapters of $url ($pkg): ${e.message}")
                 }
-            } catch (e: Throwable) {
+            }
+
+            if (chapters == null) {
                 try {
-                    source.fetchChapterList(sManga).toBlocking().first()
-                } catch (_: Throwable) {
-                    throw e
+                    chapters = try {
+                        source.getChapterList(sManga)
+                    } catch (e: NoSuchMethodError) {
+                        source.fetchChapterList(sManga).toBlocking().first()
+                    } catch (e: AbstractMethodError) {
+                        source.fetchChapterList(sManga).toBlocking().first()
+                    }
+                } catch (e: Throwable) {
+                    try {
+                        chapters = source.fetchChapterList(sManga).toBlocking().first()
+                    } catch (rxErr: Throwable) {
+                        if (lastError == null) lastError = e
+                        Log.w(TAG, "source.getChapterList failed for $url ($pkg): ${e.message}")
+                    }
                 }
+            }
+
+            // Fallback to fetchViaMangaUpdate if standard getChapterList failed and wasn't tried yet
+            if (chapters == null && !supportsMangaUpdate(source) && source is HttpSource) {
+                try {
+                    chapters = fetchViaMangaUpdate(pkg, source, sManga, emptyList(), false, true).chapters
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Fallback fetchViaMangaUpdate also failed for chapters of $url ($pkg): ${e.message}")
+                }
+            }
+
+            if (chapters == null) {
+                throw (lastError ?: IllegalStateException("Failed to load chapters for $url"))
             }
 
             val mangaSlug = sManga.memo?.get("slug")?.toString()?.trim('"')
@@ -611,6 +780,9 @@ class TachiyomiExtensionManager(private val context: Context) {
                     }
                 }
                 chapterCache["$pkg:${c.url}"] = c
+                if (source is HttpSource) {
+                    chapterCache["$pkg:${source.getUrlWithoutDomain(c.url)}"] = c
+                }
             }
             chapters.map { sChapterToMap(it) }
         }
@@ -618,9 +790,11 @@ class TachiyomiExtensionManager(private val context: Context) {
     suspend fun fetchPageList(pkg: String, chapterUrl: String, hintPath: String? = null): List<String> =
         withContext(Dispatchers.IO) {
             val source = getOrLoadSource(pkg, hintPath)
-            val sChapter = chapterCache["$pkg:$chapterUrl"] ?: SChapter.create().apply {
-                this.url = chapterUrl
-            }
+            val sChapter = chapterCache["$pkg:$chapterUrl"]
+                ?: (if (source is HttpSource) chapterCache["$pkg:${source.getUrlWithoutDomain(chapterUrl)}"] else null)
+                ?: SChapter.create().apply {
+                    this.url = chapterUrl
+                }
             val pages = try {
                 try {
                     source.getPageList(sChapter)
@@ -637,37 +811,59 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }
             }
 
-            pages.map { page ->
-                var imgUrl = page.imageUrl
-                if (imgUrl.isNullOrEmpty() && page.url.isNotEmpty()) {
-                    try {
-                        imgUrl = try {
-                            source.getImageUrl(page)
-                        } catch (e: NoSuchMethodError) {
-                            source.fetchImageUrl(page).toBlocking().first()
-                        } catch (e: AbstractMethodError) {
-                            source.fetchImageUrl(page).toBlocking().first()
+            coroutineScope {
+                pages.map { page ->
+                    async {
+                        var imgUrl = page.imageUrl
+                        if (imgUrl.isNullOrEmpty() && page.url.isNotEmpty()) {
+                            try {
+                                imgUrl = try {
+                                    source.getImageUrl(page)
+                                } catch (e: NoSuchMethodError) {
+                                    source.fetchImageUrl(page).toBlocking().first()
+                                } catch (e: AbstractMethodError) {
+                                    source.fetchImageUrl(page).toBlocking().first()
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to fetch image URL for page ${page.index}: ${e.message}")
+                            }
                         }
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Failed to fetch image URL for page ${page.index}: ${e.message}")
+                        var finalUrl = imgUrl ?: page.url
+                        if (finalUrl.startsWith("//")) {
+                            finalUrl = "https:$finalUrl"
+                        } else if (source is HttpSource && !finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) {
+                            finalUrl = source.baseUrl.trimEnd('/') + "/" + finalUrl.trimStart('/')
+                        }
+                        if (source is HttpSource && finalUrl.isNotEmpty()) {
+                            try {
+                                val resolvedPage = Page(page.index, page.url, finalUrl)
+                                val reqUrl = source.imageRequest(resolvedPage).url.toString()
+                                if (reqUrl.startsWith("http://") || reqUrl.startsWith("https://")) {
+                                    finalUrl = reqUrl
+                                }
+                            } catch (_: Throwable) {}
+                        }
+                        finalUrl
                     }
-                }
-                var finalUrl = imgUrl ?: page.url
-                if (finalUrl.startsWith("//")) {
-                    finalUrl = "https:$finalUrl"
-                } else if (finalUrl.startsWith("/") && source is HttpSource) {
-                    finalUrl = source.baseUrl.trimEnd('/') + finalUrl
-                }
-                finalUrl
+                }.awaitAll()
             }
         }
 
     private fun sMangaToMap(sManga: SManga, source: CatalogueSource? = null): Map<String, Any?> {
-        var thumb = sManga.thumbnail_url ?: ""
+        var thumb = (sManga.thumbnail_url ?: "").trim()
         if (thumb.startsWith("//")) {
             thumb = "https:$thumb"
-        } else if (thumb.startsWith("/") && source is HttpSource) {
-            thumb = source.baseUrl.trimEnd('/') + thumb
+        } else if (thumb.isNotEmpty() && !thumb.startsWith("http://") && !thumb.startsWith("https://") && source is HttpSource) {
+            thumb = source.baseUrl.trimEnd('/') + "/" + thumb.trimStart('/')
+        }
+        val referer = if (source is HttpSource) {
+            try {
+                source.headers["Referer"] ?: source.baseUrl
+            } catch (_: Throwable) {
+                source.baseUrl
+            }
+        } else {
+            ""
         }
         return mapOf(
             "url" to sManga.url,
@@ -678,6 +874,7 @@ class TachiyomiExtensionManager(private val context: Context) {
             "genre" to (sManga.genre ?: ""),
             "status" to sManga.status,
             "thumbnail_url" to thumb,
+            "referer" to referer,
             "memo" to sManga.memo?.toString()
         )
     }

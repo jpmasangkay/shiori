@@ -27,7 +27,8 @@ class DetailScreen extends StatefulWidget {
 class _DetailScreenState extends State<DetailScreen> {
   late MangaItem _manga;
   List<ChapterItem> _apiChapters = [];
-  bool _loadingChapters = false;
+  bool _loadingChapters = true;
+  bool _loadingDetails = true;
   String? _chaptersError;
 
   bool _inLibrary = false;
@@ -55,63 +56,116 @@ class _DetailScreenState extends State<DetailScreen> {
     if (mounted) setState(() {});
   }
 
+  MangaItem _mergeManga(MangaItem base, MangaItem incoming) {
+    return MangaItem(
+      id: incoming.id.isNotEmpty ? incoming.id : base.id,
+      title: (incoming.title.isNotEmpty && incoming.title != 'Untitled')
+          ? incoming.title
+          : base.title,
+      description: incoming.description.isNotEmpty ? incoming.description : base.description,
+      status: incoming.status.isNotEmpty ? incoming.status : base.status,
+      year: incoming.year ?? base.year,
+      tags: incoming.tags.isNotEmpty ? incoming.tags : base.tags,
+      cover: incoming.cover.isNotEmpty ? incoming.cover : base.cover,
+      authors: incoming.authors.isNotEmpty ? incoming.authors : base.authors,
+      lastChapter: (incoming.lastChapter != null && incoming.lastChapter!.isNotEmpty)
+          ? incoming.lastChapter
+          : base.lastChapter,
+      type: incoming.type.isNotEmpty ? incoming.type : base.type,
+      source: (incoming.source.isNotEmpty && incoming.source != 'mangadex')
+          ? incoming.source
+          : (base.source.isNotEmpty ? base.source : incoming.source),
+    );
+  }
+
+  void _syncResumeButton() {
+    if (_resumeChapterId == null && _apiChapters.isNotEmpty) {
+      // Chapters are sorted descending (latest at 0, chapter 1 at length-1)
+      final firstCh = _apiChapters.last;
+      _resumeChapterId = firstCh.id;
+      _resumeLabel = firstCh.number != null ? 'Start Ch. ${firstCh.number}' : 'Start Reading';
+    }
+  }
+
   Future<void> _loadMangaData() async {
     final m = _manga;
-    // 1. Check in library
-    final inLib = await ApiService.instance.checkInLibrary(m.id);
-    if (mounted) setState(() => _inLibrary = inLib);
-
-    // 2. Fetch full metadata from source if available
-    try {
-      final full = await ApiService.instance.getManga(m.id);
-      if (mounted) setState(() => _manga = full);
-    } catch (_) {}
-
-    // 3. Fetch progress & history & read status
-    final localRead = ApiService.instance.getReadChapterIds(m.id);
-    final progress = await ApiService.instance.getMangaProgress(m.id);
     if (mounted) {
-      final completed = (progress['completedChapters'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ??
-          (progress['completedChapterIds'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ??
-          <String>{};
-      localRead.addAll(completed);
-
-      final lastRead = progress['lastRead'] as Map<String, dynamic>?;
       setState(() {
-        _readChapterIds = localRead;
-        if (lastRead != null) {
-          _resumeChapterId = lastRead['chapterId'] as String?;
-          final num = lastRead['chapterNumber'] ?? '';
-          _resumeLabel = num.toString().isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
+        if (_apiChapters.isEmpty) {
+          _loadingChapters = true;
         }
+        _loadingDetails = true;
+        _chaptersError = null;
       });
     }
 
-    // 4. Load chapters from API
-    if (!mounted) return;
-    setState(() => _loadingChapters = true);
-    try {
-      final chapters = await ApiService.instance.getChapters(m.id);
-      if (mounted) {
+    // Run library status, full metadata, progress, and chapter list in parallel
+    final libFuture = ApiService.instance.checkInLibrary(m.id).then((inLib) {
+      if (mounted) setState(() => _inLibrary = inLib);
+    }).catchError((_) {});
+
+    final detailsFuture = ApiService.instance.getManga(m.id).then((full) {
+      if (!mounted) return;
+      final merged = _mergeManga(_manga, full);
+      setState(() {
+        _manga = merged;
+        _loadingDetails = false;
+      });
+      if (merged.cover.isNotEmpty) {
+        ApiService.instance.updateCachedMangaMetadata(merged);
+      }
+    }).catchError((_) {
+      if (mounted) setState(() => _loadingDetails = false);
+    });
+
+    final progressFuture = () async {
+      final localRead = ApiService.instance.getReadChapterIds(m.id);
+      try {
+        final progress = await ApiService.instance.getMangaProgress(m.id);
+        if (!mounted) return;
+        final completed = (progress['completedChapters'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ??
+            (progress['completedChapterIds'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ??
+            <String>{};
+        localRead.addAll(completed);
+
+        final lastRead = progress['lastRead'] as Map<String, dynamic>?;
+        setState(() {
+          _readChapterIds = localRead;
+          if (lastRead != null) {
+            _resumeChapterId = lastRead['chapterId'] as String?;
+            final num = lastRead['chapterNumber'] ?? '';
+            _resumeLabel = num.toString().isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
+          } else {
+            _syncResumeButton();
+          }
+        });
+      } catch (_) {
+        if (mounted) {
+          setState(() => _readChapterIds = localRead);
+        }
+      }
+    }();
+
+    final chaptersFuture = () async {
+      try {
+        final chapters = await ApiService.instance.getChapters(m.id);
+        if (!mounted) return;
         setState(() {
           _apiChapters = chapters;
           _loadingChapters = false;
-          if (_resumeChapterId == null && chapters.isNotEmpty) {
-            // Chapters are sorted descending (latest at 0, chapter 1 at length-1)
-            final firstCh = chapters.last;
-            _resumeChapterId = firstCh.id;
-            _resumeLabel = firstCh.number != null ? 'Start Ch. ${firstCh.number}' : 'Start Reading';
-          }
+          _chaptersError = null;
+          _syncResumeButton();
         });
-      }
-    } catch (err) {
-      if (mounted) {
+      } catch (err) {
+        if (!mounted) return;
         setState(() {
           _chaptersError = err.toString().replaceFirst('Exception: ', '');
           _loadingChapters = false;
         });
       }
-    }
+    }();
+
+    await Future.wait([libFuture, detailsFuture, progressFuture, chaptersFuture]);
   }
 
   Future<void> _toggleLibrary() async {
@@ -225,8 +279,8 @@ class _DetailScreenState extends State<DetailScreen> {
     if (idx < 0) idx = 0;
 
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ReaderScreen(
+      smoothRoute(
+        ReaderScreen(
           chapterId: chapterId,
           mangaId: _manga.id,
           mangaTitle: _manga.title,
@@ -458,9 +512,12 @@ class _DetailScreenState extends State<DetailScreen> {
     return Scaffold(
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: _apiChapters.isNotEmpty
-          ? _ResumeFab(
-              label: _resumeLabel,
-              onTap: () => _openReader(chapterId: _resumeChapterId),
+          ? FadeSlideIn(
+              key: const ValueKey('resume_fab'),
+              child: _ResumeFab(
+                label: _resumeLabel,
+                onTap: () => _openReader(chapterId: _resumeChapterId),
+              ),
             )
           : null,
       body: CustomScrollView(
@@ -668,12 +725,24 @@ class _DetailScreenState extends State<DetailScreen> {
     } else if (id.startsWith('weeb:') || s.contains('weeb')) {
       sourceName = 'WEEB CENTRAL';
       sourceColor = const Color(0xFF00BCD4);
+    } else if (id.startsWith('pill:') || id.startsWith('mpill:') || s.contains('mangapill')) {
+      sourceName = 'MANGAPILL';
+      sourceColor = const Color(0xFF10B981);
+    } else if (id.startsWith('katana:') || id.startsWith('mkatana:') || s.contains('mangakatana')) {
+      sourceName = 'MANGAKATANA';
+      sourceColor = const Color(0xFFF59E0B);
+    } else if (id.startsWith('mread:') || s.contains('mangaread')) {
+      sourceName = 'MANGAREAD';
+      sourceColor = const Color(0xFFEC4899);
     } else if (id.startsWith('ext:') || s.startsWith('ext:')) {
       final parts = (id.startsWith('ext:') ? id : s).split(':');
       final pkgId = parts.length > 1 ? parts[1] : 'extension';
       final ext = ExtensionService.instance.installedExtensions.where((e) => e.pkg == pkgId).firstOrNull;
       sourceName = (ext?.name ?? pkgId).toUpperCase();
       sourceColor = const Color(0xFF8B5CF6);
+    } else if (s.isEmpty || s == 'mangadex') {
+      sourceName = 'MANGADEX';
+      sourceColor = const Color(0xFFFF6740);
     } else {
       sourceName = s.toUpperCase();
       sourceColor = const Color(0xFFE50914);
@@ -870,6 +939,45 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Widget _synopsisBlock() {
+    if (_loadingDetails && _manga.description.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+        child: ShimmerLoading(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                height: 11,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceHigh,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Container(
+                height: 11,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceHigh,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Container(
+                height: 11,
+                width: 190,
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceHigh,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final synopsis = _manga.description.isNotEmpty
         ? _manga.description
         : 'No synopsis available.';
@@ -947,28 +1055,43 @@ class _DetailScreenState extends State<DetailScreen> {
       child: Row(
         children: [
           Expanded(
-            child: Row(
-              children: [
-                Text(
-                  '$count Chapters',
-                  style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
-                ),
-                if (readCount > 0) ...[
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceHigh,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      '$readCount read',
-                      style: GoogleFonts.inter(fontSize: 10, color: AppColors.primary),
-                    ),
+            child: _loadingChapters && _apiChapters.isEmpty
+                ? Row(
+                    children: [
+                      ShimmerLoading(
+                        child: Container(
+                          width: 96,
+                          height: 15,
+                          decoration: BoxDecoration(
+                            color: AppColors.surfaceHigh,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : Row(
+                    children: [
+                      Text(
+                        '$count Chapters',
+                        style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                      if (readCount > 0) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppColors.surfaceHigh,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            '$readCount read',
+                            style: GoogleFonts.inter(fontSize: 10, color: AppColors.primary),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
-                ],
-              ],
-            ),
           ),
           BarIcon(
             Icons.sort_rounded,

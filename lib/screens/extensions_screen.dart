@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -280,8 +279,8 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           onPressed: () {
                             Navigator.pop(ctx);
                             Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => SourceCatalogScreen(
+                              smoothRoute(
+                                SourceCatalogScreen(
                                   sourceId: ext.pkg,
                                   sourceName: ext.name,
                                   sourceLang: ext.lang,
@@ -401,18 +400,23 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
     if (ext.iconUrl.isNotEmpty) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(10),
-        child: CachedNetworkImage(
-          imageUrl: ext.iconUrl,
+        child: SizedBox(
           width: size,
           height: size,
-          fit: BoxFit.cover,
-          placeholder: (ctx, url) => Container(
+          child: RetryingNetworkImage(
+            url: ext.iconUrl,
             width: size,
             height: size,
-            color: AppColors.surfaceHigh,
-            child: const Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
+            fit: BoxFit.cover,
+            progressBuilder: (ctx, _) => ShimmerLoading(
+              child: Container(
+                width: size,
+                height: size,
+                color: AppColors.surfaceHigh,
+              ),
+            ),
+            errorBuilder: (ctx, retry) => _buildLetterAvatar(ext, size),
           ),
-          errorWidget: (ctx, url, err) => _buildLetterAvatar(ext, size),
         ),
       );
     }
@@ -914,8 +918,8 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     tooltip: 'Browse $name Catalog',
                     onPressed: () {
                       Navigator.of(context).push(
-                        MaterialPageRoute(
-                          builder: (_) => SourceCatalogScreen(
+                        smoothRoute(
+                          SourceCatalogScreen(
                             sourceId: id,
                             sourceName: name,
                             sourceLang: lang,
@@ -1060,8 +1064,8 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           tooltip: 'Browse ${ext.name} Catalog',
                           onPressed: () {
                             Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => SourceCatalogScreen(
+                              smoothRoute(
+                                SourceCatalogScreen(
                                   sourceId: ext.pkg,
                                   sourceName: ext.name,
                                   sourceLang: ext.lang,

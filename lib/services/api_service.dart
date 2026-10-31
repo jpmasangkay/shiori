@@ -27,6 +27,152 @@ class ApiService extends ChangeNotifier {
   final Map<String, List<String>> _mangaCategories = {};
   final Map<String, int> _mangaChapterCounts = {};
 
+  // Request deduplication & short-TTL cache so concurrent getManga + getChapters
+  // calls on the same series URL share a single network round-trip.
+  final Map<String, Future<http.Response>> _inflightGets = {};
+  final Map<String, ({http.Response response, DateTime expiresAt})> _responseCache = {};
+  List<MangaItem>? _flameSeriesCache;
+  DateTime? _flameCacheExpiresAt;
+
+  Future<http.Response> _getCached(
+    Uri uri, {
+    Map<String, String>? headers,
+    Duration timeout = const Duration(seconds: 10),
+    Duration ttl = const Duration(seconds: 45),
+    bool forceRefresh = false,
+  }) {
+    final key = uri.toString();
+    final now = DateTime.now();
+    if (!forceRefresh) {
+      final cached = _responseCache[key];
+      if (cached != null && now.isBefore(cached.expiresAt)) {
+        return Future.value(cached.response);
+      }
+      final inflight = _inflightGets[key];
+      if (inflight != null) return inflight;
+    }
+
+    final future = http.get(uri, headers: headers).timeout(timeout).then((res) {
+      if (res.statusCode == 200) {
+        if (_responseCache.length > 80) {
+          final current = DateTime.now();
+          _responseCache.removeWhere((_, v) => current.isAfter(v.expiresAt));
+          if (_responseCache.length > 80) {
+            _responseCache.remove(_responseCache.keys.first);
+          }
+        }
+        _responseCache[key] = (response: res, expiresAt: DateTime.now().add(ttl));
+      }
+      return res;
+    }).whenComplete(() {
+      _inflightGets.remove(key);
+    });
+
+    _inflightGets[key] = future;
+    return future;
+  }
+
+  static String _normalizeImgUrl(
+    String? raw, {
+    String? baseUrl,
+    String? referer,
+  }) {
+    if (raw == null) return '';
+    var u = raw
+        .trim()
+        .replaceAll('&amp;', '&')
+        .replaceAll('\n', '')
+        .replaceAll('\r', '')
+        .replaceAll('\t', '');
+    if (u.isEmpty) return '';
+    final lower = u.toLowerCase();
+    if (lower.startsWith('data:') ||
+        lower.startsWith('javascript:') ||
+        lower.startsWith('about:')) {
+      return '';
+    }
+    if (u.startsWith('//')) {
+      u = 'https:$u';
+    } else if (!u.startsWith('http://') && !u.startsWith('https://') && !u.startsWith('file://')) {
+      if (baseUrl != null && baseUrl.isNotEmpty) {
+        final parsed = Uri.tryParse(baseUrl);
+        if (parsed != null && parsed.hasScheme && parsed.host.isNotEmpty) {
+          final origin = '${parsed.scheme}://${parsed.host}${parsed.hasPort ? ':${parsed.port}' : ''}';
+          u = u.startsWith('/') ? '$origin$u' : '$origin/$u';
+        }
+      }
+    }
+    if (u.contains(' ')) {
+      u = u.replaceAll(' ', '%20');
+    }
+    if (referer != null && referer.isNotEmpty && u.startsWith('http')) {
+      ImageReferers.register(u, referer);
+    }
+    return u;
+  }
+
+  static String _extractImgFromTag(
+    String imgTag, {
+    String? baseUrl,
+    String? referer,
+  }) {
+    const attrs = [
+      'data-src',
+      'data-lazy-src',
+      'data-cfsrc',
+      'data-original',
+      'data-echo',
+      'data-bg',
+      'src',
+    ];
+    for (final attr in attrs) {
+      final m = RegExp(
+        '(?:^|\\s)$attr\\s*=\\s*(?:"([^"]+)"|\'([^\']+)\'|([^\\s>"\']+))',
+        caseSensitive: false,
+      ).firstMatch(imgTag);
+      if (m != null) {
+        final rawVal = m.group(1) ?? m.group(2) ?? m.group(3);
+        final candidate = _normalizeImgUrl(rawVal, baseUrl: baseUrl, referer: referer);
+        if (_isValidContentImage(candidate)) return candidate;
+      }
+    }
+    for (final attr in const ['data-srcset', 'srcset']) {
+      final m = RegExp(
+        '(?:^|\\s)$attr\\s*=\\s*(?:"([^"]+)"|\'([^\']+)\')',
+        caseSensitive: false,
+      ).firstMatch(imgTag);
+      if (m != null) {
+        final rawSet = m.group(1) ?? m.group(2) ?? '';
+        final firstPart = rawSet.trim().split(RegExp(r'[\s,]+')).firstOrNull;
+        final candidate = _normalizeImgUrl(firstPart, baseUrl: baseUrl, referer: referer);
+        if (_isValidContentImage(candidate)) return candidate;
+      }
+    }
+    final bgMatch = RegExp(
+      r'''background(?:-image)?\s*:\s*url\(\s*['"]?([^'")\s]+)['"]?\s*\)''',
+      caseSensitive: false,
+    ).firstMatch(imgTag);
+    if (bgMatch != null) {
+      final candidate = _normalizeImgUrl(bgMatch.group(1), baseUrl: baseUrl, referer: referer);
+      if (_isValidContentImage(candidate)) return candidate;
+    }
+    return '';
+  }
+
+  static bool _isValidContentImage(String url) {
+    if (url.isEmpty || url.length < 8) return false;
+    final lower = url.toLowerCase();
+    if (lower.startsWith('data:')) return false;
+    if (lower.endsWith('.svg') || lower.contains('.svg?')) return false;
+    if (lower.contains('placeholder') ||
+        lower.contains('1x1') ||
+        lower.contains('blank.') ||
+        lower.contains('spacer.')) {
+      return false;
+    }
+    return true;
+  }
+
   String get baseUrl => _baseUrl;
   String? get token => _token;
   UserAccount? get currentUser => _currentUser;
@@ -460,19 +606,19 @@ class ApiService extends ChangeNotifier {
 
     // 1. Built-in direct web scrapers (ONLY for explicit built-in sources)
     if (s == 'flamecomics' || s == 'flame') {
-      return _searchFlameComics(query: query, type: type, page: page, limit: limit);
+      return _searchFlameComics(query: query, type: type, order: order, page: page, limit: limit);
     }
     if (s == 'weebcentral' || s == 'weeb') {
-      return _searchWeebCentral(query: query, type: type, page: page, limit: limit);
+      return _searchWeebCentral(query: query, type: type, order: order, page: page, limit: limit);
     }
     if (s == 'mangapill' || s == 'pill') {
       return _searchMangaPill(query: query, type: type, page: page, limit: limit);
     }
     if (s == 'mangakatana' || s == 'katana') {
-      return _searchMangaKatana(query: query, type: type, page: page, limit: limit);
+      return _searchMangaKatana(query: query, type: type, order: order, page: page, limit: limit);
     }
     if (s == 'mangaread' || s == 'mread') {
-      return _searchMangaRead(query: query, type: type, page: page, limit: limit);
+      return _searchMangaRead(query: query, type: type, order: order, page: page, limit: limit);
     }
     if (s == 'asura') {
       return _searchAsura(query: query, type: type, page: page);
@@ -631,9 +777,9 @@ class ApiService extends ChangeNotifier {
     return [];
   }
 
-  Future<ChapterPages> getChapterPages(String chapterId) async {
-    // 1. Check offline downloaded pages first
-    if (DownloadService.instance.isChapterDownloaded(chapterId)) {
+  Future<ChapterPages> getChapterPages(String chapterId, {bool forceRefresh = false}) async {
+    // 1. Check offline downloaded pages first (unless explicitly forcing fresh remote reload)
+    if (!forceRefresh && DownloadService.instance.isChapterDownloaded(chapterId)) {
       final files = await DownloadService.instance.getDownloadedPages(chapterId);
       if (files.isNotEmpty) {
         final localUrls = files.map((f) => 'file://${f.path}').toList();
@@ -704,37 +850,17 @@ class ApiService extends ChangeNotifier {
     int limit = 24,
     String? lang,
   }) async {
-    // 1. Try Backend
+    // 1. Direct MangaDex API first (~250ms, avoids stalling on cold Render backend)
     try {
-      final qParams = <String, String>{
-        if (query != null && query.isNotEmpty) 'q': query,
-        if (type != null && type.isNotEmpty && type != 'all') 'type': type,
-        'order': order,
-        'page': page.toString(),
-        'limit': limit.toString(),
-        if (lang != null && lang.isNotEmpty && lang.toLowerCase() != 'all') 'lang': lang.toLowerCase(),
-      };
-      final uri = Uri.parse('$_baseUrl/manga/search').replace(queryParameters: qParams);
-      final res = await http.get(uri, headers: _headers(withAuth: false)).timeout(const Duration(seconds: 7));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final list = (data['items'] as List<dynamic>?) ?? [];
-        if (list.isNotEmpty) {
-          return list.map((e) => MangaItem.fromJson(e as Map<String, dynamic>)).toList();
-        }
-      }
-    } catch (_) {}
-
-    // 2. Direct Fallback to MangaDex API with User-Agent
-    try {
-      final qParams = <String, String>{
+      final qParams = <String, dynamic>{
         'limit': limit.clamp(1, 50).toString(),
         'offset': ((page - 1) * limit).toString(),
-        'includes[]': 'cover_art',
+        'includes[]': ['cover_art', 'author', 'artist'],
+        'contentRating[]': ['safe', 'suggestive', 'erotica'],
         'hasAvailableChapters': 'true',
       };
-      if (query != null && query.isNotEmpty) {
-        qParams['title'] = query;
+      if (query != null && query.trim().isNotEmpty) {
+        qParams['title'] = query.trim();
         qParams['order[relevance]'] = 'desc';
       } else if (order == 'popular') {
         qParams['order[followedCount]'] = 'desc';
@@ -747,24 +873,25 @@ class ApiService extends ChangeNotifier {
       }
 
       if (type == 'manhwa') {
-        qParams['originalLanguage[]'] = 'ko';
+        qParams['originalLanguage[]'] = ['ko'];
       } else if (type == 'manhua') {
-        qParams['originalLanguage[]'] = 'zh';
+        qParams['originalLanguage[]'] = ['zh', 'zh-hk'];
       } else if (type == 'manga') {
-        qParams['originalLanguage[]'] = 'ja';
+        qParams['originalLanguage[]'] = ['ja'];
       }
 
       if (lang != null && lang.isNotEmpty && lang.toLowerCase() != 'all') {
-        qParams['availableTranslatedLanguage[]'] = lang.toLowerCase();
+        qParams['availableTranslatedLanguage[]'] = [lang.toLowerCase()];
       } else {
-        qParams['availableTranslatedLanguage[]'] = 'en';
+        qParams['availableTranslatedLanguage[]'] = ['en'];
       }
 
-      final uri = Uri.parse('https://api.mangadex.org/manga').replace(queryParameters: qParams);
-      final res = await http.get(
+      final uri = Uri.https('api.mangadex.org', '/manga', qParams);
+      final res = await _getCached(
         uri,
-        headers: {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+        headers: const {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+        timeout: const Duration(seconds: 8),
+      );
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -772,27 +899,44 @@ class ApiService extends ChangeNotifier {
         return list.map((m) => _normalizeDirectManga(m as Map<String, dynamic>)).toList();
       }
     } catch (e) {
-      debugPrint('_searchMangaCatalog direct fallback error: $e');
+      debugPrint('_searchMangaCatalog direct error: $e');
     }
+
+    // 2. Fallback to Backend proxy if direct API is unreachable
+    try {
+      final qParams = <String, String>{
+        if (query != null && query.isNotEmpty) 'q': query,
+        if (type != null && type.isNotEmpty && type != 'all') 'type': type,
+        'order': order,
+        'page': page.toString(),
+        'limit': limit.toString(),
+        if (lang != null && lang.isNotEmpty && lang.toLowerCase() != 'all') 'lang': lang.toLowerCase(),
+      };
+      final uri = Uri.parse('$_baseUrl/manga/search').replace(queryParameters: qParams);
+      final res = await http.get(uri, headers: _headers(withAuth: false)).timeout(const Duration(seconds: 6));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final list = (data['items'] as List<dynamic>?) ?? [];
+        if (list.isNotEmpty) {
+          return list.map((e) => MangaItem.fromJson(e as Map<String, dynamic>)).toList();
+        }
+      }
+    } catch (_) {}
 
     return [];
   }
 
   Future<MangaItem> _getMangaById(String actualId) async {
-    // 1. Try Backend
+    // 1. Direct MangaDex API first
     try {
-      final res = await http.get(Uri.parse('$_baseUrl/manga/$actualId'), headers: _headers(withAuth: false)).timeout(const Duration(seconds: 7));
-      if (res.statusCode == 200) {
-        return MangaItem.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
-      }
-    } catch (_) {}
-
-    // 2. Direct Fallback
-    try {
-      final res = await http.get(
-        Uri.parse('https://api.mangadex.org/manga/$actualId?includes[]=cover_art&includes[]=author&includes[]=artist'),
-        headers: {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+      final uri = Uri.https('api.mangadex.org', '/manga/$actualId', {
+        'includes[]': ['cover_art', 'author', 'artist'],
+      });
+      final res = await _getCached(
+        uri,
+        headers: const {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+        timeout: const Duration(seconds: 8),
+      );
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final m = data['data'] as Map<String, dynamic>? ?? {};
@@ -800,16 +944,72 @@ class ApiService extends ChangeNotifier {
       }
     } catch (_) {}
 
+    // 2. Fallback to Backend
+    try {
+      final res = await http.get(Uri.parse('$_baseUrl/manga/$actualId'), headers: _headers(withAuth: false)).timeout(const Duration(seconds: 6));
+      if (res.statusCode == 200) {
+        return MangaItem.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+      }
+    } catch (_) {}
+
     throw Exception('Failed to load manga details');
   }
 
   Future<List<ChapterItem>> _getChaptersById(String actualId, {String lang = 'en'}) async {
-    // 1. Try Backend
+    // 1. Direct MangaDex API first
+    try {
+      final qParams = <String, dynamic>{
+        'limit': '300',
+        'order[chapter]': 'desc',
+        'contentRating[]': ['safe', 'suggestive', 'erotica'],
+        'includes[]': ['scanlation_group'],
+      };
+      if (lang.isNotEmpty && lang != 'all') {
+        qParams['translatedLanguage[]'] = [lang];
+      }
+      final uri = Uri.https('api.mangadex.org', '/manga/$actualId/feed', qParams);
+      final res = await _getCached(
+        uri,
+        headers: const {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+        timeout: const Duration(seconds: 9),
+      );
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body) as Map<String, dynamic>;
+        final list = (data['data'] as List<dynamic>?) ?? [];
+        final parsed = <ChapterItem>[];
+        for (final c in list) {
+          final a = c['attributes'] as Map<String, dynamic>? ?? {};
+          final pagesCount = (a['pages'] as num?)?.toInt() ?? 0;
+          final extUrl = a['externalUrl']?.toString() ?? '';
+          // Skip external-only stubs (e.g. MangaPlus redirect with 0 hosted pages)
+          if (extUrl.isNotEmpty && pagesCount == 0) continue;
+
+          final rels = (c['relationships'] as List<dynamic>?) ?? [];
+          final grpRel = rels.firstWhere((r) => r['type'] == 'scanlation_group', orElse: () => null);
+          final groupName = grpRel != null && grpRel['attributes'] != null
+              ? grpRel['attributes']['name']?.toString() ?? ''
+              : '';
+          parsed.add(ChapterItem(
+            id: c['id']?.toString() ?? '',
+            number: a['chapter']?.toString(),
+            volume: a['volume']?.toString(),
+            title: a['title']?.toString() ?? '',
+            pages: pagesCount,
+            group: groupName,
+            publishAt: a['publishAt']?.toString() ?? a['readableAt']?.toString(),
+            source: 'mangadex',
+          ));
+        }
+        return parsed;
+      }
+    } catch (_) {}
+
+    // 2. Fallback to Backend
     try {
       final uri = Uri.parse('$_baseUrl/manga/$actualId/chapters').replace(queryParameters: {
         if (lang.isNotEmpty) 'lang': lang,
       });
-      final res = await http.get(uri, headers: _headers(withAuth: false)).timeout(const Duration(seconds: 7));
+      final res = await http.get(uri, headers: _headers(withAuth: false)).timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final list = (data['chapters'] as List<dynamic>?) ?? [];
@@ -817,62 +1017,16 @@ class ApiService extends ChangeNotifier {
       }
     } catch (_) {}
 
-    // 2. Direct Fallback
-    try {
-      final qParams = <String, String>{
-        'limit': '100',
-        'order[chapter]': 'desc',
-        'contentRating[]': 'safe',
-        'includes[]': 'scanlation_group',
-      };
-      if (lang.isNotEmpty && lang != 'all') {
-        qParams['translatedLanguage[]'] = lang;
-      }
-      final uri = Uri.parse('https://api.mangadex.org/manga/$actualId/feed').replace(queryParameters: qParams);
-      final res = await http.get(
-        uri,
-        headers: {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final list = (data['data'] as List<dynamic>?) ?? [];
-        return list.map((c) {
-          final a = c['attributes'] as Map<String, dynamic>? ?? {};
-          final rels = (c['relationships'] as List<dynamic>?) ?? [];
-          final grpRel = rels.firstWhere((r) => r['type'] == 'scanlation_group', orElse: () => null);
-          final groupName = grpRel != null && grpRel['attributes'] != null ? grpRel['attributes']['name']?.toString() ?? '' : '';
-          return ChapterItem(
-            id: c['id']?.toString() ?? '',
-            number: a['chapter']?.toString(),
-            volume: a['volume']?.toString(),
-            title: a['title']?.toString() ?? '',
-            pages: (a['pages'] as num?)?.toInt() ?? 0,
-            group: groupName,
-            publishAt: a['publishAt']?.toString() ?? a['readableAt']?.toString(),
-            source: 'mangadex',
-          );
-        }).toList();
-      }
-    } catch (_) {}
-
     return [];
   }
 
   Future<ChapterPages> _getChapterPagesById(String actualChapterId) async {
-    // 1. Try Backend
-    try {
-      final res = await http.get(Uri.parse('$_baseUrl/manga/chapter/$actualChapterId/pages'), headers: _headers(withAuth: false)).timeout(const Duration(seconds: 7));
-      if (res.statusCode == 200) {
-        return ChapterPages.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
-      }
-    } catch (_) {}
-
-    // 2. Direct Fallback
+    // 1. Direct MangaDex@Home server resolution first
     try {
       final res = await http.get(
         Uri.parse('https://api.mangadex.org/at-home/server/$actualChapterId'),
-        headers: {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 10));
+        headers: const {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+      ).timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final baseUrl = data['baseUrl']?.toString() ?? 'https://uploads.mangadex.org';
@@ -880,9 +1034,33 @@ class ApiService extends ChangeNotifier {
         final hash = chapterObj['hash']?.toString() ?? '';
         final dataList = (chapterObj['data'] as List<dynamic>?) ?? [];
         final dataSaverList = (chapterObj['dataSaver'] as List<dynamic>?) ?? [];
-        final pages = dataList.map((fn) => '$baseUrl/data/$hash/$fn').toList();
-        final saver = dataSaverList.map((fn) => '$baseUrl/data-saver/$hash/$fn').toList();
+        final pages = dataList.map((fn) {
+          final u = '$baseUrl/data/$hash/$fn';
+          ImageReferers.register(u, 'https://mangadex.org/');
+          return u;
+        }).toList();
+        // Use official uploads.mangadex.org data-saver when baseUrl is a volunteer node
+        // so flaky @home nodes fall back cleanly to the primary CDN.
+        final saverHost = baseUrl == 'https://uploads.mangadex.org'
+            ? baseUrl
+            : 'https://uploads.mangadex.org';
+        final saver = dataSaverList.map((fn) {
+          final u = '$saverHost/data-saver/$hash/$fn';
+          ImageReferers.register(u, 'https://mangadex.org/');
+          return u;
+        }).toList();
         return ChapterPages(chapterId: actualChapterId, pages: pages, dataSaver: saver);
+      }
+    } catch (_) {}
+
+    // 2. Fallback to Backend
+    try {
+      final res = await http.get(
+        Uri.parse('$_baseUrl/manga/chapter/$actualChapterId/pages'),
+        headers: _headers(withAuth: false),
+      ).timeout(const Duration(seconds: 6));
+      if (res.statusCode == 200) {
+        return ChapterPages.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
       }
     } catch (_) {}
 
@@ -921,12 +1099,21 @@ class ApiService extends ChangeNotifier {
     final origLang = a['originalLanguage']?.toString() ?? '';
     final type = origLang == 'ko' ? 'manhwa' : (origLang.startsWith('zh') ? 'manhua' : 'manga');
     final coverUrl = (fileName != null && fileName.isNotEmpty)
-        ? 'https://uploads.mangadex.org/covers/$id/$fileName.512.jpg'
+        ? _normalizeImgUrl(
+            'https://uploads.mangadex.org/covers/$id/$fileName.512.jpg',
+            referer: 'https://mangadex.org/',
+          )
         : '';
 
     final authors = rels
         .where((r) => r['type'] == 'author' || r['type'] == 'artist')
         .map((r) => (r['attributes'] as Map<String, dynamic>?)?['name']?.toString() ?? '')
+        .where((n) => n.isNotEmpty)
+        .toSet()
+        .toList();
+
+    final tags = ((a['tags'] as List<dynamic>?) ?? [])
+        .map((t) => (t['attributes']?['name'] as Map?)?['en']?.toString() ?? '')
         .where((n) => n.isNotEmpty)
         .toList();
 
@@ -936,6 +1123,7 @@ class ApiService extends ChangeNotifier {
       description: desc,
       cover: coverUrl,
       authors: authors,
+      tags: tags,
       status: a['status']?.toString() ?? '',
       type: type,
       lastChapter: a['lastChapter']?.toString(),
@@ -944,42 +1132,49 @@ class ApiService extends ChangeNotifier {
   }
 
   Future<List<MangaItem>> _searchAsura({String? query, String? type, int page = 1}) async {
-    try {
-      if (type != null && type.isNotEmpty && type != 'all' && type != 'manhwa') {
-        // Asura Scans specializes in Korean Manhwa
-        return [];
-      }
-      final uri = Uri.parse('https://api.asurascans.com/api/series').replace(queryParameters: {
-        if (query != null && query.isNotEmpty) 'search': query,
-        'page': page.toString(),
-      });
-      final res = await http.get(uri, headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    if (type != null && type.isNotEmpty && type != 'all' && type != 'manhwa') {
+      // Asura Scans specializes in Korean Manhwa
+      return [];
+    }
+    final uri = Uri.parse('https://api.asurascans.com/api/series').replace(queryParameters: {
+      if (query != null && query.trim().isNotEmpty) 'search': query.trim(),
+      'page': page.toString(),
+    });
+    final res = await _getCached(
+      uri,
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'application/json',
-      }).timeout(const Duration(seconds: 8));
+      },
+      timeout: const Duration(seconds: 8),
+    );
 
-      if (res.statusCode == 200) {
-        final clean = res.body.trim().replaceFirst(RegExp(r'^\uFEFF'), '');
-        final data = jsonDecode(clean) as Map<String, dynamic>;
-        final list = (data['data'] as List<dynamic>?) ?? [];
-        return list.map((item) {
-          final latest = item['latest_chapters'] as List<dynamic>?;
-          final chNum = latest != null && latest.isNotEmpty ? latest[0]['number']?.toString() : null;
-          final desc = (item['description']?.toString() ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim();
-          return MangaItem(
-            id: 'asura:${item['slug']}',
-            title: item['title']?.toString() ?? 'Untitled',
-            description: desc,
-            cover: item['cover']?.toString() ?? '',
-            status: item['status']?.toString() ?? '',
-            type: item['type']?.toString() ?? 'manhwa',
-            lastChapter: chNum,
-            source: 'asura',
-          );
-        }).toList();
-      }
-    } catch (e) {
-      debugPrint('Asura search error: $e');
+    _checkResponseHealth(res, 'Asura Scans');
+
+    if (res.statusCode == 200) {
+      final clean = res.body.trim().replaceFirst(RegExp(r'^\uFEFF'), '');
+      final data = jsonDecode(clean) as Map<String, dynamic>;
+      final list = (data['data'] as List<dynamic>?) ?? [];
+      return list.map((item) {
+        final latest = item['latest_chapters'] as List<dynamic>?;
+        final chNum = latest != null && latest.isNotEmpty ? latest[0]['number']?.toString() : null;
+        final desc = (item['description']?.toString() ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim();
+        final cover = _normalizeImgUrl(
+          item['cover']?.toString() ?? item['thumb']?.toString(),
+          baseUrl: 'https://asurascans.com',
+          referer: 'https://asurascans.com/',
+        );
+        return MangaItem(
+          id: 'asura:${item['slug']}',
+          title: _unescapeHtml(item['title']?.toString() ?? 'Untitled'),
+          description: _unescapeHtml(desc),
+          cover: cover,
+          status: item['status']?.toString() ?? '',
+          type: item['type']?.toString() ?? 'manhwa',
+          lastChapter: chNum,
+          source: 'asura',
+        );
+      }).toList();
     }
     return [];
   }
@@ -987,22 +1182,48 @@ class ApiService extends ChangeNotifier {
   Future<MangaItem> _getAsuraManga(String id) async {
     final cleanSlug = id.replaceFirst('asura:', '');
     final uri = Uri.parse('https://api.asurascans.com/api/series/$cleanSlug');
-    final res = await http.get(uri, headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'application/json',
-    }).timeout(const Duration(seconds: 8));
+    final res = await _getCached(
+      uri,
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+      timeout: const Duration(seconds: 8),
+    );
+
+    _checkResponseHealth(res, 'Asura Scans');
 
     if (res.statusCode == 200) {
       final clean = res.body.trim().replaceFirst(RegExp(r'^\uFEFF'), '');
       final data = jsonDecode(clean) as Map<String, dynamic>;
-      final s = data['series'] as Map<String, dynamic>? ?? {};
-      final desc = (s['description']?.toString() ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim();
-      final genres = (s['genres'] as List<dynamic>?)?.map((g) => g['name']?.toString() ?? '').where((g) => g.isNotEmpty).toList() ?? [];
+      final rawInner = data['data'];
+      final s = (rawInner is Map<String, dynamic>
+              ? (rawInner['series'] as Map<String, dynamic>? ?? rawInner)
+              : null) ??
+          (data['series'] as Map<String, dynamic>?) ??
+          data;
+      final desc = (s['description']?.toString() ?? s['synopsis']?.toString() ?? '')
+          .replaceAll(RegExp(r'<[^>]*>'), '')
+          .trim();
+      final genres = (s['genres'] as List<dynamic>?)
+              ?.map((g) => (g is Map ? g['name']?.toString() : g?.toString()) ?? '')
+              .where((g) => g.isNotEmpty)
+              .toList() ??
+          [];
+      final cover = _normalizeImgUrl(
+        s['cover']?.toString() ??
+            s['thumb']?.toString() ??
+            s['cover_url']?.toString() ??
+            s['poster']?.toString() ??
+            s['image']?.toString(),
+        baseUrl: 'https://asurascans.com',
+        referer: 'https://asurascans.com/',
+      );
       return MangaItem(
         id: 'asura:$cleanSlug',
-        title: s['title']?.toString() ?? 'Untitled',
-        description: desc,
-        cover: s['cover']?.toString() ?? '',
+        title: _unescapeHtml(s['title']?.toString() ?? 'Untitled'),
+        description: _unescapeHtml(desc),
+        cover: cover,
         status: s['status']?.toString() ?? '',
         type: s['type']?.toString() ?? 'manhwa',
         authors: [if (s['author'] != null && s['author'].toString().isNotEmpty) s['author'].toString()],
@@ -1016,18 +1237,27 @@ class ApiService extends ChangeNotifier {
   Future<List<ChapterItem>> _getAsuraChapters(String id) async {
     final cleanSlug = id.replaceFirst('asura:', '');
     final uri = Uri.parse('https://api.asurascans.com/api/series/$cleanSlug/chapters');
-    final res = await http.get(uri, headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'application/json',
-    }).timeout(const Duration(seconds: 8));
+    final res = await _getCached(
+      uri,
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+      timeout: const Duration(seconds: 8),
+    );
+
+    _checkResponseHealth(res, 'Asura Scans');
 
     if (res.statusCode == 200) {
       final clean = res.body.trim().replaceFirst(RegExp(r'^\uFEFF'), '');
       final data = jsonDecode(clean) as Map<String, dynamic>;
       final list = (data['data'] as List<dynamic>?) ?? [];
-      final chapters = list.map((ch) {
+      final chapters = <ChapterItem>[];
+      for (final ch in list) {
+        if (ch['is_locked'] == true) continue;
         final chSlug = ch['slug']?.toString() ?? '';
-        return ChapterItem(
+        if (chSlug.isEmpty) continue;
+        chapters.add(ChapterItem(
           id: 'asura:$cleanSlug:$chSlug',
           number: ch['number']?.toString(),
           title: ch['title']?.toString() ?? '',
@@ -1035,8 +1265,8 @@ class ApiService extends ChangeNotifier {
           publishAt: ch['published_at']?.toString(),
           pages: (ch['page_count'] as num?)?.toInt() ?? 0,
           source: 'asura',
-        );
-      }).toList();
+        ));
+      }
 
       chapters.sort((a, b) {
         final na = double.tryParse(a.number ?? '') ?? -1.0;
@@ -1054,103 +1284,153 @@ class ApiService extends ChangeNotifier {
     final seriesSlug = parts[1];
     final chapterSlug = parts[2];
     final uri = Uri.parse('https://api.asurascans.com/api/series/$seriesSlug/chapters/$chapterSlug');
-    final res = await http.get(uri, headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    final res = await http.get(uri, headers: const {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
       'Accept': 'application/json',
-    }).timeout(const Duration(seconds: 8));
+      'Referer': 'https://asurascans.com/',
+    }).timeout(const Duration(seconds: 10));
+
+    _checkResponseHealth(res, 'Asura Scans');
 
     if (res.statusCode == 200) {
       final clean = res.body.trim().replaceFirst(RegExp(r'^\uFEFF'), '');
       final data = jsonDecode(clean) as Map<String, dynamic>;
       final chapterObj = data['data']?['chapter'] as Map<String, dynamic>?;
-      final pagesList = (chapterObj?['pages'] as List<dynamic>?)?.map((p) => p['url']?.toString() ?? '').where((u) => u.isNotEmpty).toList() ?? [];
-      return ChapterPages(chapterId: chapterId, pages: pagesList);
+      final pagesList = (chapterObj?['pages'] as List<dynamic>?)
+              ?.map((p) => _normalizeImgUrl(
+                    p['url']?.toString(),
+                    baseUrl: 'https://asurascans.com',
+                    referer: 'https://asurascans.com/',
+                  ))
+              .where((u) => u.isNotEmpty)
+              .toList() ??
+          [];
+      if (pagesList.isEmpty && chapterObj?['is_locked'] == true) {
+        throw Exception('This chapter is currently Early Access / locked on Asura Scans.');
+      }
+      return ChapterPages(chapterId: chapterId, pages: pagesList, dataSaver: pagesList);
     }
     throw Exception('Failed to load Asura chapter pages');
   }
 
   // ---- Flame Comics Scraper ----
 
-  Future<List<MangaItem>> _searchFlameComics({String? query, String? type, int page = 1, int limit = 24}) async {
-    try {
-      final res = await http.get(
-        Uri.parse('https://flamecomics.xyz/browse'),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html',
-        },
-      ).timeout(const Duration(seconds: 10));
+  Future<List<MangaItem>> _loadFlameSeriesList() async {
+    final now = DateTime.now();
+    if (_flameSeriesCache != null &&
+        _flameCacheExpiresAt != null &&
+        now.isBefore(_flameCacheExpiresAt!)) {
+      return _flameSeriesCache!;
+    }
 
-      if (res.statusCode == 200) {
-        final html = res.body;
-        final idx = html.indexOf('<script id="__NEXT_DATA__"');
-        if (idx == -1) return [];
-        final end = html.indexOf('</script>', idx);
-        if (end == -1) return [];
-        final jsonStr = html.substring(html.indexOf('>', idx) + 1, end);
-        final data = jsonDecode(jsonStr) as Map<String, dynamic>;
-        final seriesList = (data['props']?['pageProps']?['series'] as List<dynamic>?) ?? [];
+    final res = await _getCached(
+      Uri.parse('https://flamecomics.xyz/browse'),
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html',
+      },
+      timeout: const Duration(seconds: 10),
+      ttl: const Duration(minutes: 3),
+    );
 
-        var items = seriesList.map((item) {
-          final sId = item['series_id']?.toString() ?? '';
-          final coverFile = item['cover']?.toString() ?? '';
-          final coverUrl = coverFile.startsWith('http')
-              ? coverFile
-              : 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$coverFile';
-          final cats = (item['categories'] as List<dynamic>?)?.map((c) => c.toString()).toList() ?? <String>[];
-          final authors = (item['author'] as List<dynamic>?)?.map((a) => a.toString()).toList() ?? <String>[];
+    _checkResponseHealth(res, 'Flame Comics');
 
-          return MangaItem(
-            id: 'flame:$sId',
-            title: item['title']?.toString() ?? 'Untitled',
-            description: item['description']?.toString() ?? '',
-            cover: coverUrl,
-            status: item['status']?.toString() ?? '',
-            type: item['type']?.toString().toLowerCase() ?? 'manhwa',
-            tags: cats,
-            authors: authors,
-            source: 'flamecomics',
-          );
-        }).toList();
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final idx = html.indexOf('<script id="__NEXT_DATA__"');
+      if (idx == -1) return [];
+      final end = html.indexOf('</script>', idx);
+      if (end == -1) return [];
+      final jsonStr = html.substring(html.indexOf('>', idx) + 1, end);
+      final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+      final seriesList = (data['props']?['pageProps']?['series'] as List<dynamic>?) ?? [];
 
-        if (type != null && type.isNotEmpty && type != 'all') {
-          final t = type.toLowerCase();
-          items = items.where((m) {
-            final mt = m.type.toLowerCase();
-            if (t == 'manhwa') return mt.contains('manhwa') || mt == 'webtoon' || mt == 'comic';
-            if (t == 'manga') return mt.contains('manga');
-            if (t == 'manhua') return mt.contains('manhua');
-            return mt == t;
-          }).toList();
-        }
+      final items = seriesList.map((item) {
+        final sId = item['series_id']?.toString() ?? '';
+        final coverFile = item['cover']?.toString() ?? '';
+        final rawCover = coverFile.startsWith('http')
+            ? coverFile
+            : (coverFile.isNotEmpty
+                ? 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$coverFile'
+                : '');
+        final coverUrl = _normalizeImgUrl(rawCover, referer: 'https://flamecomics.xyz/');
+        final cats = (item['categories'] as List<dynamic>?)?.map((c) => c.toString()).toList() ?? <String>[];
+        final authors = (item['author'] as List<dynamic>?)?.map((a) => a.toString()).toList() ?? <String>[];
 
-        if (query != null && query.trim().isNotEmpty) {
-          final q = query.trim().toLowerCase();
-          items = items.where((m) =>
-            m.title.toLowerCase().contains(q) ||
-            m.description.toLowerCase().contains(q)
-          ).toList();
-        }
+        return MangaItem(
+          id: 'flame:$sId',
+          title: _unescapeHtml(item['title']?.toString() ?? 'Untitled'),
+          description: _unescapeHtml((item['description']?.toString() ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim()),
+          cover: coverUrl,
+          status: item['status']?.toString() ?? '',
+          type: item['type']?.toString().toLowerCase() ?? 'manhwa',
+          tags: cats,
+          authors: authors,
+          source: 'flamecomics',
+        );
+      }).toList();
 
-        final start = (page - 1) * limit;
-        if (start >= items.length) return [];
-        return items.skip(start).take(limit).toList();
+      if (items.isNotEmpty) {
+        _flameSeriesCache = items;
+        _flameCacheExpiresAt = DateTime.now().add(const Duration(minutes: 3));
       }
-    } catch (e) {
-      debugPrint('FlameComics search error: $e');
+      return items;
     }
     return [];
   }
 
+  Future<List<MangaItem>> _searchFlameComics({
+    String? query,
+    String? type,
+    String order = 'popular',
+    int page = 1,
+    int limit = 24,
+  }) async {
+    var items = List<MangaItem>.from(await _loadFlameSeriesList());
+    if (items.isEmpty) return [];
+
+    if (type != null && type.isNotEmpty && type != 'all') {
+      final t = type.toLowerCase();
+      items = items.where((m) {
+        final mt = m.type.toLowerCase();
+        if (t == 'manhwa') return mt.contains('manhwa') || mt == 'webtoon' || mt == 'comic';
+        if (t == 'manga') return mt.contains('manga');
+        if (t == 'manhua') return mt.contains('manhua');
+        return mt == t;
+      }).toList();
+    }
+
+    if (query != null && query.trim().isNotEmpty) {
+      final q = query.trim().toLowerCase();
+      items = items.where((m) =>
+        m.title.toLowerCase().contains(q) ||
+        m.description.toLowerCase().contains(q)
+      ).toList();
+      // Rank title matches ahead of description-only matches
+      items.sort((a, b) {
+        final aTitle = a.title.toLowerCase().contains(q) ? 0 : 1;
+        final bTitle = b.title.toLowerCase().contains(q) ? 0 : 1;
+        return aTitle.compareTo(bTitle);
+      });
+    }
+
+    final start = (page - 1) * limit;
+    if (start >= items.length) return [];
+    return items.skip(start).take(limit).toList();
+  }
+
   Future<MangaItem> _getFlameManga(String id) async {
     final sId = id.replaceFirst('flame:', '');
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse('https://flamecomics.xyz/series/$sId'),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
       },
-    ).timeout(const Duration(seconds: 10));
+      timeout: const Duration(seconds: 10),
+    );
+
+    _checkResponseHealth(res, 'Flame Comics');
 
     if (res.statusCode == 200) {
       final html = res.body;
@@ -1161,16 +1441,19 @@ class ApiService extends ChangeNotifier {
         final data = jsonDecode(jsonStr) as Map<String, dynamic>;
         final s = data['props']?['pageProps']?['series'] as Map<String, dynamic>? ?? {};
         final coverFile = s['cover']?.toString() ?? '';
-        final coverUrl = coverFile.startsWith('http')
+        final rawCover = coverFile.startsWith('http')
             ? coverFile
-            : 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$coverFile';
+            : (coverFile.isNotEmpty
+                ? 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$coverFile'
+                : '');
+        final coverUrl = _normalizeImgUrl(rawCover, referer: 'https://flamecomics.xyz/');
         final cats = (s['categories'] as List<dynamic>?)?.map((c) => c.toString()).toList() ?? <String>[];
         final authors = (s['author'] as List<dynamic>?)?.map((a) => a.toString()).toList() ?? <String>[];
 
         return MangaItem(
           id: id,
-          title: s['title']?.toString() ?? 'Untitled',
-          description: s['description']?.toString() ?? '',
+          title: _unescapeHtml(s['title']?.toString() ?? 'Untitled'),
+          description: _unescapeHtml((s['description']?.toString() ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim()),
           cover: coverUrl,
           status: s['status']?.toString() ?? '',
           type: s['type']?.toString().toLowerCase() ?? 'manhwa',
@@ -1185,13 +1468,16 @@ class ApiService extends ChangeNotifier {
 
   Future<List<ChapterItem>> _getFlameChapters(String id) async {
     final sId = id.replaceFirst('flame:', '');
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse('https://flamecomics.xyz/series/$sId'),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
       },
-    ).timeout(const Duration(seconds: 10));
+      timeout: const Duration(seconds: 10),
+    );
+
+    _checkResponseHealth(res, 'Flame Comics');
 
     if (res.statusCode == 200) {
       final html = res.body;
@@ -1211,6 +1497,7 @@ class ApiService extends ChangeNotifier {
             id: 'flame:$sId:$token',
             number: chNum,
             title: title,
+            group: 'Flame Comics',
             source: 'flamecomics',
             publishAt: rel,
           );
@@ -1234,11 +1521,14 @@ class ApiService extends ChangeNotifier {
     final token = parts[2];
     final res = await http.get(
       Uri.parse('https://flamecomics.xyz/series/$sId/$token'),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
+        'Referer': 'https://flamecomics.xyz/',
       },
     ).timeout(const Duration(seconds: 10));
+
+    _checkResponseHealth(res, 'Flame Comics');
 
     if (res.statusCode == 200) {
       final html = res.body;
@@ -1257,12 +1547,29 @@ class ApiService extends ChangeNotifier {
             if (imgMap is Map<String, dynamic>) {
               final name = imgMap['name']?.toString() ?? '';
               if (name.isNotEmpty) {
-                pagesList.add('https://cdn.flamecomics.xyz/uploads/images/series/$sId/$token/$name');
+                final u = _normalizeImgUrl(
+                  'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$token/$name',
+                  referer: 'https://flamecomics.xyz/',
+                );
+                if (u.isNotEmpty) pagesList.add(u);
               }
             }
           }
+        } else if (imgsObj is List) {
+          for (final entry in imgsObj) {
+            final name = entry is Map ? entry['name']?.toString() ?? '' : entry.toString();
+            if (name.isNotEmpty) {
+              final u = _normalizeImgUrl(
+                name.startsWith('http')
+                    ? name
+                    : 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$token/$name',
+                referer: 'https://flamecomics.xyz/',
+              );
+              if (u.isNotEmpty) pagesList.add(u);
+            }
+          }
         }
-        return ChapterPages(chapterId: chapterId, pages: pagesList);
+        return ChapterPages(chapterId: chapterId, pages: pagesList, dataSaver: pagesList);
       }
     }
     throw Exception('Failed to load Flame Comics chapter pages');
@@ -1270,63 +1577,95 @@ class ApiService extends ChangeNotifier {
 
   // ---- Weeb Central Scraper ----
 
-  Future<List<MangaItem>> _searchWeebCentral({String? query, String? type, int page = 1, int limit = 24}) async {
-    try {
-      final String typeParam;
-      if (type == 'manhwa') {
-        typeParam = '&included_type=Manhwa';
-      } else if (type == 'manhua') {
-        typeParam = '&included_type=Manhua';
-      } else if (type == 'manga') {
-        typeParam = '&included_type=Manga';
-      } else {
-        typeParam = '';
-      }
+  Future<List<MangaItem>> _searchWeebCentral({
+    String? query,
+    String? type,
+    String order = 'popular',
+    int page = 1,
+    int limit = 24,
+  }) async {
+    final String typeParam;
+    if (type == 'manhwa') {
+      typeParam = '&included_type=Manhwa';
+    } else if (type == 'manhua') {
+      typeParam = '&included_type=Manhua';
+    } else if (type == 'manga') {
+      typeParam = '&included_type=Manga';
+    } else {
+      typeParam = '';
+    }
 
-      final String url;
-      if (query != null && query.trim().isNotEmpty) {
-        url = 'https://weebcentral.com/search/data?text=${Uri.encodeComponent(query.trim())}$typeParam&page=$page';
-      } else {
-        url = 'https://weebcentral.com/search/data?sort=Popularity&order=Ascending$typeParam&page=$page';
-      }
-      final res = await http.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'text/html',
-        },
-      ).timeout(const Duration(seconds: 10));
+    final offset = (page - 1) * limit;
+    final String url;
+    if (query != null && query.trim().isNotEmpty) {
+      url = 'https://weebcentral.com/search/data?limit=$limit&offset=$offset&text=${Uri.encodeComponent(query.trim())}&sort=Best%20Match&order=Descending&display_mode=Full%20Display$typeParam';
+    } else {
+      final sort = order == 'latest' ? 'Updated%20At' : 'Popularity';
+      url = 'https://weebcentral.com/search/data?limit=$limit&offset=$offset&sort=$sort&order=Descending&display_mode=Full%20Display$typeParam';
+    }
+    final res = await _getCached(
+      Uri.parse(url),
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html',
+        'HX-Request': 'true',
+        'Referer': 'https://weebcentral.com/search',
+      },
+      timeout: const Duration(seconds: 10),
+    );
 
-      if (res.statusCode == 200) {
-        final html = res.body;
-        final articles = html.split('<article class="bg-base-300 flex gap-4 p-4">').skip(1);
-        final items = <MangaItem>[];
+    _checkResponseHealth(res, 'Weeb Central');
 
-        for (final art in articles) {
-          final seriesMatch = RegExp(r'href="https://weebcentral\.com/series/([A-Z0-9]+)/([^"]+)"').firstMatch(art);
-          if (seriesMatch == null) continue;
-          final sId = seriesMatch.group(1)!;
-          final slug = seriesMatch.group(2)!;
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final articles = html.split('<article').skip(1);
+      final items = <MangaItem>[];
+      final seen = <String>{};
 
-          final imgMatch = RegExp(r'<img[^>]+src="([^"]+)"').firstMatch(art);
-          final coverUrl = imgMatch?.group(1) ?? 'https://temp.compsci88.com/cover/fallback/$sId.jpg';
+      for (final art in articles) {
+        final seriesMatch = RegExp(r'href="(?:https://weebcentral\.com)?/series/([A-Z0-9]+)/([^"#?]+)"').firstMatch(art);
+        if (seriesMatch == null) continue;
+        final sId = seriesMatch.group(1)!;
+        final slug = seriesMatch.group(2)!;
+        final itemId = 'weeb:$sId:$slug';
+        if (!seen.add(itemId)) continue;
 
-          final titleMatch = RegExp(r'<a[^>]+class="link link-hover[^"]*"[^>]*>([^<]+)</a>').firstMatch(art) ??
-              RegExp(r'href="https://weebcentral\.com/series/[^/]+/[^"]+">([^<]+)</a>').firstMatch(art);
-          final title = titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' ');
-
-          items.add(MangaItem(
-            id: 'weeb:$sId:$slug',
-            title: title,
-            cover: coverUrl,
-            type: type ?? 'manga',
-            source: 'weebcentral',
-          ));
+        final sourceMatch = RegExp(r'<source[^>]+srcset="([^"]+)"').firstMatch(art);
+        final imgTagMatch = RegExp(r'<img\b[^>]*>').firstMatch(art);
+        var coverUrl = _normalizeImgUrl(
+          sourceMatch?.group(1),
+          baseUrl: 'https://weebcentral.com',
+          referer: 'https://weebcentral.com/',
+        );
+        if (coverUrl.isEmpty && imgTagMatch != null) {
+          final extracted = _extractImgFromTag(
+            imgTagMatch.group(0)!,
+            baseUrl: 'https://weebcentral.com',
+            referer: 'https://weebcentral.com/',
+          );
+          if (!extracted.contains('/static/')) coverUrl = extracted;
         }
-        return items;
+        if (coverUrl.isEmpty) {
+          coverUrl = _normalizeImgUrl(
+            'https://temp.compsci88.com/cover/normal/$sId.webp',
+            referer: 'https://weebcentral.com/',
+          );
+        }
+
+        final titleMatch = RegExp(r'<a[^>]+class="[^"]*link-hover[^"]*"[^>]*>([\s\S]*?)</a>').firstMatch(art) ??
+            RegExp(r'href="(?:https://weebcentral\.com)?/series/[^/]+/[^"]+">([^<]+)</a>').firstMatch(art);
+        final rawTitle = titleMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
+        final title = _unescapeHtml(rawTitle.isNotEmpty ? rawTitle : slug.replaceAll('-', ' '));
+
+        items.add(MangaItem(
+          id: itemId,
+          title: title,
+          cover: coverUrl,
+          type: type ?? 'manga',
+          source: 'weebcentral',
+        ));
       }
-    } catch (e) {
-      debugPrint('WeebCentral search error: $e');
+      return items;
     }
     return [];
   }
@@ -1337,29 +1676,59 @@ class ApiService extends ChangeNotifier {
     final slug = parts.length > 2 ? parts[2] : '';
     final url = 'https://weebcentral.com/series/$sId/$slug';
 
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse(url),
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
       },
-    ).timeout(const Duration(seconds: 10));
+      timeout: const Duration(seconds: 10),
+    );
+
+    _checkResponseHealth(res, 'Weeb Central');
 
     if (res.statusCode == 200) {
       final html = res.body;
       final titleMatch = RegExp(r'<h1[^>]*>([^<]+)</h1>').firstMatch(html);
-      final title = titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' ');
+      final title = _unescapeHtml(titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' '));
 
-      final descMatch = RegExp(r'<p class="whitespace-pre-line[^"]*">([^<]+)</p>').firstMatch(html);
-      final desc = descMatch?.group(1)?.trim() ?? '';
+      final descMatch = RegExp(r'<p class="whitespace-pre-line[^"]*">([\s\S]*?)</p>').firstMatch(html);
+      final desc = _unescapeHtml(descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '');
 
-      final coverUrl = 'https://temp.compsci88.com/cover/fallback/$sId.jpg';
+      final picMatch = RegExp(r'<picture[^>]*>[\s\S]*?<source[^>]+srcset="([^"]+)"').firstMatch(html) ??
+          RegExp(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"').firstMatch(html);
+      var coverUrl = _normalizeImgUrl(
+        picMatch?.group(1),
+        baseUrl: 'https://weebcentral.com',
+        referer: 'https://weebcentral.com/',
+      );
+      if (coverUrl.isEmpty || coverUrl.contains('/static/')) {
+        coverUrl = _normalizeImgUrl(
+          'https://temp.compsci88.com/cover/normal/$sId.webp',
+          referer: 'https://weebcentral.com/',
+        );
+      }
+
+      final authors = RegExp(r'href="[^"]*author=[^"]*"[^>]*>([^<]+)</a>')
+          .allMatches(html)
+          .map((m) => _unescapeHtml(m.group(1)!.trim()))
+          .where((s) => s.isNotEmpty)
+          .toSet()
+          .toList();
+      final tags = RegExp(r'href="[^"]*included_tag=[^"]*"[^>]*>([^<]+)</a>')
+          .allMatches(html)
+          .map((m) => _unescapeHtml(m.group(1)!.trim()))
+          .where((s) => s.isNotEmpty)
+          .toSet()
+          .toList();
 
       return MangaItem(
         id: id,
         title: title,
         description: desc,
         cover: coverUrl,
+        authors: authors,
+        tags: tags,
         source: 'weebcentral',
       );
     }
@@ -1371,30 +1740,47 @@ class ApiService extends ChangeNotifier {
     final sId = parts.length > 1 ? parts[1] : '';
     final url = 'https://weebcentral.com/series/$sId/full-chapter-list';
 
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse(url),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
+        'HX-Request': 'true',
+        'Referer': 'https://weebcentral.com/series/$sId',
       },
-    ).timeout(const Duration(seconds: 10));
+      timeout: const Duration(seconds: 10),
+    );
+
+    _checkResponseHealth(res, 'Weeb Central');
 
     if (res.statusCode == 200) {
       final html = res.body;
-      final regex = RegExp(r'<a href="/chapters/([A-Z0-9]+)"[^>]*>[\s\S]*?<span class="">([^<]+)</span>[\s\S]*?</a>');
+      final regex = RegExp(
+        r'<a[^>]+href="(?:https://weebcentral\.com)?/chapters/([A-Z0-9]+)"[^>]*>([\s\S]*?)</a>',
+        caseSensitive: false,
+      );
       final matches = regex.allMatches(html);
       final list = <ChapterItem>[];
+      final seen = <String>{};
 
       for (final m in matches) {
         final chId = m.group(1)!;
-        final chText = m.group(2)!.trim();
-        final numMatch = RegExp(r'Chapter\s*([\d\.]+)').firstMatch(chText);
-        final chNum = numMatch?.group(1) ?? chText;
+        if (!seen.add(chId)) continue;
+        final block = m.group(2)!;
+        final spanMatch = RegExp(r'<span class="">([^<]+)</span>').firstMatch(block);
+        final chText = _unescapeHtml(
+          (spanMatch?.group(1) ?? block.replaceAll(RegExp(r'<[^>]*>'), '')).trim(),
+        );
+        final numMatch = RegExp(r'(?:Chapter|Episode|Ch\.?)\s*([\d\.]+)', caseSensitive: false).firstMatch(chText);
+        final chNum = numMatch?.group(1);
+        final timeMatch = RegExp(r'datetime="([^"]+)"').firstMatch(block);
 
         list.add(ChapterItem(
           id: 'weeb:$chId',
           number: chNum,
-          title: chText,
+          title: chText.isNotEmpty ? chText : 'Chapter',
+          publishAt: timeMatch?.group(1),
+          group: 'Weeb Central',
           source: 'weebcentral',
         ));
       }
@@ -1405,25 +1791,42 @@ class ApiService extends ChangeNotifier {
 
   Future<ChapterPages> _getWeebChapterPages(String chapterId) async {
     final cleanId = chapterId.replaceFirst('weeb:', '');
-    final url = 'https://weebcentral.com/chapters/$cleanId/images';
+    final url = 'https://weebcentral.com/chapters/$cleanId/images?is_prev=False&current_page=1&reading_style=long_strip';
 
     final res = await http.get(
       Uri.parse(url),
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
+        'HX-Request': 'true',
+        'Referer': 'https://weebcentral.com/chapters/$cleanId',
       },
-    ).timeout(const Duration(seconds: 10));
+    ).timeout(const Duration(seconds: 12));
+
+    _checkResponseHealth(res, 'Weeb Central');
 
     if (res.statusCode == 200) {
       final html = res.body;
-      final imgMatches = RegExp(r'src="(https://[^"]+)"').allMatches(html);
-      final pagesList = imgMatches
-          .map((m) => m.group(1)!)
-          .where((u) => !u.contains('.svg') && !u.contains('logo'))
-          .toList();
+      final imgTags = RegExp(r'<img\b[^>]*>', caseSensitive: false).allMatches(html);
+      final pagesList = <String>[];
+      final seen = <String>{};
+      for (final m in imgTags) {
+        final u = _extractImgFromTag(
+          m.group(0)!,
+          baseUrl: 'https://weebcentral.com',
+          referer: 'https://weebcentral.com/',
+        );
+        if (u.isEmpty || u.contains('/static/') || u.contains('logo') || u.contains('avatar')) {
+          continue;
+        }
+        if (seen.add(u)) {
+          pagesList.add(u);
+        }
+      }
 
-      return ChapterPages(chapterId: chapterId, pages: pagesList);
+      if (pagesList.isNotEmpty) {
+        return ChapterPages(chapterId: chapterId, pages: pagesList, dataSaver: pagesList);
+      }
     }
     throw Exception('Failed to load Weeb Central chapter pages');
   }
@@ -1490,7 +1893,23 @@ class ApiService extends ChangeNotifier {
   }
 
   Future<void> addToLibrary(MangaItem manga) async {
-    _localLibrary[manga.id] = manga;
+    final existing = _localLibrary[manga.id];
+    final effective = (existing != null && manga.cover.isEmpty && existing.cover.isNotEmpty)
+        ? MangaItem(
+            id: manga.id,
+            title: manga.title,
+            description: manga.description.isNotEmpty ? manga.description : existing.description,
+            cover: existing.cover,
+            authors: manga.authors.isNotEmpty ? manga.authors : existing.authors,
+            status: manga.status.isNotEmpty ? manga.status : existing.status,
+            type: manga.type,
+            year: manga.year ?? existing.year,
+            lastChapter: manga.lastChapter ?? existing.lastChapter,
+            tags: manga.tags.isNotEmpty ? manga.tags : existing.tags,
+            source: manga.source,
+          )
+        : manga;
+    _localLibrary[manga.id] = effective;
     await _persistLocalLibrary();
     notifyListeners();
 
@@ -1500,16 +1919,59 @@ class ApiService extends ChangeNotifier {
           Uri.parse('$_baseUrl/library'),
           headers: _headers(withAuth: true),
           body: jsonEncode({
-            'mangaId': manga.id,
-            'title': manga.title,
-            'cover': manga.cover,
-            'type': manga.type,
-            'status': manga.status,
-            'latestChapter': manga.lastChapter ?? '',
+            'mangaId': effective.id,
+            'title': effective.title,
+            'cover': effective.cover,
+            'type': effective.type,
+            'status': effective.status,
+            'latestChapter': effective.lastChapter ?? '',
           }),
         );
       } catch (_) {}
     }
+  }
+
+  Future<void> updateCachedMangaMetadata(MangaItem updated) async {
+    bool changed = false;
+    final libExisting = _localLibrary[updated.id];
+    if (libExisting != null) {
+      final merged = MangaItem(
+        id: updated.id,
+        title: updated.title.isNotEmpty ? updated.title : libExisting.title,
+        description: updated.description.isNotEmpty ? updated.description : libExisting.description,
+        cover: updated.cover.isNotEmpty ? updated.cover : libExisting.cover,
+        authors: updated.authors.isNotEmpty ? updated.authors : libExisting.authors,
+        status: updated.status.isNotEmpty ? updated.status : libExisting.status,
+        type: updated.type.isNotEmpty ? updated.type : libExisting.type,
+        year: updated.year ?? libExisting.year,
+        lastChapter: (updated.lastChapter != null && updated.lastChapter!.isNotEmpty)
+            ? updated.lastChapter
+            : libExisting.lastChapter,
+        tags: updated.tags.isNotEmpty ? updated.tags : libExisting.tags,
+        source: updated.source.isNotEmpty ? updated.source : libExisting.source,
+      );
+      if (merged.cover != libExisting.cover ||
+          merged.status != libExisting.status ||
+          merged.lastChapter != libExisting.lastChapter) {
+        _localLibrary[updated.id] = merged;
+        await _persistLocalLibrary();
+        changed = true;
+      }
+    }
+    if (updated.cover.isNotEmpty) {
+      bool histChanged = false;
+      for (final h in _localHistory) {
+        if (h['mangaId'] == updated.id && (h['cover']?.toString().isEmpty ?? true)) {
+          h['cover'] = updated.cover;
+          histChanged = true;
+        }
+      }
+      if (histChanged) {
+        await _persistLocalHistory();
+        changed = true;
+      }
+    }
+    if (changed) notifyListeners();
   }
 
   Future<void> removeFromLibrary(String mangaId) async {
@@ -1924,6 +2386,9 @@ class ApiService extends ChangeNotifier {
                          (manga.source == 'asura' ? 'Asura Scans' :
                           manga.source == 'flamecomics' ? 'Flame Comics' :
                           manga.source == 'weebcentral' ? 'Weeb Central' :
+                          manga.source == 'mangapill' ? 'MangaPill' :
+                          manga.source == 'mangakatana' ? 'MangaKatana' :
+                          manga.source == 'mangaread' ? 'MangaRead' :
                           manga.source == 'mangadex' ? 'MangaDex' : manga.source))
                       : 'Direct Source'),
               'publishAt': ch.publishAt,
@@ -2000,51 +2465,68 @@ class ApiService extends ChangeNotifier {
   }) async {
     try {
       final base = ext.homeUrl.endsWith('/') ? ext.homeUrl.substring(0, ext.homeUrl.length - 1) : ext.homeUrl;
+      final referer = '$base/';
       final String url;
       if (query != null && query.trim().isNotEmpty) {
-        url = '$base/?s=${Uri.encodeComponent(query.trim())}';
+        url = page > 1
+            ? '$base/page/$page/?s=${Uri.encodeComponent(query.trim())}'
+            : '$base/?s=${Uri.encodeComponent(query.trim())}';
       } else {
-        url = base;
+        url = page > 1 ? '$base/page/$page/' : base;
       }
 
-      final res = await http.get(
+      final res = await _getCached(
         Uri.parse(url),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Referer': referer,
         },
-      ).timeout(const Duration(seconds: 10));
+        timeout: const Duration(seconds: 10),
+      );
 
       if (res.statusCode == 200) {
         final html = res.body;
         final items = <MangaItem>[];
 
-        final linkImgRegex = RegExp(
-          r"""<a\s+[^>]*href=["']([^"']+)["'][^>]*>[\s\S]*?<img\s+[^>]*src=["']([^"']+)["'][^>]*(?:alt=["']([^"']*)["'])?[\s\S]*?</a>""",
+        final linkBlockRegex = RegExp(
+          r'''<a\s+[^>]*href=["']([^"']+)["']([^>]*)>((?:(?!</a>)[\s\S])*?<img\b[^>]*>(?:(?!</a>)[\s\S])*?)</a>''',
           caseSensitive: false,
         );
 
-        final matches = linkImgRegex.allMatches(html);
+        final matches = linkBlockRegex.allMatches(html);
         final seenUrls = <String>{};
 
         for (final m in matches) {
-          var itemUrl = m.group(1) ?? '';
-          var coverUrl = m.group(2) ?? '';
-          var title = m.group(3)?.trim() ?? '';
+          var itemUrl = (m.group(1) ?? '').trim();
+          final aAttrs = m.group(2) ?? '';
+          final innerHtml = m.group(3) ?? '';
 
           if (itemUrl.isEmpty || itemUrl == '#' || itemUrl == base || itemUrl == '$base/') continue;
-          if (coverUrl.contains('.svg') || coverUrl.contains('logo') || coverUrl.contains('avatar') || coverUrl.contains('icon')) continue;
+          if (itemUrl.startsWith('javascript:') || itemUrl.startsWith('mailto:')) continue;
+
+          final imgTagMatch = RegExp(r'<img\b[^>]*>', caseSensitive: false).firstMatch(innerHtml);
+          if (imgTagMatch == null) continue;
+          final imgTag = imgTagMatch.group(0)!;
+          final coverUrl = _extractImgFromTag(imgTag, baseUrl: base, referer: referer);
+          if (coverUrl.isEmpty) continue;
+          final lowerCover = coverUrl.toLowerCase();
+          if (lowerCover.contains('logo') || lowerCover.contains('avatar') || lowerCover.contains('favicon') || lowerCover.contains('banner')) {
+            continue;
+          }
 
           if (!itemUrl.startsWith('http')) {
             itemUrl = itemUrl.startsWith('/') ? '$base$itemUrl' : '$base/$itemUrl';
           }
-          if (!coverUrl.startsWith('http')) {
-            coverUrl = coverUrl.startsWith('/') ? '$base$coverUrl' : '$base/$coverUrl';
+
+          if (!seenUrls.add(itemUrl)) continue;
+
+          final titleAttrMatch = RegExp(r'''title=["']([^"']+)["']''', caseSensitive: false).firstMatch(aAttrs) ??
+              RegExp(r'''alt=["']([^"']+)["']''', caseSensitive: false).firstMatch(imgTag);
+          var title = _unescapeHtml(titleAttrMatch?.group(1)?.trim() ?? '');
+          if (title.isEmpty) {
+            title = _unescapeHtml(innerHtml.replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim());
           }
-
-          if (seenUrls.contains(itemUrl)) continue;
-          seenUrls.add(itemUrl);
-
           if (title.isEmpty) {
             final slug = Uri.tryParse(itemUrl)?.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? '';
             title = slug.replaceAll('-', ' ').replaceAll('_', ' ');
@@ -2059,7 +2541,6 @@ class ApiService extends ChangeNotifier {
             'all manga', 'genre', 'genres', 'tags', 'news'
           };
           if (invalidTitles.contains(lowerTitle)) continue;
-          if (coverUrl.isEmpty || coverUrl.length < 8) continue;
 
           if (title.isNotEmpty) {
             items.add(MangaItem(
@@ -2082,31 +2563,61 @@ class ApiService extends ChangeNotifier {
 
   Future<MangaItem> _getWebManga(String pkg, String actualId, {MangaExtension? ext}) async {
     final seriesUrl = Uri.decodeComponent(actualId);
+    final parsedUri = Uri.tryParse(seriesUrl);
+    final origin = (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
+        ? '${parsedUri.scheme}://${parsedUri.host}'
+        : (ext?.homeUrl ?? '');
+    final referer = origin.isNotEmpty ? (origin.endsWith('/') ? origin : '$origin/') : null;
+
     try {
-      final res = await http.get(
+      final res = await _getCached(
         Uri.parse(seriesUrl),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Referer': ?referer,
         },
-      ).timeout(const Duration(seconds: 10));
+        timeout: const Duration(seconds: 10),
+      );
 
       if (res.statusCode == 200) {
         final html = res.body;
 
-        final h1Match = RegExp(r'<h1[^>]*>([^<]+)</h1>', caseSensitive: false).firstMatch(html);
-        final title = h1Match?.group(1)?.trim() ?? ext?.name ?? 'Series';
+        final h1Match = RegExp(r'<h1[^>]*>([\s\S]*?)</h1>', caseSensitive: false).firstMatch(html);
+        final rawTitle = h1Match?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
+        final title = _unescapeHtml(rawTitle.isNotEmpty ? rawTitle : (ext?.name ?? 'Series'));
 
-        final descMatch = RegExp(r"""<div[^>]*class=["'][^"']*(?:description|synopsis|summary)[^"']*["'][^>]*>([\s\S]*?)</div>""", caseSensitive: false).firstMatch(html) ??
-            RegExp(r"""<p[^>]*class=["'][^"']*(?:description|synopsis|summary)[^"']*["'][^>]*>([\s\S]*?)</p>""", caseSensitive: false).firstMatch(html);
-        final desc = descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
+        final descMatch = RegExp(r'''<div[^>]*class=["'][^"']*(?:description|synopsis|summary)[^"']*["'][^>]*>([\s\S]*?)</div>''', caseSensitive: false).firstMatch(html) ??
+            RegExp(r'''<p[^>]*class=["'][^"']*(?:description|synopsis|summary)[^"']*["'][^>]*>([\s\S]*?)</p>''', caseSensitive: false).firstMatch(html) ??
+            RegExp(r'''<meta[^>]+(?:property=["']og:description["']|name=["']description["'])[^>]+content=["']([^"']+)["']''', caseSensitive: false).firstMatch(html);
+        final desc = _unescapeHtml(descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '');
 
-        final coverMatch = RegExp(r'<img[^>]*class=["''][^"'']*(?:thumb|cover|poster)[^"'']*["''][^>]*src=["'']([^"'']+)["'']', caseSensitive: false).firstMatch(html) ??
-            RegExp(r'<img[^>]*src=["'']([^"'']+)["''][^>]*class=["''][^"'']*(?:thumb|cover|poster)[^"'']*["'']', caseSensitive: false).firstMatch(html);
-        var coverUrl = coverMatch?.group(1) ?? '';
-        if (coverUrl.isNotEmpty && !coverUrl.startsWith('http')) {
-          final uri = Uri.parse(seriesUrl);
-          coverUrl = '${uri.scheme}://${uri.host}$coverUrl';
+        String coverUrl = '';
+        final coverContainerMatch = RegExp(
+          r'''<(?:div|figure)[^>]*class=["'][^"']*(?:summary_image|thumb|cover|poster)[^"']*["'][^>]*>[\s\S]*?(<img\b[^>]*>)''',
+          caseSensitive: false,
+        ).firstMatch(html);
+        if (coverContainerMatch != null) {
+          coverUrl = _extractImgFromTag(coverContainerMatch.group(1)!, baseUrl: origin, referer: referer);
+        }
+        if (coverUrl.isEmpty) {
+          final coverImgMatch = RegExp(
+            r'''<img\b[^>]*class=["'][^"']*(?:thumb|cover|poster|wp-post-image)[^"']*["'][^>]*>''',
+            caseSensitive: false,
+          ).firstMatch(html);
+          if (coverImgMatch != null) {
+            coverUrl = _extractImgFromTag(coverImgMatch.group(0)!, baseUrl: origin, referer: referer);
+          }
+        }
+        if (coverUrl.isEmpty) {
+          final ogMatch = RegExp(
+            r'''<meta[^>]+(?:property=["']og:image["']|name=["']twitter:image["'])[^>]+content=["']([^"']+)["']''',
+            caseSensitive: false,
+          ).firstMatch(html) ?? RegExp(
+            r'''<meta[^>]+content=["']([^"']+)["'][^>]+(?:property=["']og:image["']|name=["']twitter:image["'])''',
+            caseSensitive: false,
+          ).firstMatch(html);
+          coverUrl = _normalizeImgUrl(ogMatch?.group(1), baseUrl: origin, referer: referer);
         }
 
         return MangaItem(
@@ -2130,19 +2641,27 @@ class ApiService extends ChangeNotifier {
 
   Future<List<ChapterItem>> _getWebChapters(String pkg, String actualId, {MangaExtension? ext}) async {
     final seriesUrl = Uri.decodeComponent(actualId);
+    final parsedUri = Uri.tryParse(seriesUrl);
+    final origin = (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
+        ? '${parsedUri.scheme}://${parsedUri.host}'
+        : (ext?.homeUrl ?? '');
+    final referer = origin.isNotEmpty ? (origin.endsWith('/') ? origin : '$origin/') : null;
+
     try {
-      final res = await http.get(
+      final res = await _getCached(
         Uri.parse(seriesUrl),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Referer': ?referer,
         },
-      ).timeout(const Duration(seconds: 10));
+        timeout: const Duration(seconds: 10),
+      );
 
       if (res.statusCode == 200) {
         final html = res.body;
         final chapterRegex = RegExp(
-          r"""<a\s+[^>]*href=["']([^"']*(?:chapter|ch-)[^"']*)["'][^>]*>([\s\S]*?)</a>""",
+          r'''<a\s+[^>]*href=["']([^"']*(?:chapter|ch-|episode|ep-)[^"']*)["'][^>]*>((?:(?!</a>)[\s\S])*?)</a>''',
           caseSensitive: false,
         );
         final matches = chapterRegex.allMatches(html);
@@ -2150,18 +2669,20 @@ class ApiService extends ChangeNotifier {
         final seen = <String>{};
 
         for (final m in matches) {
-          var chUrl = m.group(1) ?? '';
-          final rawText = (m.group(2) ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim();
+          var chUrl = (m.group(1) ?? '').trim();
+          final rawText = _unescapeHtml(
+            (m.group(2) ?? '').replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim(),
+          );
 
-          if (chUrl.isEmpty || seen.contains(chUrl)) continue;
-          seen.add(chUrl);
+          if (chUrl.isEmpty || chUrl.startsWith('#') || chUrl.startsWith('javascript:')) continue;
 
           if (!chUrl.startsWith('http')) {
             final uri = Uri.parse(seriesUrl);
             chUrl = chUrl.startsWith('/') ? '${uri.scheme}://${uri.host}$chUrl' : '${uri.scheme}://${uri.host}/$chUrl';
           }
+          if (!seen.add(chUrl)) continue;
 
-          final numMatch = RegExp(r'(?:chapter|ch\.?)\s*([\d\.]+)', caseSensitive: false).firstMatch(rawText);
+          final numMatch = RegExp(r'(?:chapter|episode|ch\.?|ep\.?)\s*([\d\.]+)', caseSensitive: false).firstMatch(rawText);
           final chNum = numMatch?.group(1);
 
           list.add(ChapterItem(
@@ -2183,40 +2704,51 @@ class ApiService extends ChangeNotifier {
 
   Future<ChapterPages> _getWebChapterPages(String pkg, String actualChapterId, {MangaExtension? ext}) async {
     final chapterUrl = Uri.decodeComponent(actualChapterId);
+    final parsedUri = Uri.tryParse(chapterUrl);
+    final origin = (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
+        ? '${parsedUri.scheme}://${parsedUri.host}'
+        : (ext?.homeUrl ?? '');
+    final referer = origin.isNotEmpty ? (origin.endsWith('/') ? origin : '$origin/') : null;
+
     try {
       final res = await http.get(
         Uri.parse(chapterUrl),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Referer': ?referer,
         },
-      ).timeout(const Duration(seconds: 10));
+      ).timeout(const Duration(seconds: 12));
 
       if (res.statusCode == 200) {
         final html = res.body;
-        final imgMatches = RegExp(r'<img[^>]+src=["'']([^"'']+)["'']', caseSensitive: false).allMatches(html);
+        final imgTags = RegExp(r'<img\b[^>]*>', caseSensitive: false).allMatches(html);
         final pagesList = <String>[];
         final seen = <String>{};
 
-        for (final m in imgMatches) {
-          var u = m.group(1)?.trim() ?? '';
-          if (u.isEmpty || u.contains('.svg') || u.contains('logo') || u.contains('banner') || u.contains('avatar') || u.contains('icon')) {
+        for (final m in imgTags) {
+          final u = _extractImgFromTag(m.group(0)!, baseUrl: origin, referer: referer);
+          if (u.isEmpty) continue;
+          final lower = u.toLowerCase();
+          if (lower.contains('logo') ||
+              lower.contains('banner') ||
+              lower.contains('avatar') ||
+              lower.contains('favicon') ||
+              lower.contains('icon')) {
             continue;
-          }
-          if (!u.startsWith('http')) {
-            final uri = Uri.parse(chapterUrl);
-            u = u.startsWith('/') ? '${uri.scheme}://${uri.host}$u' : '${uri.scheme}://${uri.host}/$u';
           }
           if (seen.add(u)) {
             pagesList.add(u);
           }
         }
 
-        return ChapterPages(
-          chapterId: 'ext:$pkg:$actualChapterId',
-          pages: pagesList,
-          dataSaver: pagesList,
-        );
+        if (pagesList.isNotEmpty) {
+          return ChapterPages(
+            chapterId: 'ext:$pkg:$actualChapterId',
+            pages: pagesList,
+            dataSaver: pagesList,
+          );
+        }
       }
     } catch (e) {
       debugPrint('WebExtension getChapterPages error: $e');
@@ -2225,12 +2757,19 @@ class ApiService extends ChangeNotifier {
   }
 
   static String _unescapeHtml(String text) {
-    return text
+    var out = text
         .replaceAll('&amp;', '&')
         .replaceAll('&quot;', '"')
         .replaceAll('&#039;', "'")
         .replaceAll('&#39;', "'")
         .replaceAll('&apos;', "'")
+        .replaceAll('&rsquo;', "'")
+        .replaceAll('&lsquo;', "'")
+        .replaceAll('&ldquo;', '"')
+        .replaceAll('&rdquo;', '"')
+        .replaceAll('&ndash;', '–')
+        .replaceAll('&mdash;', '—')
+        .replaceAll('&nbsp;', ' ')
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>')
         .replaceAll('&#8217;', "'")
@@ -2238,66 +2777,106 @@ class ApiService extends ChangeNotifier {
         .replaceAll('&#8220;', '"')
         .replaceAll('&#8221;', '"')
         .replaceAll('&hellip;', '...');
+    if (out.contains('&#')) {
+      out = out.replaceAllMapped(RegExp(r'&#(\d+);'), (m) {
+        final code = int.tryParse(m.group(1)!);
+        return code != null ? String.fromCharCode(code) : m.group(0)!;
+      });
+      out = out.replaceAllMapped(RegExp(r'&#x([0-9a-fA-F]+);'), (m) {
+        final code = int.tryParse(m.group(1)!, radix: 16);
+        return code != null ? String.fromCharCode(code) : m.group(0)!;
+      });
+    }
+    return out;
+  }
+
+  static void _checkResponseHealth(http.Response res, String sourceName) {
+    if (res.statusCode == 403) {
+      throw Exception('$sourceName is protected by Cloudflare (HTTP 403). Please open in WebView to verify.');
+    }
+    if (res.statusCode == 502 || res.statusCode == 503 || res.statusCode == 504) {
+      throw Exception('$sourceName server is temporarily down for maintenance (HTTP ${res.statusCode}).');
+    }
+    if (res.statusCode >= 400) {
+      throw Exception('$sourceName returned an error (HTTP ${res.statusCode}).');
+    }
+    final bodyLower = res.body.toLowerCase();
+    if (bodyLower.contains('scheduled maintenance') ||
+        bodyLower.contains('under maintenance') ||
+        bodyLower.contains('maintenance mode') ||
+        (bodyLower.contains('maintenance') && bodyLower.contains('sorry for the inconvenience')) ||
+        (bodyLower.contains('maintenance') && bodyLower.contains('everything is fine'))) {
+      throw Exception('$sourceName is currently undergoing scheduled maintenance. Please try again later.');
+    }
+    if (bodyLower.contains('cf-browser-verification') ||
+        (bodyLower.contains('ray id') && (bodyLower.contains('cloudflare') || bodyLower.contains('attention required!')))) {
+      throw Exception('$sourceName is protected by Cloudflare. Please open in WebView to verify.');
+    }
   }
 
   // ---- MangaPill Direct Scraper ----
 
   Future<List<MangaItem>> _searchMangaPill({String? query, String? type, int page = 1, int limit = 24}) async {
-    try {
-      if (type == 'manhwa' || type == 'manhua') {
-        // MangaPill only hosts Japanese Manga
-        return [];
-      }
+    if (type == 'manhwa' || type == 'manhua') {
+      // MangaPill only hosts Japanese Manga
+      return [];
+    }
 
-      final String url;
-      if (query != null && query.trim().isNotEmpty) {
-        url = 'https://mangapill.com/search?q=${Uri.encodeComponent(query.trim())}&page=$page';
-      } else {
-        url = 'https://mangapill.com/mangas/new?page=$page';
-      }
+    final String url;
+    if (query != null && query.trim().isNotEmpty) {
+      url = 'https://mangapill.com/search?q=${Uri.encodeComponent(query.trim())}&page=$page';
+    } else {
+      url = 'https://mangapill.com/mangas/new?page=$page';
+    }
 
-      final res = await http.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept': 'text/html',
-        },
-      ).timeout(const Duration(seconds: 10));
+    final res = await _getCached(
+      Uri.parse(url),
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html',
+        'Referer': 'https://mangapill.com/',
+      },
+      timeout: const Duration(seconds: 10),
+    );
 
-      if (res.statusCode == 200) {
-        final html = res.body;
-        final cardRegex = RegExp(
-          r'<a\s+href="/manga/(\d+)/([^"]+)"[^>]*>[\s\S]*?<img\s+[^>]*data-src="([^"]+)"[\s\S]*?<div class="mt-3 font-black leading-tight line-clamp-2">([^<]+)</div>',
-          caseSensitive: false,
+    _checkResponseHealth(res, 'MangaPill');
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final cardRegex = RegExp(
+        r'<a\s+href="/manga/(\d+)/([^"]+)"[^>]*>([\s\S]*?<img\b[^>]*>)[\s\S]*?<div class="mt-3 font-black leading-tight line-clamp-2">([^<]+)</div>',
+        caseSensitive: false,
+      );
+
+      final matches = cardRegex.allMatches(html);
+      final items = <MangaItem>[];
+      final seen = <String>{};
+
+      for (final m in matches) {
+        final mId = m.group(1)!;
+        final slug = m.group(2)!;
+        final imgSub = m.group(3)!;
+        final imgTag = RegExp(r'<img\b[^>]*>', caseSensitive: false).firstMatch(imgSub)?.group(0) ?? '';
+        final cover = _extractImgFromTag(
+          imgTag,
+          baseUrl: 'https://mangapill.com',
+          referer: 'https://mangapill.com/',
         );
+        final title = _unescapeHtml(m.group(4)!.trim());
 
-        final matches = cardRegex.allMatches(html);
-        final items = <MangaItem>[];
-        final seen = <String>{};
+        final id = 'pill:$mId:$slug';
+        if (!seen.add(id)) continue;
 
-        for (final m in matches) {
-          final mId = m.group(1)!;
-          final slug = m.group(2)!;
-          final cover = m.group(3)!;
-          final title = _unescapeHtml(m.group(4)!.trim());
-
-          final id = 'pill:$mId:$slug';
-          if (seen.contains(id)) continue;
-          seen.add(id);
-
-          items.add(MangaItem(
-            id: id,
-            title: title,
-            cover: cover,
-            type: 'manga',
-            source: 'mangapill',
-          ));
-          if (items.length >= limit) break;
-        }
-        return items;
+        items.add(MangaItem(
+          id: id,
+          title: title,
+          cover: cover,
+          type: 'manga',
+          source: 'mangapill',
+        ));
+        if (items.length >= limit) break;
       }
-    } catch (e) {
-      debugPrint('MangaPill search error: $e');
+      return items;
     }
     return [];
   }
@@ -2308,31 +2887,52 @@ class ApiService extends ChangeNotifier {
     final slug = parts.length > 2 ? parts[2] : '';
     final url = 'https://mangapill.com/manga/$mId/$slug';
 
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
+        'Referer': 'https://mangapill.com/',
       },
-    ).timeout(const Duration(seconds: 10));
+      timeout: const Duration(seconds: 10),
+    );
+
+    _checkResponseHealth(res, 'MangaPill');
 
     if (res.statusCode == 200) {
       final html = res.body;
       final titleMatch = RegExp(r'<h1[^>]*>([^<]+)</h1>').firstMatch(html);
       final title = titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' ');
 
-      final descMatch = RegExp(r'<p class="text-sm[^"]*">([^<]+)</p>').firstMatch(html);
-      final desc = descMatch?.group(1)?.trim() ?? '';
+      final descMatch = RegExp(r'<p class="text-sm[^"]*">([\s\S]*?)</p>').firstMatch(html);
+      final desc = descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
 
-      final coverMatch = RegExp(r'<figure[^>]*>[\s\S]*?<img[^>]+src="([^"]+)"').firstMatch(html) ??
-          RegExp(r'<figure[^>]*>[\s\S]*?<img[^>]+data-src="([^"]+)"').firstMatch(html);
-      final cover = coverMatch?.group(1) ?? '';
+      final figImgMatch = RegExp(r'<figure[^>]*>[\s\S]*?(<img\b[^>]*>)', caseSensitive: false).firstMatch(html);
+      var cover = figImgMatch != null
+          ? _extractImgFromTag(
+              figImgMatch.group(1)!,
+              baseUrl: 'https://mangapill.com',
+              referer: 'https://mangapill.com/',
+            )
+          : '';
+      if (cover.isEmpty) {
+        final ogMatch = RegExp(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', caseSensitive: false).firstMatch(html);
+        cover = _normalizeImgUrl(ogMatch?.group(1), baseUrl: 'https://mangapill.com', referer: 'https://mangapill.com/');
+      }
+
+      final tags = RegExp(r'<a[^>]+href="/search\?genre=[^"]+"[^>]*>([^<]+)</a>', caseSensitive: false)
+          .allMatches(html)
+          .map((m) => _unescapeHtml(m.group(1)!.trim()))
+          .where((s) => s.isNotEmpty)
+          .toSet()
+          .toList();
 
       return MangaItem(
         id: id,
         title: _unescapeHtml(title),
         description: _unescapeHtml(desc),
         cover: cover,
+        tags: tags,
         source: 'mangapill',
       );
     }
@@ -2345,13 +2945,17 @@ class ApiService extends ChangeNotifier {
     final slug = parts.length > 2 ? parts[2] : '';
     final url = 'https://mangapill.com/manga/$mId/$slug';
 
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
+        'Referer': 'https://mangapill.com/',
       },
-    ).timeout(const Duration(seconds: 10));
+      timeout: const Duration(seconds: 10),
+    );
+
+    _checkResponseHealth(res, 'MangaPill');
 
     if (res.statusCode == 200) {
       final html = res.body;
@@ -2366,15 +2970,16 @@ class ApiService extends ChangeNotifier {
       for (final m in matches) {
         final cId = m.group(1)!;
         final cSlug = m.group(2)!;
-        final rawTitle = m.group(3)!.trim();
+        final rawTitle = _unescapeHtml(m.group(3)!.trim());
 
-        final numMatch = RegExp(r'Chapter\s+([0-9.]+)').firstMatch(rawTitle);
+        final numMatch = RegExp(r'Chapter\s+([0-9.]+)', caseSensitive: false).firstMatch(rawTitle);
         final num = numMatch?.group(1);
 
         chapters.add(ChapterItem(
           id: 'pill:$cId:$cSlug',
           title: rawTitle,
           number: num,
+          group: 'MangaPill',
           source: 'mangapill',
         ));
       }
@@ -2391,22 +2996,28 @@ class ApiService extends ChangeNotifier {
 
     final res = await http.get(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Accept': 'text/html',
         'Referer': 'https://mangapill.com/',
       },
     ).timeout(const Duration(seconds: 12));
 
+    _checkResponseHealth(res, 'MangaPill');
+
     if (res.statusCode == 200) {
       final html = res.body;
-      final pageRegex = RegExp(r'<img[^>]+class="[^"]*js-page[^"]*"[^>]+data-src="([^"]+)"');
-      final matches = pageRegex.allMatches(html);
+      final pageTagRegex = RegExp(r'<img\b[^>]*class="[^"]*js-page[^"]*"[^>]*>', caseSensitive: false);
+      final matches = pageTagRegex.allMatches(html);
 
       final pages = <String>[];
       for (final m in matches) {
-        final imgUrl = m.group(1);
-        if (imgUrl != null && imgUrl.isNotEmpty) {
+        final imgUrl = _extractImgFromTag(
+          m.group(0)!,
+          baseUrl: 'https://mangapill.com',
+          referer: 'https://mangapill.com/',
+        );
+        if (imgUrl.isNotEmpty) {
           pages.add(imgUrl);
         }
       }
@@ -2420,61 +3031,129 @@ class ApiService extends ChangeNotifier {
 
   // ---- MangaKatana Direct Scraper (iOS & Web) ----
 
-  Future<List<MangaItem>> _searchMangaKatana({String? query, String? type, int page = 1, int limit = 24}) async {
-    try {
-      final String url;
-      if (query != null && query.trim().isNotEmpty) {
-        url = 'https://mangakatana.com/page/$page?search=${Uri.encodeComponent(query.trim())}&search_by=book_name';
-      } else if (type == 'manhwa') {
-        url = 'https://mangakatana.com/genre/manhwa/page/$page';
-      } else if (type == 'manhua') {
-        url = 'https://mangakatana.com/genre/manhua/page/$page';
-      } else {
-        url = 'https://mangakatana.com/manga?filter=1&order=latest&page=$page';
+  Future<List<MangaItem>> _searchMangaKatana({
+    String? query,
+    String? type,
+    String order = 'popular',
+    int page = 1,
+    int limit = 24,
+  }) async {
+    final String url;
+    if (query != null && query.trim().isNotEmpty) {
+      url = 'https://mangakatana.com/page/$page?search=${Uri.encodeComponent(query.trim())}&search_by=book_name';
+    } else if (type == 'manhwa') {
+      url = 'https://mangakatana.com/genre/manhwa/page/$page';
+    } else if (type == 'manhua') {
+      url = 'https://mangakatana.com/genre/manhua/page/$page';
+    } else {
+      url = 'https://mangakatana.com/manga?filter=1&order=latest&page=$page';
+    }
+
+    final res = await _getCached(
+      Uri.parse(url),
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Referer': 'https://mangakatana.com/',
+      },
+      timeout: const Duration(seconds: 12),
+    );
+
+    _checkResponseHealth(res, 'MangaKatana');
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      // Scope to #book_list so unrelated sidebar widgets (#hot_book / #hot_update)
+      // don't pollute search results or return text-only rows without covers.
+      final bookListIdx = html.indexOf('id="book_list"');
+      final sidebarIdx = bookListIdx >= 0 ? html.indexOf('id="hot_', bookListIdx) : -1;
+      final listHtml = bookListIdx >= 0
+          ? html.substring(bookListIdx, sidebarIdx > bookListIdx ? sidebarIdx : null)
+          : html;
+
+      final cardRegex = RegExp(
+        r'<div class="item"[^>]*>[\s\S]*?<a href="(https://mangakatana\.com/manga/([^.]+)\.(\d+))"[^>]*>([\s\S]*?<img\b(?:"[^"]*"|' "'" r"[^']*'|[^'" '"' r'>])*>)[\s\S]*?<h3 class="title">\s*<a[^>]*>([^<]+)</a>',
+        caseSensitive: false,
+      );
+
+      var matches = cardRegex.allMatches(listHtml).toList();
+      if (matches.isEmpty && bookListIdx >= 0) {
+        matches = cardRegex.allMatches(html).toList();
       }
+      final items = <MangaItem>[];
+      final seen = <String>{};
 
-      final res = await http.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
-          'Accept': 'text/html,application/xhtml+xml',
-        },
-      ).timeout(const Duration(seconds: 12));
-
-      if (res.statusCode == 200) {
-        final html = res.body;
-        final cardRegex = RegExp(
-          r'<div class="item"[^>]*>[\s\S]*?<a href="(https://mangakatana\.com/manga/([^.]+)\.(\d+))"[^>]*>[\s\S]*?<img\s+(?:src|data-src)="([^"]+)"[\s\S]*?<h3 class="title">\s*<a[^>]*>([^<]+)</a>',
-          caseSensitive: false,
+      for (final m in matches) {
+        final slug = m.group(2)!;
+        final mId = m.group(3)!;
+        final imgBlock = m.group(4)!;
+        final imgTag = RegExp(
+              r'<img\b(?:"[^"]*"|' "'" r"[^']*'|[^'" '"' r'>])*>',
+              caseSensitive: false,
+            ).firstMatch(imgBlock)?.group(0) ??
+            imgBlock;
+        final cover = _extractImgFromTag(
+          imgTag,
+          baseUrl: 'https://mangakatana.com',
+          referer: 'https://mangakatana.com/',
         );
+        if (cover.isEmpty) continue;
+        final title = _unescapeHtml(m.group(5)!.trim());
 
-        final matches = cardRegex.allMatches(html);
-        final items = <MangaItem>[];
-        final seen = <String>{};
+        final id = 'katana:$slug:$mId';
+        if (!seen.add(id)) continue;
 
-        for (final m in matches) {
-          final slug = m.group(2)!;
-          final mId = m.group(3)!;
-          final cover = m.group(4)!;
-          final title = m.group(5)!.trim();
-
-          final id = 'katana:$slug:$mId';
-          if (seen.contains(id)) continue;
-          seen.add(id);
-
-          items.add(MangaItem(
-            id: id,
-            title: title,
-            cover: cover,
-            type: type ?? (url.contains('manhwa') ? 'manhwa' : (url.contains('manhua') ? 'manhua' : 'manga')),
-            source: 'mangakatana',
-          ));
-          if (items.length >= limit) break;
-        }
-        return items;
+        items.add(MangaItem(
+          id: id,
+          title: title,
+          cover: cover,
+          type: type ?? (url.contains('manhwa') ? 'manhwa' : (url.contains('manhua') ? 'manhua' : 'manga')),
+          source: 'mangakatana',
+        ));
+        if (items.length >= limit) break;
       }
-    } catch (e) {
-      debugPrint('MangaKatana search error: $e');
+
+      if (items.isNotEmpty) return items;
+
+      // If no list items found, check if MangaKatana redirected directly to a manga detail page (exact match)
+      final canonicalMatch = RegExp(
+        r'<link\s+rel="canonical"\s+href="https://mangakatana\.com/manga/([^.]+)\.(\d+)"',
+        caseSensitive: false,
+      ).firstMatch(html) ?? RegExp(
+        r'<meta\s+property="og:url"\s+content="https://mangakatana\.com/manga/([^.]+)\.(\d+)"',
+        caseSensitive: false,
+      ).firstMatch(html);
+
+      if (canonicalMatch != null) {
+        final slug = canonicalMatch.group(1)!;
+        final mId = canonicalMatch.group(2)!;
+        final titleMatch = RegExp(r'<h1 class="heading">\s*([^<]+)\s*</h1>', caseSensitive: false).firstMatch(html)
+            ?? RegExp(r'<meta\s+property="og:title"\s+content="([^"]+)"', caseSensitive: false).firstMatch(html);
+        final title = _unescapeHtml(titleMatch?.group(1)?.trim() ?? query?.trim() ?? slug.replaceAll('-', ' '));
+
+        final coverDivMatch = RegExp(r'<div class="cover"[^>]*>[\s\S]*?(<img\b[^>]*>)', caseSensitive: false).firstMatch(html);
+        var cover = coverDivMatch != null
+            ? _extractImgFromTag(
+                coverDivMatch.group(1)!,
+                baseUrl: 'https://mangakatana.com',
+                referer: 'https://mangakatana.com/',
+              )
+            : '';
+        if (cover.isEmpty) {
+          final ogMatch = RegExp(r'<meta\s+property="og:image"\s+content="([^"]+)"', caseSensitive: false).firstMatch(html);
+          cover = _normalizeImgUrl(ogMatch?.group(1), baseUrl: 'https://mangakatana.com', referer: 'https://mangakatana.com/');
+        }
+
+        items.add(MangaItem(
+          id: 'katana:$slug:$mId',
+          title: title,
+          cover: cover,
+          type: type ?? 'manga',
+          source: 'mangakatana',
+        ));
+      }
+
+      return items;
     }
     return [];
   }
@@ -2485,32 +3164,50 @@ class ApiService extends ChangeNotifier {
     final mId = parts.length > 2 ? parts[2] : '';
     final url = 'https://mangakatana.com/manga/$slug.$mId';
 
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
         'Accept': 'text/html,application/xhtml+xml',
+        'Referer': 'https://mangakatana.com/',
       },
-    ).timeout(const Duration(seconds: 12));
+      timeout: const Duration(seconds: 12),
+    );
+
+    _checkResponseHealth(res, 'MangaKatana');
 
     if (res.statusCode == 200) {
       final html = res.body;
       final titleMatch = RegExp(r'<h1 class="heading">([^<]+)</h1>').firstMatch(html);
-      final title = titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' ');
+      final title = _unescapeHtml(titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' '));
 
-      final descMatch = RegExp(r'<div class="summary">[\s\S]*?<p>([^<]+)</p>').firstMatch(html);
-      final desc = descMatch?.group(1)?.trim() ?? '';
+      final descMatch = RegExp(r'<div class="summary">[\s\S]*?<p>([\s\S]*?)</p>').firstMatch(html);
+      final desc = _unescapeHtml(descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '');
 
-      final coverMatch = RegExp(r'<div class="cover">[\s\S]*?<img\s+(?:src|data-src)="([^"]+)"').firstMatch(html);
-      final cover = coverMatch?.group(1) ?? '';
+      final coverDivMatch = RegExp(r'<div class="cover"[^>]*>[\s\S]*?(<img\b[^>]*>)', caseSensitive: false).firstMatch(html);
+      var cover = coverDivMatch != null
+          ? _extractImgFromTag(
+              coverDivMatch.group(1)!,
+              baseUrl: 'https://mangakatana.com',
+              referer: 'https://mangakatana.com/',
+            )
+          : '';
+      if (cover.isEmpty) {
+        final ogMatch = RegExp(r'<meta\s+property="og:image"\s+content="([^"]+)"', caseSensitive: false).firstMatch(html);
+        cover = _normalizeImgUrl(ogMatch?.group(1), baseUrl: 'https://mangakatana.com', referer: 'https://mangakatana.com/');
+      }
 
       final authorMatches = RegExp(r'<a class="author"[^>]*>([^<]+)</a>').allMatches(html);
-      final authors = authorMatches.map((m) => m.group(1)!.trim()).toList();
+      final authors = authorMatches.map((m) => _unescapeHtml(m.group(1)!.trim())).toList();
 
-      final genreMatches = RegExp(r'<div class="genres">[\s\S]*?<a[^>]*>([^<]+)</a>').allMatches(html);
-      final tags = genreMatches.map((m) => m.group(1)!.trim()).toList();
+      final genreBlock = RegExp(r'<div class="genres">([\s\S]*?)</div>').firstMatch(html)?.group(1) ?? '';
+      final tags = RegExp(r'<a[^>]*>([^<]+)</a>')
+          .allMatches(genreBlock)
+          .map((m) => _unescapeHtml(m.group(1)!.trim()))
+          .where((s) => s.isNotEmpty)
+          .toList();
 
-      final status = html.contains('class="status completed"') ? 'completed' : 'ongoing';
+      final status = html.contains('status completed') ? 'completed' : 'ongoing';
 
       return MangaItem(
         id: id,
@@ -2532,13 +3229,17 @@ class ApiService extends ChangeNotifier {
     final mId = parts.length > 2 ? parts[2] : '';
     final url = 'https://mangakatana.com/manga/$slug.$mId';
 
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
         'Accept': 'text/html,application/xhtml+xml',
+        'Referer': 'https://mangakatana.com/',
       },
-    ).timeout(const Duration(seconds: 12));
+      timeout: const Duration(seconds: 12),
+    );
+
+    _checkResponseHealth(res, 'MangaKatana');
 
     if (res.statusCode == 200) {
       final html = res.body;
@@ -2552,12 +3253,13 @@ class ApiService extends ChangeNotifier {
 
       for (final m in matches) {
         final cNum = m.group(1)!;
-        final rawTitle = m.group(2)!.trim();
+        final rawTitle = _unescapeHtml(m.group(2)!.trim());
 
         chapters.add(ChapterItem(
           id: 'katana:$slug:$mId:c$cNum',
           title: rawTitle,
           number: cNum,
+          group: 'MangaKatana',
           source: 'mangakatana',
         ));
       }
@@ -2575,12 +3277,14 @@ class ApiService extends ChangeNotifier {
 
     final res = await http.get(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
         'Accept': 'text/html,application/xhtml+xml',
         'Referer': 'https://mangakatana.com/',
       },
     ).timeout(const Duration(seconds: 12));
+
+    _checkResponseHealth(res, 'MangaKatana');
 
     if (res.statusCode == 200) {
       final html = res.body;
@@ -2589,12 +3293,15 @@ class ApiService extends ChangeNotifier {
 
       if (arrayMatch != null) {
         final content = arrayMatch.group(1)!;
-        final urlMatches = RegExp(r"'((?:https?:)?//[^']+)'").allMatches(content);
+        final urlMatches = RegExp(r'''['"]((?:https?:)?//[^'"]+)['"]''').allMatches(content);
         final pages = <String>[];
         for (final m in urlMatches) {
-          var pUrl = m.group(1)!;
-          if (pUrl.startsWith('//')) pUrl = 'https:$pUrl';
-          pages.add(pUrl);
+          final pUrl = _normalizeImgUrl(
+            m.group(1),
+            baseUrl: 'https://mangakatana.com',
+            referer: 'https://mangakatana.com/',
+          );
+          if (pUrl.isNotEmpty) pages.add(pUrl);
         }
 
         if (pages.isNotEmpty) {
@@ -2607,62 +3314,74 @@ class ApiService extends ChangeNotifier {
 
   // ---- MangaRead Direct Scraper (iOS & Web) ----
 
-  Future<List<MangaItem>> _searchMangaRead({String? query, String? type, int page = 1, int limit = 24}) async {
-    try {
-      final String url;
-      if (query != null && query.trim().isNotEmpty) {
-        url = 'https://www.mangaread.org/page/$page/?s=${Uri.encodeComponent(query.trim())}&post_type=wp-manga';
-      } else if (type == 'manhwa') {
-        url = 'https://www.mangaread.org/genres/manhwa/page/$page/?m_orderby=latest';
-      } else if (type == 'manhua') {
-        url = 'https://www.mangaread.org/genres/manhua/page/$page/?m_orderby=latest';
-      } else if (type == 'manga') {
-        url = 'https://www.mangaread.org/genres/manga/page/$page/?m_orderby=latest';
-      } else {
-        url = 'https://www.mangaread.org/manga/page/$page/?m_orderby=latest';
-      }
+  Future<List<MangaItem>> _searchMangaRead({
+    String? query,
+    String? type,
+    String order = 'popular',
+    int page = 1,
+    int limit = 24,
+  }) async {
+    final sortParam = order == 'popular' ? 'views' : 'latest';
+    final String url;
+    if (query != null && query.trim().isNotEmpty) {
+      url = 'https://www.mangaread.org/page/$page/?s=${Uri.encodeComponent(query.trim())}&post_type=wp-manga';
+    } else if (type == 'manhwa') {
+      url = 'https://www.mangaread.org/genres/manhwa/page/$page/?m_orderby=$sortParam';
+    } else if (type == 'manhua') {
+      url = 'https://www.mangaread.org/genres/manhua/page/$page/?m_orderby=$sortParam';
+    } else if (type == 'manga') {
+      url = 'https://www.mangaread.org/genres/manga/page/$page/?m_orderby=$sortParam';
+    } else {
+      url = 'https://www.mangaread.org/manga/page/$page/?m_orderby=$sortParam';
+    }
 
-      final res = await http.get(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
-          'Accept': 'text/html,application/xhtml+xml',
-        },
-      ).timeout(const Duration(seconds: 12));
+    final res = await _getCached(
+      Uri.parse(url),
+      headers: const {
+        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
+        'Accept': 'text/html,application/xhtml+xml',
+        'Referer': 'https://www.mangaread.org/',
+      },
+      timeout: const Duration(seconds: 12),
+    );
 
-      if (res.statusCode == 200) {
-        final html = res.body;
-        final cardRegex = RegExp(
-          r'<div[^>]*class="[^"]*(?:item-thumb|tab-thumb)[^"]*"[^>]*>[\s\S]*?<a href="https://www\.mangaread\.org/manga/([^/]+)/"[^>]*title="([^"]*)"[^>]*>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"',
-          caseSensitive: false,
+    _checkResponseHealth(res, 'MangaRead');
+
+    if (res.statusCode == 200) {
+      final html = res.body;
+      final cardRegex = RegExp(
+        r'<div[^>]*class="[^"]*(?:item-thumb|tab-thumb)[^"]*"[^>]*>[\s\S]*?<a href="https://www\.mangaread\.org/manga/([^/]+)/"[^>]*title="([^"]*)"[^>]*>([\s\S]*?<img\b[^>]*>)',
+        caseSensitive: false,
+      );
+
+      final matches = cardRegex.allMatches(html);
+      final items = <MangaItem>[];
+      final seen = <String>{};
+
+      for (final m in matches) {
+        final slug = m.group(1)!;
+        final title = _unescapeHtml(m.group(2)!.trim());
+        final imgBlock = m.group(3)!;
+        final imgTag = RegExp(r'<img\b[^>]*>', caseSensitive: false).firstMatch(imgBlock)?.group(0) ?? '';
+        final cover = _extractImgFromTag(
+          imgTag,
+          baseUrl: 'https://www.mangaread.org',
+          referer: 'https://www.mangaread.org/',
         );
 
-        final matches = cardRegex.allMatches(html);
-        final items = <MangaItem>[];
-        final seen = <String>{};
+        final id = 'mread:$slug';
+        if (!seen.add(id)) continue;
 
-        for (final m in matches) {
-          final slug = m.group(1)!;
-          final title = _unescapeHtml(m.group(2)!.trim());
-          final cover = m.group(3)!.trim();
-
-          final id = 'mread:$slug';
-          if (seen.contains(id)) continue;
-          seen.add(id);
-
-          items.add(MangaItem(
-            id: id,
-            title: title,
-            cover: cover,
-            type: type ?? (url.contains('manhwa') ? 'manhwa' : (url.contains('manhua') ? 'manhua' : 'manga')),
-            source: 'mangaread',
-          ));
-          if (items.length >= limit) break;
-        }
-        return items;
+        items.add(MangaItem(
+          id: id,
+          title: title,
+          cover: cover,
+          type: type ?? (url.contains('manhwa') ? 'manhwa' : (url.contains('manhua') ? 'manhua' : 'manga')),
+          source: 'mangaread',
+        ));
+        if (items.length >= limit) break;
       }
-    } catch (e) {
-      debugPrint('MangaRead search error: $e');
+      return items;
     }
     return [];
   }
@@ -2671,13 +3390,17 @@ class ApiService extends ChangeNotifier {
     final slug = id.replaceFirst('mread:', '');
     final url = 'https://www.mangaread.org/manga/$slug/';
 
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
         'Accept': 'text/html,application/xhtml+xml',
+        'Referer': 'https://www.mangaread.org/',
       },
-    ).timeout(const Duration(seconds: 12));
+      timeout: const Duration(seconds: 12),
+    );
+
+    _checkResponseHealth(res, 'MangaRead');
 
     if (res.statusCode == 200) {
       final html = res.body;
@@ -2687,14 +3410,32 @@ class ApiService extends ChangeNotifier {
       final descMatch = RegExp(r'<div class="description-summary">[\s\S]*?<p>([\s\S]*?)</p>').firstMatch(html);
       final desc = _unescapeHtml(descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '');
 
-      final coverMatch = RegExp(r'<div class="summary_image"[^>]*>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"').firstMatch(html);
-      final cover = coverMatch?.group(1)?.trim() ?? '';
+      final coverDivMatch = RegExp(r'<div class="summary_image"[^>]*>[\s\S]*?(<img\b[^>]*>)', caseSensitive: false).firstMatch(html);
+      var cover = coverDivMatch != null
+          ? _extractImgFromTag(
+              coverDivMatch.group(1)!,
+              baseUrl: 'https://www.mangaread.org',
+              referer: 'https://www.mangaread.org/',
+            )
+          : '';
+      if (cover.isEmpty) {
+        final ogMatch = RegExp(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', caseSensitive: false).firstMatch(html);
+        cover = _normalizeImgUrl(ogMatch?.group(1), baseUrl: 'https://www.mangaread.org', referer: 'https://www.mangaread.org/');
+      }
 
-      final authorMatches = RegExp(r'<div class="author-content">[\s\S]*?<a[^>]*>([^<]+)</a>').allMatches(html);
-      final authors = authorMatches.map((m) => _unescapeHtml(m.group(1)!.trim())).toList();
+      final authorBlock = RegExp(r'<div class="author-content">([\s\S]*?)</div>').firstMatch(html)?.group(1) ?? '';
+      final authors = RegExp(r'<a[^>]*>([^<]+)</a>')
+          .allMatches(authorBlock)
+          .map((m) => _unescapeHtml(m.group(1)!.trim()))
+          .where((s) => s.isNotEmpty)
+          .toList();
 
-      final genreMatches = RegExp(r'<div class="genres-content">[\s\S]*?<a[^>]*>([^<]+)</a>').allMatches(html);
-      final tags = genreMatches.map((m) => _unescapeHtml(m.group(1)!.trim())).toList();
+      final genreBlock = RegExp(r'<div class="genres-content">([\s\S]*?)</div>').firstMatch(html)?.group(1) ?? '';
+      final tags = RegExp(r'<a[^>]*>([^<]+)</a>')
+          .allMatches(genreBlock)
+          .map((m) => _unescapeHtml(m.group(1)!.trim()))
+          .where((s) => s.isNotEmpty)
+          .toList();
 
       return MangaItem(
         id: id,
@@ -2706,20 +3447,24 @@ class ApiService extends ChangeNotifier {
         source: 'mangaread',
       );
     }
-    throw Exception('Failed to load MangaRead manga details');
+    throw Exception('Failed to load MangaRead series details');
   }
 
   Future<List<ChapterItem>> _getMangaReadChapters(String mangaId) async {
     final slug = mangaId.replaceFirst('mread:', '');
     final url = 'https://www.mangaread.org/manga/$slug/';
 
-    final res = await http.get(
+    final res = await _getCached(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
         'Accept': 'text/html,application/xhtml+xml',
+        'Referer': 'https://www.mangaread.org/',
       },
-    ).timeout(const Duration(seconds: 12));
+      timeout: const Duration(seconds: 12),
+    );
+
+    _checkResponseHealth(res, 'MangaRead');
 
     if (res.statusCode == 200) {
       final html = res.body;
@@ -2733,14 +3478,15 @@ class ApiService extends ChangeNotifier {
 
       for (final m in matches) {
         final cSlug = m.group(1)!;
-        final rawTitle = m.group(2)!.trim();
-        final numMatch = RegExp(r'Chapter\s+([0-9.]+)').firstMatch(rawTitle);
+        final rawTitle = _unescapeHtml(m.group(2)!.trim());
+        final numMatch = RegExp(r'Chapter\s+([0-9.]+)', caseSensitive: false).firstMatch(rawTitle);
         final num = numMatch?.group(1);
 
         chapters.add(ChapterItem(
           id: 'mread:$slug:$cSlug',
           title: rawTitle,
           number: num,
+          group: 'MangaRead',
           source: 'mangaread',
         ));
       }
@@ -2757,22 +3503,28 @@ class ApiService extends ChangeNotifier {
 
     final res = await http.get(
       Uri.parse(url),
-      headers: {
+      headers: const {
         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Version/17.0 Mobile/15E148 Safari/604.1',
         'Accept': 'text/html,application/xhtml+xml',
         'Referer': 'https://www.mangaread.org/',
       },
     ).timeout(const Duration(seconds: 12));
 
+    _checkResponseHealth(res, 'MangaRead');
+
     if (res.statusCode == 200) {
       final html = res.body;
-      final pageRegex = RegExp(r'<div class="page-break[^>]*>[\s\S]*?<img[^>]+(?:src|data-src)="([^"]+)"');
+      final pageRegex = RegExp(r'<div class="page-break[^>]*>[\s\S]*?(<img\b[^>]*>)', caseSensitive: false);
       final matches = pageRegex.allMatches(html);
 
       final pages = <String>[];
       for (final m in matches) {
-        final imgUrl = m.group(1)?.trim();
-        if (imgUrl != null && imgUrl.isNotEmpty) {
+        final imgUrl = _extractImgFromTag(
+          m.group(1)!,
+          baseUrl: 'https://www.mangaread.org',
+          referer: 'https://www.mangaread.org/',
+        );
+        if (imgUrl.isNotEmpty) {
           pages.add(imgUrl);
         }
       }

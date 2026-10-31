@@ -46,8 +46,20 @@ class RootShell extends StatefulWidget {
   State<RootShell> createState() => _RootShellState();
 }
 
-class _RootShellState extends State<RootShell> {
+class _RootShellState extends State<RootShell> with SingleTickerProviderStateMixin {
   int _index = 0;
+  late final AnimationController _tabController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 200),
+    value: 1.0,
+  );
+  late final Animation<double> _fadeAnim = Tween<double>(begin: 0.72, end: 1.0).animate(
+    CurvedAnimation(parent: _tabController, curve: Curves.easeOutCubic),
+  );
+  late final Animation<Offset> _slideAnim = Tween<Offset>(
+    begin: const Offset(0, 0.012),
+    end: Offset.zero,
+  ).animate(CurvedAnimation(parent: _tabController, curve: Curves.easeOutCubic));
 
   static const _destinations = [
     (Icons.collections_bookmark_outlined, Icons.collections_bookmark_rounded, 'Library'),
@@ -58,21 +70,39 @@ class _RootShellState extends State<RootShell> {
   ];
 
   @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  void _onSelectTab(int i) {
+    if (i == _index) return;
+    setState(() => _index = i);
+    _tabController.forward(from: 0.0);
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: IndexedStack(
-        index: _index,
-        children: const [
-          LibraryScreen(),
-          UpdatesScreen(),
-          HistoryScreen(),
-          BrowseScreen(),
-          MoreScreen(),
-        ],
+      body: FadeTransition(
+        opacity: _fadeAnim,
+        child: SlideTransition(
+          position: _slideAnim,
+          child: IndexedStack(
+            index: _index,
+            children: const [
+              LibraryScreen(),
+              UpdatesScreen(),
+              HistoryScreen(),
+              BrowseScreen(),
+              MoreScreen(),
+            ],
+          ),
+        ),
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
+        onDestinationSelected: _onSelectTab,
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         destinations: [
           for (final (icon, selected, label) in _destinations)

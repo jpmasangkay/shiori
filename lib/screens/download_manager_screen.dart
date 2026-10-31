@@ -323,8 +323,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
         .toList();
 
     Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ReaderScreen(
+      smoothRoute(
+        ReaderScreen(
           chapterId: chapter.chapterId,
           mangaId: chapter.mangaId,
           mangaTitle: chapter.mangaTitle,

@@ -18,11 +18,13 @@ class SourceCatalogScreen extends StatefulWidget {
     required this.sourceId,
     required this.sourceName,
     this.sourceLang = 'EN',
+    this.initialOrder = 'popular',
   });
 
   final String sourceId;
   final String sourceName;
   final String sourceLang;
+  final String initialOrder;
 
   @override
   State<SourceCatalogScreen> createState() => _SourceCatalogScreenState();
@@ -33,13 +35,17 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   final _scrollController = ScrollController();
   Timer? _debounce;
   String _selectedType = 'all';
-  final _selectedOrder = 'popular';
+  late String _selectedOrder = widget.initialOrder;
   List<MangaItem> _items = [];
   bool _loading = true;
+  bool _refreshing = false;
+  bool _isTyping = false;
   bool _loadingMore = false;
   bool _hasMore = true;
   String? _error;
   int _page = 1;
+  int _fetchToken = 0;
+  int _contentGeneration = 0;
 
   static const _types = [
     ('all', 'All'),
@@ -67,13 +73,27 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   }
 
   void _changeType(String typeKey) {
+    if (_selectedType == typeKey && !_loading) return;
+    _debounce?.cancel();
     setState(() {
       _selectedType = typeKey;
+      _isTyping = false;
       _page = 1;
     });
     SharedPreferences.getInstance().then((p) {
       p.setString('catalog_type_${widget.sourceId}', typeKey);
       p.setString('default_catalog_type', typeKey);
+    });
+    _fetch();
+  }
+
+  void _changeOrder(String order) {
+    if (_selectedOrder == order && !_loading) return;
+    _debounce?.cancel();
+    setState(() {
+      _selectedOrder = order;
+      _isTyping = false;
+      _page = 1;
     });
     _fetch();
   }
@@ -89,7 +109,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   void _onScroll() {
     if (_scrollController.hasClients &&
         _scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 350) {
-      if (!_loading && !_loadingMore && _hasMore) {
+      if (!_loading && !_isTyping && !_loadingMore && _hasMore) {
         _loadMore();
       }
     }
@@ -97,14 +117,28 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
 
   void _onSearchChanged(String text) {
     _debounce?.cancel();
-    _debounce = Timer(const Duration(milliseconds: 400), () {
+    // Show skeleton immediately so typing feels instant and never freezes on stale results
+    setState(() {
+      _isTyping = true;
+      _loading = true;
+      _error = null;
+    });
+    _debounce = Timer(const Duration(milliseconds: 280), () {
+      if (!mounted) return;
       _fetch();
     });
   }
 
-  Future<void> _fetch() async {
+  Future<void> _fetch({bool isRefresh = false}) async {
+    final token = ++_fetchToken;
     setState(() {
-      _loading = true;
+      _isTyping = false;
+      if (isRefresh && _items.isNotEmpty) {
+        _refreshing = true;
+      } else {
+        _loading = true;
+      }
+      _loadingMore = false;
       _error = null;
       _page = 1;
       _hasMore = true;
@@ -137,25 +171,30 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
         }
       }
 
-      if (mounted) {
-        setState(() {
-          _items = results;
-          _loading = false;
-          _hasMore = results.length >= 8;
-        });
+      if (!mounted || token != _fetchToken) return;
+      if (!isRefresh && _scrollController.hasClients) {
+        _scrollController.jumpTo(0);
       }
+      setState(() {
+        _items = results;
+        _loading = false;
+        _refreshing = false;
+        _contentGeneration++;
+        _hasMore = results.length >= 8;
+      });
     } catch (err) {
-      if (mounted) {
-        setState(() {
-          _error = err.toString().replaceFirst('Exception: ', '');
-          _loading = false;
-        });
-      }
+      if (!mounted || token != _fetchToken) return;
+      setState(() {
+        _error = err.toString().replaceFirst('Exception: ', '');
+        _loading = false;
+        _refreshing = false;
+      });
     }
   }
 
   Future<void> _loadMore() async {
-    if (_loadingMore || !_hasMore) return;
+    if (_loadingMore || !_hasMore || _loading) return;
+    final token = _fetchToken;
     setState(() => _loadingMore = true);
     final nextPage = _page + 1;
 
@@ -169,18 +208,18 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
         limit: 24,
         source: widget.sourceId,
       );
-      if (mounted) {
+      if (mounted && token == _fetchToken) {
         setState(() {
           _page = nextPage;
           final existingIds = _items.map((e) => e.id).toSet();
           final newItems = results.where((e) => !existingIds.contains(e.id)).toList();
           _items.addAll(newItems);
           _loadingMore = false;
-          _hasMore = results.isNotEmpty && results.length >= 8;
+          _hasMore = newItems.isNotEmpty && results.length >= 8;
         });
       }
     } catch (_) {
-      if (mounted) {
+      if (mounted && token == _fetchToken) {
         setState(() => _loadingMore = false);
       }
     }
@@ -257,6 +296,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                   if (_searchController.text.isNotEmpty)
                     GestureDetector(
                       onTap: () {
+                        _debounce?.cancel();
                         _searchController.clear();
                         _fetch();
                       },
@@ -267,13 +307,50 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
             ),
           ),
 
-          // Types
+          // Sort + Types
           SizedBox(
             height: 38,
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12),
               children: [
+                for (final (orderKey, orderLabel, orderIcon) in const [
+                  ('popular', 'Popular', Icons.local_fire_department_rounded),
+                  ('latest', 'Latest', Icons.schedule_rounded),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: ChoiceChip(
+                      avatar: Icon(
+                        orderIcon,
+                        size: 14,
+                        color: _selectedOrder == orderKey ? AppColors.primary : AppColors.muted,
+                      ),
+                      label: Text(orderLabel),
+                      selected: _selectedOrder == orderKey,
+                      onSelected: (sel) {
+                        if (sel) _changeOrder(orderKey);
+                      },
+                      showCheckmark: false,
+                      backgroundColor: AppColors.surface,
+                      selectedColor: AppColors.active,
+                      labelStyle: GoogleFonts.inter(
+                        fontSize: 12,
+                        color: _selectedOrder == orderKey ? AppColors.primary : AppColors.muted,
+                        fontWeight: _selectedOrder == orderKey ? FontWeight.w600 : FontWeight.normal,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                        side: BorderSide(
+                          color: _selectedOrder == orderKey ? AppColors.primary : Colors.transparent,
+                        ),
+                      ),
+                    ),
+                  ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+                  child: Container(width: 1, color: AppColors.surfaceHigh),
+                ),
                 for (final (typeKey, typeLabel) in _types)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
@@ -283,6 +360,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                       onSelected: (sel) {
                         if (sel) _changeType(typeKey);
                       },
+                      showCheckmark: false,
                       backgroundColor: AppColors.surface,
                       selectedColor: AppColors.active,
                       labelStyle: GoogleFonts.inter(
@@ -302,10 +380,25 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
             ),
           ),
 
-          const SizedBox(height: 6),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            height: (_isTyping || _refreshing) ? 2 : 0,
+            margin: const EdgeInsets.only(top: 4),
+            child: (_isTyping || _refreshing)
+                ? const LinearProgressIndicator(
+                    minHeight: 2,
+                    color: AppColors.primary,
+                    backgroundColor: Colors.transparent,
+                  )
+                : const SizedBox.shrink(),
+          ),
+
+          const SizedBox(height: 4),
           Expanded(
             child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 250),
+              duration: const Duration(milliseconds: 220),
+              switchInCurve: Curves.easeOutCubic,
+              switchOutCurve: Curves.easeInCubic,
               child: _buildGrid(),
             ),
           ),
@@ -315,11 +408,11 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   }
 
   Widget _buildGrid() {
-    if (_loading && _items.isEmpty) {
-      return const MangaGridSkeleton(key: ValueKey('catalog_skeleton'), count: 9);
+    if (_loading && !_refreshing) {
+      return const CatalogGridSkeleton(key: ValueKey('catalog_skeleton'), count: 12);
     }
 
-    if (_error != null && _items.isEmpty) {
+    if (_error != null && (_items.isEmpty || !_refreshing)) {
       final errLower = _error!.toLowerCase();
       final isCloudflareOrWeb = errLower.contains('403') ||
           errLower.contains('503') ||
@@ -331,6 +424,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           errLower.contains('turnstile') ||
           errLower.contains('captcha');
       return Center(
+        key: const ValueKey('catalog_error'),
         child: Padding(
           padding: const EdgeInsets.all(24),
           child: Column(
@@ -388,6 +482,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
     if (_items.isEmpty) {
       final typeLabel = _types.firstWhere((t) => t.$1 == _selectedType, orElse: () => ('all', 'titles')).$2;
       return Center(
+        key: const ValueKey('catalog_empty'),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 28),
           child: Column(
@@ -442,99 +537,93 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
     final width = MediaQuery.sizeOf(context).width;
     final cols = (width / 115).clamp(2, 6).floor();
 
-    return RefreshIndicator(
-      color: AppColors.primary,
-      backgroundColor: AppColors.surface,
-      onRefresh: _fetch,
-      child: GridView.builder(
-        controller: _scrollController,
-        padding: const EdgeInsets.fromLTRB(12, 6, 12, 20),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: cols,
-          mainAxisSpacing: 8,
-          crossAxisSpacing: 8,
-          childAspectRatio: 2 / 3,
-        ),
-        itemCount: _items.length + (_loadingMore ? 1 : 0),
-        itemBuilder: (_, i) {
-          if (i >= _items.length) {
-            return const Center(
-              child: Padding(
-                padding: EdgeInsets.all(16.0),
-                child: SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
-                ),
-              ),
-            );
-          }
-          final manga = _items[i];
-          return InkWell(
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(builder: (_) => DetailScreen(manga: manga)),
-              );
-            },
-            borderRadius: BorderRadius.circular(6),
-            child: ClipRRect(
+    return FadeSlideIn(
+      key: ValueKey('grid_$_contentGeneration'),
+      child: RefreshIndicator(
+        color: AppColors.primary,
+        backgroundColor: AppColors.surface,
+        onRefresh: () => _fetch(isRefresh: true),
+        child: GridView.builder(
+          controller: _scrollController,
+          padding: const EdgeInsets.fromLTRB(12, 6, 12, 20),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cols,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            childAspectRatio: 2 / 3,
+          ),
+          itemCount: _items.length + (_loadingMore ? cols : 0),
+          itemBuilder: (_, i) {
+            if (i >= _items.length) {
+              return const MangaCardSkeleton();
+            }
+            final manga = _items[i];
+            return InkWell(
+              onTap: () {
+                Navigator.of(context).push(
+                  smoothRoute(DetailScreen(manga: manga)),
+                );
+              },
               borderRadius: BorderRadius.circular(6),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  const ColoredBox(color: AppColors.surfaceHigh),
-                  CoverImage(imageUrl: manga.cover, saturation: .75),
-                  const Align(
-                    alignment: Alignment.bottomCenter,
-                    child: FractionallySizedBox(
-                      heightFactor: .55,
-                      widthFactor: 1,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [Colors.transparent, Color.fromRGBO(5, 6, 9, .95)],
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    const ColoredBox(color: AppColors.surfaceHigh),
+                    CoverImage(imageUrl: manga.cover, saturation: .75),
+                    const Align(
+                      alignment: Alignment.bottomCenter,
+                      child: FractionallySizedBox(
+                        heightFactor: .55,
+                        widthFactor: 1,
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(
+                              begin: Alignment.topCenter,
+                              end: Alignment.bottomCenter,
+                              colors: [Colors.transparent, Color.fromRGBO(5, 6, 9, .95)],
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    top: 5,
-                    left: 5,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: AppColors.surfaceHigh.withValues(alpha: .9),
-                        borderRadius: BorderRadius.circular(6),
+                    Positioned(
+                      top: 5,
+                      left: 5,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: AppColors.surfaceHigh.withValues(alpha: .9),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          manga.type.toUpperCase(),
+                          style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: AppColors.primary),
+                        ),
                       ),
+                    ),
+                    Positioned(
+                      left: 7,
+                      right: 7,
+                      bottom: 7,
                       child: Text(
-                        manga.type.toUpperCase(),
-                        style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: AppColors.primary),
+                        manga.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.inter(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                          height: 16 / 12,
+                        ),
                       ),
                     ),
-                  ),
-                  Positioned(
-                    left: 7,
-                    right: 7,
-                    bottom: 7,
-                    child: Text(
-                      manga.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
-                        height: 16 / 12,
-                      ),
-                    ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }

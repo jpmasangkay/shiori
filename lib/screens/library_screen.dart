@@ -568,8 +568,8 @@ class _LibraryScreenState extends State<LibraryScreen> with WidgetsBindingObserv
   }
 
   void _openManga(MangaItem manga) => Navigator.of(context)
-      .push(MaterialPageRoute(builder: (_) => DetailScreen(manga: manga)))
-      .then((_) => _loadUserLibrary());
+      .push(smoothRoute(DetailScreen(manga: manga)))
+      .then((_) => _loadUserLibrary(silent: true));
 
   Widget _grid(DisplaySettings s, List<MangaItem> items) {
     final comfortable = s.mode == DisplayMode.comfortableGrid;

@@ -30,6 +30,42 @@ class MainActivity : FlutterActivity() {
         return cause?.message ?: cause?.toString() ?: e.toString()
     }
 
+    private fun getAllExtensionPackages(): List<String> {
+        val result = mutableSetOf<String>()
+        try {
+            val pm = packageManager
+            val packages = pm.getInstalledPackages(0)
+            packages.map { it.packageName }
+                .filter { it.contains("tachiyomi.extension") || it.startsWith("eu.kanade.tachiyomi") }
+                .forEach { result.add(it) }
+        } catch (_: Exception) {}
+
+        listOfNotNull(
+            File(cacheDir, "shiori_extensions"),
+            File(filesDir, "shiori_extensions"),
+            externalCacheDir?.let { File(it, "shiori_extensions") },
+            System.getProperty("java.io.tmpdir")?.let { File(it, "shiori_extensions") }
+        ).forEach { dir ->
+            if (dir.exists() && dir.isDirectory) {
+                dir.listFiles { f -> f.extension.equals("apk", ignoreCase = true) }?.forEach { apkFile ->
+                    try {
+                        val pkgInfo = packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
+                        val pkgName = pkgInfo?.packageName
+                        if (!pkgName.isNullOrEmpty() && (pkgName.contains("tachiyomi.extension") || pkgName.startsWith("eu.kanade.tachiyomi"))) {
+                            result.add(pkgName)
+                        } else {
+                            val nameWithoutExt = apkFile.nameWithoutExtension
+                            if (nameWithoutExt.contains("tachiyomi.extension") || nameWithoutExt.startsWith("eu.kanade.tachiyomi")) {
+                                result.add(nameWithoutExt)
+                            }
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+        return result.toList()
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
 
@@ -79,12 +115,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "getInstalledExtensions" -> {
                     try {
-                        val pm = packageManager
-                        val packages = pm.getInstalledPackages(0)
-                        val extPackages = packages
-                            .map { it.packageName }
-                            .filter { it.contains("tachiyomi.extension") || it.startsWith("eu.kanade.tachiyomi") }
-                        result.success(extPackages)
+                        result.success(getAllExtensionPackages())
                     } catch (e: Exception) {
                         result.error("QUERY_ERROR", e.message ?: "Failed to list extensions", null)
                     }
@@ -262,11 +293,7 @@ class MainActivity : FlutterActivity() {
                 "testAllExtensions" -> {
                     mainScope.launch {
                         val report = mutableMapOf<String, Any?>()
-                        val pm = packageManager
-                        val packages = pm.getInstalledPackages(0)
-                        val extPackages = packages
-                            .map { it.packageName }
-                            .filter { it.contains("tachiyomi.extension") || it.startsWith("eu.kanade.tachiyomi") }
+                        val extPackages = getAllExtensionPackages()
 
                         for (extPkg in extPackages) {
                             try {
@@ -311,11 +338,7 @@ class MainActivity : FlutterActivity() {
                 val extPackages = if (!targetPkg.isNullOrEmpty()) {
                     listOf(targetPkg)
                 } else {
-                    val pm = packageManager
-                    val packages = pm.getInstalledPackages(0)
-                    packages
-                        .map { it.packageName }
-                        .filter { it.contains("tachiyomi.extension") || it.startsWith("eu.kanade.tachiyomi") }
+                    getAllExtensionPackages()
                 }
 
                 android.util.Log.i("ExtensionTest", "Starting test run for ${extPackages.size} extension(s), query='$testQuery', isSearch=$testSearch, isDeep=$testDeep")

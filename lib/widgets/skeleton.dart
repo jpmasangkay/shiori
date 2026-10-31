@@ -155,6 +155,161 @@ class MangaGridSkeleton extends StatelessWidget {
   }
 }
 
+/// Skeleton that mirrors the source catalog grid (2:3 covers with the title
+/// overlaid at the bottom) so the swap to real content doesn't jump.
+class CatalogGridSkeleton extends StatelessWidget {
+  const CatalogGridSkeleton({super.key, this.count = 12});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width;
+    final cols = (width / 115).clamp(2, 6).floor();
+    return ShimmerLoading(
+      child: GridView.builder(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 20),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: cols,
+          mainAxisSpacing: 8,
+          crossAxisSpacing: 8,
+          childAspectRatio: 2 / 3,
+        ),
+        itemCount: count,
+        itemBuilder: (_, i) => Container(
+          decoration: BoxDecoration(
+            color: AppColors.surfaceHigh,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          padding: const EdgeInsets.all(7),
+          child: const Column(
+            mainAxisAlignment: MainAxisAlignment.end,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SkeletonBox(height: 10, width: double.infinity, borderRadius: 3),
+              SizedBox(height: 4),
+              SkeletonBox(height: 10, width: 50, borderRadius: 3),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Horizontal row of cover skeletons, matching the global search result rows.
+class MangaRowSkeleton extends StatelessWidget {
+  const MangaRowSkeleton({super.key, this.count = 5, this.height = 180, this.itemWidth = 105});
+
+  final int count;
+  final double height;
+  final double itemWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    return ShimmerLoading(
+      child: SizedBox(
+        height: height,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: count,
+          separatorBuilder: (_, _) => const SizedBox(width: 8),
+          itemBuilder: (_, i) => SizedBox(
+            width: itemWidth,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceHigh,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                const SkeletonBox(height: 10, width: double.infinity, borderRadius: 3),
+                const SizedBox(height: 4),
+                const SkeletonBox(height: 10, width: 60, borderRadius: 3),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Skeleton for compact list rows with a small cover (History).
+class HistoryRowSkeleton extends StatelessWidget {
+  const HistoryRowSkeleton({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const ShimmerLoading(
+      child: SizedBox(
+        height: 64,
+        child: Padding(
+          padding: EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+          child: Row(
+            children: [
+              SkeletonBox(width: 44, height: 56, borderRadius: 4),
+              SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SkeletonBox(height: 13, width: 170, borderRadius: 4),
+                    SizedBox(height: 6),
+                    SkeletonBox(height: 10, width: 110, borderRadius: 3),
+                  ],
+                ),
+              ),
+              SkeletonBox(width: 28, height: 28, borderRadius: 14),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Fades and slides its child in once when first built. Used so content that
+/// replaces a skeleton eases in instead of popping.
+class FadeSlideIn extends StatelessWidget {
+  const FadeSlideIn({
+    super.key,
+    required this.child,
+    this.duration = const Duration(milliseconds: 320),
+    this.delay = Duration.zero,
+    this.offset = 12,
+  });
+
+  final Widget child;
+  final Duration duration;
+  final Duration delay;
+  final double offset;
+
+  @override
+  Widget build(BuildContext context) {
+    final total = duration + delay;
+    final start = total.inMilliseconds == 0 ? 0.0 : delay.inMilliseconds / total.inMilliseconds;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: total,
+      curve: Interval(start, 1, curve: Curves.easeOutCubic),
+      child: child,
+      builder: (context, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(offset: Offset(0, (1 - t) * offset), child: child),
+      ),
+    );
+  }
+}
+
 /// Skeleton row for chapter tiles in DetailScreen.
 class ChapterTileSkeleton extends StatelessWidget {
   const ChapterTileSkeleton({super.key});

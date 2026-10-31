@@ -126,8 +126,8 @@ class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserv
                                   item: item as Map<String, dynamic>,
                                   onTap: () {
                                     Navigator.of(context).push(
-                                      MaterialPageRoute(
-                                        builder: (_) => ReaderScreen(
+                                      smoothRoute(
+                                        ReaderScreen(
                                           chapterId: item['id']?.toString() ?? '',
                                           mangaId: item['mangaId']?.toString() ?? '',
                                           mangaTitle: item['mangaTitle'] ?? 'Untitled',
@@ -140,8 +140,8 @@ class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserv
                                   },
                                   onCoverTap: () {
                                     Navigator.of(context).push(
-                                      MaterialPageRoute(
-                                        builder: (_) => DetailScreen(
+                                      smoothRoute(
+                                        DetailScreen(
                                           manga: MangaItem(
                                             id: item['mangaId'] ?? '',
                                             title: item['mangaTitle'] ?? '',

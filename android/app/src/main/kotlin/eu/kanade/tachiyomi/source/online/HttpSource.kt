@@ -53,7 +53,13 @@ abstract class HttpSource : CatalogueSource {
         }
     }
 
-    open fun headersBuilder(): Headers.Builder = Headers.Builder()
+    open fun headersBuilder(): Headers.Builder {
+        val builder = Headers.Builder()
+        try {
+            builder.add("User-Agent", network.defaultUserAgentProvider())
+        } catch (_: Throwable) {}
+        return builder
+    }
 
     open val network: eu.kanade.tachiyomi.network.NetworkHelper
         get() = Injekt.get<eu.kanade.tachiyomi.network.NetworkHelper>()
@@ -63,8 +69,21 @@ abstract class HttpSource : CatalogueSource {
 
     open val headers: Headers by lazy { headersBuilder().build() }
 
-    open fun getMangaUrl(manga: SManga): String = baseUrl + manga.url
-    open fun getChapterUrl(chapter: SChapter): String = baseUrl + chapter.url
+    open fun getMangaUrl(manga: SManga): String {
+        val u = manga.url
+        if (u.startsWith("http://") || u.startsWith("https://")) return u
+        val base = baseUrl.trimEnd('/')
+        val path = if (u.startsWith('/')) u else "/$u"
+        return base + path
+    }
+
+    open fun getChapterUrl(chapter: SChapter): String {
+        val u = chapter.url
+        if (u.startsWith("http://") || u.startsWith("https://")) return u
+        val base = baseUrl.trimEnd('/')
+        val path = if (u.startsWith('/')) u else "/$u"
+        return base + path
+    }
 
     open fun setUrlWithoutDomain(manga: SManga, url: String) {
         manga.url = getUrlWithoutDomain(url)
@@ -163,10 +182,10 @@ abstract class HttpSource : CatalogueSource {
     }
 
     // Details & Chapters
-    open fun mangaDetailsRequest(manga: SManga): Request = GET(baseUrl + manga.url, headers)
+    open fun mangaDetailsRequest(manga: SManga): Request = GET(getMangaUrl(manga), headers)
     open fun mangaDetailsParse(response: Response): SManga = SManga.create()
 
-    open fun chapterListRequest(manga: SManga): Request = GET(baseUrl + manga.url, headers)
+    open fun chapterListRequest(manga: SManga): Request = GET(getMangaUrl(manga), headers)
     open fun chapterListParse(response: Response): List<SChapter> = emptyList()
 
     open suspend fun getMangaUpdate(
@@ -229,7 +248,7 @@ abstract class HttpSource : CatalogueSource {
     }
 
     // Pages
-    open fun pageListRequest(chapter: SChapter): Request = GET(baseUrl + chapter.url, headers)
+    open fun pageListRequest(chapter: SChapter): Request = GET(getChapterUrl(chapter), headers)
     open fun pageListParse(response: Response): List<Page> = emptyList()
 
     override suspend fun getPageList(chapter: SChapter): List<Page> {
@@ -252,10 +271,18 @@ abstract class HttpSource : CatalogueSource {
         }
     }
 
-    open fun imageUrlRequest(page: Page): Request = GET(page.url, headers)
+    protected open fun resolveFullUrl(url: String): String {
+        if (url.startsWith("http://") || url.startsWith("https://")) return url
+        if (url.startsWith("//")) return "https:$url"
+        val base = baseUrl.trimEnd('/')
+        val path = if (url.startsWith("/")) url else "/$url"
+        return "$base$path"
+    }
+
+    open fun imageUrlRequest(page: Page): Request = GET(resolveFullUrl(page.url), headers)
     open fun imageUrlParse(response: Response): String = ""
 
-    open fun imageRequest(page: Page): Request = GET(page.imageUrl ?: page.url, headers)
+    open fun imageRequest(page: Page): Request = GET(resolveFullUrl(page.imageUrl ?: page.url), headers)
 
     open val supportsRelatedMangas: Boolean get() = false
     open val disableRelatedMangas: Boolean get() = false

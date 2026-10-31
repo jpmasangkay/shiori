@@ -11,6 +11,7 @@ import '../services/api_service.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/skeleton.dart';
 
 enum ReaderMode {
   rightToLeft, // 🇯🇵 Standard Manga: Right to Left
@@ -64,8 +65,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   // Pages cache keyed by chapter ID
   final Map<String, List<String>> _pagesCache = {};
+  final Map<String, List<String>> _dataSaverCache = {};
   final Set<String> _loadingChapterIds = {};
   final Map<String, String> _chapterErrors = {};
+  final Set<String> _prefetchedUrls = {};
 
   // Webtoon continuous feed. Always an ascending, contiguous run of chapter
   // indices so chapters can never appear out of order or be skipped.
@@ -175,10 +178,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   /// Loads a chapter's pages. A chapter that fails to load (or has no pages) is
   /// recorded in [_chapterErrors] so the reader can show a Retry tile instead
   /// of silently skipping over it.
-  Future<void> _loadChapter(int idx) async {
+  Future<void> _loadChapter(int idx, {bool forceRefresh = false}) async {
     if (idx < 0 || idx >= _chapters.length) return;
     final chapter = _chapters[idx];
-    if (_pagesCache.containsKey(chapter.id) || _loadingChapterIds.contains(chapter.id)) return;
+    if (!forceRefresh && _pagesCache.containsKey(chapter.id)) return;
+    if (_loadingChapterIds.contains(chapter.id)) return;
 
     if (chapter.id.isEmpty) {
       setState(() => _chapterErrors[chapter.id] = 'This chapter is not available.');
@@ -186,14 +190,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
 
     setState(() {
+      if (forceRefresh) {
+        _pagesCache.remove(chapter.id);
+        _dataSaverCache.remove(chapter.id);
+      }
       _chapterErrors.remove(chapter.id);
       _loadingChapterIds.add(chapter.id);
     });
 
     try {
-      final res = await ApiService.instance.getChapterPages(chapter.id);
+      final res = await ApiService.instance.getChapterPages(
+        chapter.id,
+        forceRefresh: forceRefresh,
+      );
       if (res.pages.isEmpty) throw Exception('No pages found for this chapter.');
       _pagesCache[chapter.id] = res.pages;
+      _dataSaverCache[chapter.id] = res.dataSaver;
       _loadingChapterIds.remove(chapter.id);
       if (!mounted) return;
 
@@ -203,7 +215,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           _page = _page.clamp(1, _totalPages);
         }
       });
-      _precacheFirstPages(res.pages);
+      _precacheRange(res.pages, 0, 3);
 
       if (idx == _currentChapterIndex) {
         _syncProgress(_page);
@@ -217,14 +229,53 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  void _precacheFirstPages(List<String> pages) {
-    if (!mounted) return;
-    for (var i = 0; i < math.min(3, pages.length); i++) {
+  Future<void> _reloadChapterPages(int idx) async {
+    if (idx < 0 || idx >= _chapters.length) return;
+    final chapter = _chapters[idx];
+    final oldPages = _pagesCache[chapter.id] ?? const <String>[];
+    for (final u in oldPages) {
+      _prefetchedUrls.remove(u);
+      if (u.startsWith('http')) {
+        CachedNetworkImageProvider(u).evict().catchError((_) => false);
+      }
+    }
+    await _loadChapter(idx, forceRefresh: true);
+  }
+
+  List<String> _fallbackUrlsFor(String chapterId, int pageIndex, String primaryUrl) {
+    final fallbacks = <String>[];
+    // If primaryUrl is a MangaDex@Home volunteer node, add official uploads.mangadex.org origin
+    if (primaryUrl.contains('/data/') &&
+        !primaryUrl.startsWith('https://uploads.mangadex.org/')) {
+      final idx = primaryUrl.indexOf('/data/');
+      if (idx != -1) {
+        fallbacks.add('https://uploads.mangadex.org${primaryUrl.substring(idx)}');
+      }
+    }
+    final savers = _dataSaverCache[chapterId];
+    if (savers != null && pageIndex >= 0 && pageIndex < savers.length) {
+      final saverUrl = savers[pageIndex];
+      if (saverUrl.isNotEmpty && saverUrl != primaryUrl && !fallbacks.contains(saverUrl)) {
+        fallbacks.add(saverUrl);
+      }
+    }
+    return fallbacks;
+  }
+
+  void _precacheRange(List<String> pages, int start, int count) {
+    if (!mounted || pages.isEmpty) return;
+    final end = math.min(pages.length, start + count);
+    for (var i = math.max(0, start); i < end; i++) {
       final p = pages[i];
+      if (!_prefetchedUrls.add(p)) continue;
       if (p.startsWith('file://')) {
         precacheImage(FileImage(File(p.replaceFirst('file://', ''))), context, onError: (_, _) {});
-      } else {
-        precacheImage(CachedNetworkImageProvider(p, headers: imageHeadersForUrl(p)), context, onError: (_, _) {});
+      } else if (p.startsWith('http')) {
+        precacheImage(
+          CachedNetworkImageProvider(p, headers: imageHeadersForUrl(p)),
+          context,
+          onError: (_, _) {},
+        );
       }
     }
   }
@@ -351,10 +402,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _page = newPage;
       });
       _syncProgress(newPage);
+      _precacheRange(pages, pageIndex + 1, 3);
       _loadChapter(chapterIndex + 1);
     } else if (newPage != _page) {
       setState(() => _page = newPage);
       _syncProgress(newPage);
+      _precacheRange(pages, pageIndex + 1, 3);
     }
   }
 
@@ -649,46 +702,78 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final chapter = _chapters[chapterIndex];
     final error = _chapterErrors[chapter.id];
 
-    final Widget content = error != null
-        ? Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.error_outline_rounded, size: 44, color: AppColors.muted),
-              const SizedBox(height: 12),
-              Text(
-                'Could not load ${chapter.displayTitle}',
-                textAlign: TextAlign.center,
-                style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
+    final Widget content = AnimatedSwitcher(
+      duration: const Duration(milliseconds: 220),
+      child: error != null
+          ? Container(
+              key: ValueKey('err:${chapter.id}'),
+              padding: const EdgeInsets.all(24),
+              constraints: const BoxConstraints(maxWidth: 360),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: AppColors.surfaceHigh),
               ),
-              const SizedBox(height: 6),
-              Text(
-                error,
-                textAlign: TextAlign.center,
-                style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.error_outline_rounded, size: 42, color: AppColors.primary),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Could not load ${chapter.displayTitle}',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    error,
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.4),
+                  ),
+                  const SizedBox(height: 18),
+                  FilledButton.icon(
+                    onPressed: () => _reloadChapterPages(chapterIndex),
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('Retry Chapter'),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.onPrimary,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 16),
-              FilledButton.icon(
-                onPressed: () => _loadChapter(chapterIndex),
-                icon: const Icon(Icons.refresh_rounded, size: 18),
-                label: const Text('Retry'),
-                style: FilledButton.styleFrom(backgroundColor: AppColors.surfaceHigh),
-              ),
-            ],
-          )
-        : Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2.5),
-              const SizedBox(height: 12),
-              Text(
-                'Loading ${chapter.displayTitle}...',
-                style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
-              ),
-            ],
-          );
+            )
+          : Column(
+              key: ValueKey('load:${chapter.id}'),
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ShimmerLoading(
+                  child: Container(
+                    width: 220,
+                    height: 180,
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2.2),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  'Loading ${chapter.displayTitle}...',
+                  style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                ),
+              ],
+            ),
+    );
 
     final body = Center(child: Padding(padding: const EdgeInsets.all(24), child: content));
-    return fill ? body : SizedBox(height: 280, child: body);
+    return fill ? body : SizedBox(height: 320, child: body);
   }
 
   // ---- Continuous Webtoon Reader ----
@@ -761,43 +846,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Widget _buildFeedItem(_FeedItem item) {
     switch (item.type) {
       case _ItemType.page:
+        final chIdx = item.chapterIndex ?? _currentChapterIndex;
+        final pageIdx = item.pageIndex ?? 0;
+        final chapterId = _chapters[chIdx].id;
         final url = item.url!;
-        if (url.startsWith('file://')) {
-          final file = File(url.replaceFirst('file://', ''));
-          return Image.file(
-            file,
-            fit: BoxFit.fitWidth,
-            width: double.infinity,
-            errorBuilder: (_, _, _) => Container(
-              height: 200,
-              color: AppColors.surface,
-              child: Center(
-                child: Text('Page ${(item.pageIndex ?? 0) + 1} failed to load',
-                    style: const TextStyle(color: AppColors.muted)),
-              ),
-            ),
-          );
-        }
-        return CachedNetworkImage(
-          imageUrl: url,
-          httpHeaders: imageHeadersForUrl(url),
+        return _ReaderPageImage(
+          url: url,
+          fallbackUrls: _fallbackUrlsFor(chapterId, pageIdx, url),
+          pageNumber: pageIdx + 1,
           fit: BoxFit.fitWidth,
-          width: double.infinity,
-          placeholder: (_, _) => Container(
-            height: 400,
-            color: AppColors.surface,
-            child: const Center(
-              child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
-            ),
-          ),
-          errorWidget: (_, _, _) => Container(
-            height: 200,
-            color: AppColors.surface,
-            child: Center(
-              child: Text('Page ${(item.pageIndex ?? 0) + 1} failed to load',
-                  style: const TextStyle(color: AppColors.muted)),
-            ),
-          ),
+          expandWidth: true,
+          onReloadChapter: () => _reloadChapterPages(chIdx),
         );
 
       case _ItemType.divider:
@@ -911,6 +970,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           if (_page != idx + 1) {
             setState(() => _page = idx + 1);
             _syncProgress(idx + 1);
+            _precacheRange(pages, idx + 1, 3);
             // Prefetch next chapter when nearing the end
             if (idx >= pages.length - 3 && chapterIdx + 1 < _chapters.length) {
               _loadChapter(chapterIdx + 1);
@@ -923,31 +983,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
       itemBuilder: (_, i) {
         if (i < pages.length) {
           final pageUrl = pages[i];
-          Widget imgWidget;
-          if (pageUrl.startsWith('file://')) {
-            imgWidget = Image.file(
-              File(pageUrl.replaceFirst('file://', '')),
-              fit: _fitMode,
-              errorBuilder: (_, _, _) => Center(
-                child: Text('Page ${i + 1} failed to load', style: const TextStyle(color: AppColors.muted)),
-              ),
-            );
-          } else {
-            imgWidget = CachedNetworkImage(
-              imageUrl: pageUrl,
-              httpHeaders: imageHeadersForUrl(pageUrl),
-              fit: _fitMode,
-              placeholder: (_, _) => const Center(
-                child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
-              ),
-              errorWidget: (_, _, _) => Center(
-                child: Text('Page ${i + 1} failed to load', style: const TextStyle(color: AppColors.muted)),
-              ),
-            );
-          }
           return Center(
             child: InteractiveViewer(
-              child: imgWidget,
+              child: _ReaderPageImage(
+                url: pageUrl,
+                fallbackUrls: _fallbackUrlsFor(curChapter.id, i, pageUrl),
+                pageNumber: i + 1,
+                fit: _fitMode,
+                expandWidth: false,
+                onReloadChapter: () => _reloadChapterPages(chapterIdx),
+              ),
             ),
           );
         }
@@ -1050,6 +1095,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 );
               }
             },
+          ),
+          BarIcon(
+            Icons.refresh_rounded,
+            label: 'Reload Chapter',
+            onTap: () => _reloadChapterPages(_currentChapterIndex),
           ),
           BarIcon(
             _mode.icon,
@@ -1303,4 +1353,252 @@ class _FeedItem {
       _FeedItem._(type: _ItemType.nextTrigger, nextChapter: chapter, chapterIndex: chapterIndex);
 
   factory _FeedItem.endOfManga() => const _FeedItem._(type: _ItemType.endOfManga);
+}
+
+class _ReaderPageImage extends StatefulWidget {
+  const _ReaderPageImage({
+    required this.url,
+    required this.fallbackUrls,
+    required this.pageNumber,
+    required this.fit,
+    required this.expandWidth,
+    this.onReloadChapter,
+  });
+
+  final String url;
+  final List<String> fallbackUrls;
+  final int pageNumber;
+  final BoxFit fit;
+  final bool expandWidth;
+  final VoidCallback? onReloadChapter;
+
+  @override
+  State<_ReaderPageImage> createState() => _ReaderPageImageState();
+}
+
+class _ReaderPageImageState extends State<_ReaderPageImage> {
+  int _localReloadGen = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final url = widget.url.trim();
+    if (url.startsWith('file://')) {
+      final file = File(url.replaceFirst('file://', ''));
+      return Image.file(
+        file,
+        key: ValueKey('file:$url#$_localReloadGen'),
+        fit: widget.fit,
+        width: widget.expandWidth ? double.infinity : null,
+        errorBuilder: (_, _, _) => _PageErrorCard(
+          pageNumber: widget.pageNumber,
+          fill: !widget.expandWidth,
+          onRetryPage: () {
+            FileImage(file).evict();
+            setState(() => _localReloadGen++);
+          },
+          onReloadChapter: widget.onReloadChapter,
+        ),
+      );
+    }
+
+    final normalizedUrl = url.startsWith('//') ? 'https:$url' : url;
+    if (!normalizedUrl.startsWith('http')) {
+      return _PageErrorCard(
+        pageNumber: widget.pageNumber,
+        fill: !widget.expandWidth,
+        onRetryPage: () => setState(() => _localReloadGen++),
+        onReloadChapter: widget.onReloadChapter,
+      );
+    }
+
+    return RetryingNetworkImage(
+      url: normalizedUrl,
+      fallbackUrls: widget.fallbackUrls,
+      fit: widget.fit,
+      width: widget.expandWidth ? double.infinity : null,
+      fadeInDuration: const Duration(milliseconds: 220),
+      progressBuilder: (_, progress) => _PageLoadingSkeleton(
+        pageNumber: widget.pageNumber,
+        progress: progress,
+        fill: !widget.expandWidth,
+      ),
+      errorBuilder: (_, retry) => _PageErrorCard(
+        pageNumber: widget.pageNumber,
+        fill: !widget.expandWidth,
+        onRetryPage: retry,
+        onReloadChapter: widget.onReloadChapter,
+      ),
+    );
+  }
+}
+
+class _PageLoadingSkeleton extends StatelessWidget {
+  const _PageLoadingSkeleton({
+    required this.pageNumber,
+    required this.progress,
+    required this.fill,
+  });
+
+  final int pageNumber;
+  final double? progress;
+  final bool fill;
+
+  @override
+  Widget build(BuildContext context) {
+    final pct = (progress != null && progress! > 0) ? (progress! * 100).round().clamp(1, 99) : null;
+    final box = Stack(
+      alignment: Alignment.center,
+      children: [
+        Positioned.fill(
+          child: ShimmerLoading(
+            child: Container(
+              color: AppColors.surface.withValues(alpha: 0.7),
+            ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+          decoration: BoxDecoration(
+            color: AppColors.black.withValues(alpha: 0.65),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: AppColors.surfaceHigh),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(
+                  value: (progress != null && progress! > 0 && progress! < 1) ? progress : null,
+                  color: AppColors.primary,
+                  backgroundColor: AppColors.surfaceHigh,
+                  strokeWidth: 2.4,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                pct != null ? 'Page $pageNumber · $pct%' : 'Page $pageNumber',
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.muted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+
+    if (fill) {
+      return SizedBox(
+        width: double.infinity,
+        height: MediaQuery.sizeOf(context).height * 0.75,
+        child: box,
+      );
+    }
+    return Container(
+      height: 440,
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 1),
+      child: box,
+    );
+  }
+}
+
+class _PageErrorCard extends StatelessWidget {
+  const _PageErrorCard({
+    required this.pageNumber,
+    required this.onRetryPage,
+    required this.fill,
+    this.onReloadChapter,
+  });
+
+  final int pageNumber;
+  final VoidCallback onRetryPage;
+  final VoidCallback? onReloadChapter;
+  final bool fill;
+
+  @override
+  Widget build(BuildContext context) {
+    final card = Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+        constraints: const BoxConstraints(maxWidth: 340),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: AppColors.surfaceHigh),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: AppColors.surfaceHigh,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.broken_image_outlined, color: AppColors.primary, size: 22),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Page $pageNumber failed to load',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.text,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'The image server timed out or dropped the connection.',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                color: AppColors.muted,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: onRetryPage,
+              icon: const Icon(Icons.refresh_rounded, size: 17),
+              label: Text('Retry Page $pageNumber'),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.onPrimary,
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+              ),
+            ),
+            if (onReloadChapter != null) ...[
+              const SizedBox(height: 6),
+              TextButton.icon(
+                onPressed: onReloadChapter,
+                icon: const Icon(Icons.sync_rounded, size: 15),
+                label: const Text('Reload Chapter URLs'),
+                style: TextButton.styleFrom(
+                  foregroundColor: AppColors.muted,
+                  visualDensity: VisualDensity.compact,
+                  textStyle: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w500),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+
+    if (fill) return card;
+    return SizedBox(
+      width: double.infinity,
+      height: 280,
+      child: card,
+    );
+  }
 }
