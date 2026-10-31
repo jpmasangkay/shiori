@@ -17,7 +17,8 @@ class UpdatesScreen extends StatefulWidget {
   State<UpdatesScreen> createState() => _UpdatesScreenState();
 }
 
-class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserver {
+class _UpdatesScreenState extends State<UpdatesScreen>
+    with WidgetsBindingObserver {
   Map<String, dynamic> _groups = {};
   bool _loading = false;
   Timer? _realtimeTimer;
@@ -29,7 +30,10 @@ class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserv
     _fetch();
     ApiService.instance.addListener(_fetch);
     // Real-time silent background refresh every 45 seconds
-    _realtimeTimer = Timer.periodic(const Duration(seconds: 45), (_) => _fetch(silent: true));
+    _realtimeTimer = Timer.periodic(
+      const Duration(seconds: 45),
+      (_) => _fetch(silent: true),
+    );
   }
 
   @override
@@ -79,7 +83,9 @@ class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserv
 
   @override
   Widget build(BuildContext context) {
-    final hasRealUpdates = _groups.values.any((list) => (list as List).isNotEmpty);
+    final hasRealUpdates = _groups.values.any(
+      (list) => (list as List).isNotEmpty,
+    );
 
     return Column(
       children: [
@@ -128,12 +134,16 @@ class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserv
                                     Navigator.of(context).push(
                                       smoothRoute(
                                         ReaderScreen(
-                                          chapterId: item['id']?.toString() ?? '',
-                                          mangaId: item['mangaId']?.toString() ?? '',
-                                          mangaTitle: item['mangaTitle'] ?? 'Untitled',
+                                          chapterId:
+                                              item['id']?.toString() ?? '',
+                                          mangaId:
+                                              item['mangaId']?.toString() ?? '',
+                                          mangaTitle:
+                                              item['mangaTitle'] ?? 'Untitled',
                                           chapterTitle: item['chapterTitle'],
                                           coverUrl: item['cover'],
-                                          chapterNumber: item['chapterNumber']?.toString(),
+                                          chapterNumber: item['chapterNumber']
+                                              ?.toString(),
                                         ),
                                       ),
                                     );
@@ -161,7 +171,8 @@ class _UpdatesScreenState extends State<UpdatesScreen> with WidgetsBindingObserv
                               child: const EmptyState(
                                 icon: Icons.new_releases_outlined,
                                 title: 'No recent updates',
-                                message: 'Only new chapters for titles bookmarked in your library will appear here. Pull down to refresh.',
+                                message:
+                                    'Only new chapters for titles bookmarked in your library will appear here. Pull down to refresh.',
                               ),
                             ),
                           ),
@@ -182,15 +193,19 @@ class _DateHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-        child: SizedBox(
-          height: 21,
-          child: Text(
-            text,
-            style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primary),
-          ),
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+    child: SizedBox(
+      height: 21,
+      child: Text(
+        text,
+        style: GoogleFonts.inter(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: AppColors.primary,
         ),
-      );
+      ),
+    ),
+  );
 }
 
 class _ApiUpdateRow extends StatelessWidget {
@@ -207,7 +222,9 @@ class _ApiUpdateRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mangaTitle = item['mangaTitle'] ?? 'Untitled';
-    final chNum = item['chapterNumber'] != null ? 'Chapter ${item['chapterNumber']}' : 'New Chapter';
+    final chNum = item['chapterNumber'] != null
+        ? 'Chapter ${item['chapterNumber']}'
+        : 'New Chapter';
     final group = item['group'] ?? item['source'] ?? 'Update';
     final subtitle = '$chNum · $group';
 
@@ -239,14 +256,20 @@ class _ApiUpdateRow extends StatelessWidget {
                     mangaTitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
+                    style: GoogleFonts.inter(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                    ),
                   ),
                   const SizedBox(height: 5),
                   Text(
                     subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                    style: GoogleFonts.inter(
+                      fontSize: 10,
+                      color: AppColors.muted,
+                    ),
                   ),
                 ],
               ),
@@ -257,4 +280,3 @@ class _ApiUpdateRow extends StatelessWidget {
     );
   }
 }
-
