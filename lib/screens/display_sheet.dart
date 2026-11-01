@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../display_settings.dart';
 import '../theme.dart';
@@ -47,13 +46,13 @@ class _DisplaySheet extends StatelessWidget {
               ),
             ),
             TabBar(
-              dividerColor: AppColors.surfaceHigh,
+              dividerColor: AppColors.outline,
               indicatorColor: AppColors.primary,
               indicatorSize: TabBarIndicatorSize.label,
               labelColor: AppColors.primary,
               unselectedLabelColor: AppColors.muted,
-              labelStyle: GoogleFonts.inter(fontSize: 13),
-              unselectedLabelStyle: GoogleFonts.inter(fontSize: 13),
+              labelStyle: AppText.bodySemiBold,
+              unselectedLabelStyle: AppText.body,
               overlayColor: const WidgetStatePropertyAll(Colors.transparent),
               tabs: const [Tab(text: 'Sort'), Tab(text: 'Display')],
             ),
@@ -79,12 +78,7 @@ class _Heading extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 9),
         child: Text(
           text.toUpperCase(),
-          style: GoogleFonts.inter(
-            fontSize: 10,
-            fontWeight: FontWeight.w600,
-            letterSpacing: .7,
-            color: AppColors.muted,
-          ),
+          style: AppText.sectionHeader,
         ),
       );
 }
@@ -108,7 +102,7 @@ class _DisplayTab extends StatelessWidget {
               physics: const NeverScrollableScrollPhysics(),
               mainAxisSpacing: 8,
               crossAxisSpacing: 8,
-              mainAxisExtent: 38,
+              mainAxisExtent: 44,
               children: [
                 for (final m in DisplayMode.values)
                   _ModeButton(
@@ -128,11 +122,11 @@ class _DisplayTab extends StatelessWidget {
                   children: [
                     TextSpan(
                       text: '${s.columns} per row',
-                      style: const TextStyle(color: AppColors.primary, fontWeight: FontWeight.w500),
+                      style: AppText.bodyMedium.copyWith(color: AppColors.primary),
                     ),
                   ],
                 ),
-                style: GoogleFonts.inter(fontSize: 12),
+                style: AppText.body,
               ),
             ),
             SliderTheme(
@@ -189,31 +183,33 @@ class _ModeButton extends StatelessWidget {
       color: active ? AppColors.surfaceHigh : Colors.transparent,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
-        side: BorderSide(color: active ? Colors.transparent : AppColors.outline),
+        side: BorderSide(color: active ? AppColors.primary : AppColors.outline),
       ),
       child: InkWell(
         onTap: onTap,
         borderRadius: BorderRadius.circular(8),
-        child: Center(
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (active) ...[
-                const Icon(Icons.check_rounded, size: 16, color: AppColors.primary),
-                const SizedBox(width: 6),
-              ],
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.inter(
-                    fontSize: 11,
-                    color: active ? AppColors.primary : AppColors.muted,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (active) ...[
+                  const Icon(Icons.check_rounded, size: 16, color: AppColors.primary),
+                  const SizedBox(width: 6),
+                ],
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.chip.copyWith(
+                      color: active ? AppColors.primary : AppColors.muted,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
@@ -232,12 +228,20 @@ class _ToggleRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: () => onChanged(!on),
-      child: SizedBox(
-        height: 40,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 44),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(label, style: GoogleFonts.inter(fontSize: 12)),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppText.body,
+              ),
+            ),
+            const SizedBox(width: 12),
             AnimatedContainer(
               duration: const Duration(milliseconds: 150),
               width: 36,
@@ -281,8 +285,8 @@ class _SortTab extends StatelessWidget {
             for (final o in LibrarySort.values)
               InkWell(
                 onTap: () => s.update(() => s.sort = o),
-                child: SizedBox(
-                  height: 40,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 44),
                   child: Row(
                     children: [
                       SizedBox(
@@ -291,11 +295,14 @@ class _SortTab extends StatelessWidget {
                             ? const Icon(Icons.check_rounded, size: 18, color: AppColors.primary)
                             : null,
                       ),
-                      Text(
-                        o.label,
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          color: o == s.sort ? AppColors.primary : AppColors.text,
+                      Expanded(
+                        child: Text(
+                          o.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.body.copyWith(
+                            color: o == s.sort ? AppColors.primary : AppColors.text,
+                          ),
                         ),
                       ),
                     ],

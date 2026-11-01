@@ -139,11 +139,19 @@ open class Page @JvmOverloads constructor(
     val url: String = "",
     var imageUrl: String? = null,
     val uri: Uri? = null
-) {
+) : eu.kanade.tachiyomi.network.ProgressListener {
     val number: Int get() = index + 1
     var text: String? = null
     var status: Int = READY
     var progress: Int = 0
+
+    override fun update(bytesRead: Long, contentLength: Long, done: Boolean) {
+        progress = if (contentLength > 0) {
+            (100 * bytesRead / contentLength).toInt()
+        } else {
+            -1
+        }
+    }
 
     companion object {
         const val READY = 0

@@ -1,13 +1,15 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/extension_bridge.dart';
+import '../services/extension_service.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -487,7 +489,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (_) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(vertical: 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -497,12 +499,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                 child: Text(
                   'READING DIRECTION',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1,
-                    color: AppColors.muted,
-                  ),
+                  style: AppText.sectionHeader,
                 ),
               ),
               ListTile(
@@ -510,8 +507,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   Icons.swap_vert_rounded,
                   color: _mode == ReaderMode.webtoon ? AppColors.primary : AppColors.muted,
                 ),
-                title: const Text('Webtoon (Vertical continuous scroll 🇰🇷)'),
-                subtitle: const Text('Continuous strip across chapters with zero loading'),
+                title: Text('Webtoon (Vertical continuous scroll 🇰🇷)', style: AppText.bodyMedium),
+                subtitle: Text('Continuous strip across chapters with zero loading', style: AppText.caption),
                 trailing: _mode == ReaderMode.webtoon
                     ? const Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
@@ -525,8 +522,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   Icons.arrow_back_rounded,
                   color: _mode == ReaderMode.rightToLeft ? AppColors.primary : AppColors.muted,
                 ),
-                title: const Text('Right to Left (Standard Manga 🇯🇵)'),
-                subtitle: const Text('Swipe left for next page, auto-advances to next chapter'),
+                title: Text('Right to Left (Standard Manga 🇯🇵)', style: AppText.bodyMedium),
+                subtitle: Text('Swipe left for next page, auto-advances to next chapter', style: AppText.caption),
                 trailing: _mode == ReaderMode.rightToLeft
                     ? const Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
@@ -540,8 +537,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   Icons.arrow_forward_rounded,
                   color: _mode == ReaderMode.leftToRight ? AppColors.primary : AppColors.muted,
                 ),
-                title: const Text('Left to Right (Western comics 🇨🇳)'),
-                subtitle: const Text('Swipe right for next page, auto-advances to next chapter'),
+                title: Text('Left to Right (Western comics 🇨🇳)', style: AppText.bodyMedium),
+                subtitle: Text('Swipe right for next page, auto-advances to next chapter', style: AppText.caption),
                 trailing: _mode == ReaderMode.leftToRight
                     ? const Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
@@ -550,24 +547,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   _setMode(ReaderMode.leftToRight);
                 },
               ),
-              const Divider(color: AppColors.surfaceHigh, height: 24),
+              const Divider(color: AppColors.outline, height: 24),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                 child: Text(
                   'NAVIGATION & TOUCH CONTROLS',
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 1,
-                    color: AppColors.muted,
-                  ),
+                  style: AppText.sectionHeader,
                 ),
               ),
               SwitchListTile(
                 value: _enableTapZones,
                 activeThumbColor: AppColors.primary,
-                title: const Text('Tap Zones Navigation'),
-                subtitle: const Text('Tap sides to turn page, center for reader menu'),
+                title: Text('Tap Zones Navigation', style: AppText.bodyMedium),
+                subtitle: Text('Tap sides to turn page, center for reader menu', style: AppText.caption),
                 onChanged: (val) {
                   _setEnableTapZones(val);
                   Navigator.pop(context);
@@ -576,8 +568,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
               SwitchListTile(
                 value: _invertTapZones,
                 activeThumbColor: AppColors.primary,
-                title: const Text('Invert Tap Zones'),
-                subtitle: const Text('Flips left and right tap zone actions'),
+                title: Text('Invert Tap Zones', style: AppText.bodyMedium),
+                subtitle: Text('Flips left and right tap zone actions', style: AppText.caption),
                 onChanged: _enableTapZones
                     ? (val) {
                         _setInvertTapZones(val);
@@ -655,9 +647,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final isAmoled = ThemeController.instance.isAmoled;
     return Scaffold(
-      backgroundColor: isAmoled ? Colors.black : AppColors.black,
+      backgroundColor: AppColors.bg,
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -697,10 +688,44 @@ class _ReaderScreenState extends State<ReaderScreen> {
   Widget _buildReaderBody() =>
       _mode == ReaderMode.webtoon ? _buildWebtoonReader() : _buildPagedReader();
 
+  Future<void> _openChapterInWebViewAndRetry(int chapterIndex) async {
+    final chapter = _chapters[chapterIndex];
+    String? webUrl;
+    if (chapter.id.startsWith('ext:')) {
+      final parts = chapter.id.split(':');
+      if (parts.length >= 3) {
+        final pkg = parts[1];
+        final rawUrl = Uri.decodeComponent(parts.sublist(2).join(':'));
+        if (rawUrl.startsWith('http')) {
+          webUrl = rawUrl;
+        } else {
+          final baseUrl = await ExtensionBridge.instance.getSourceBaseUrl(pkg: pkg);
+          final ext = ExtensionService.instance.getExtensionByPkg(pkg.split('@').first);
+          final base = (baseUrl != null && baseUrl.isNotEmpty) ? baseUrl : (ext?.homeUrl ?? '');
+          if (base.isNotEmpty) {
+            webUrl = base.endsWith('/') && rawUrl.startsWith('/')
+                ? '$base${rawUrl.substring(1)}'
+                : '$base$rawUrl';
+          }
+        }
+      }
+    }
+    if (webUrl != null && webUrl.isNotEmpty) {
+      await ExtensionBridge.instance.openInWebView(
+        url: webUrl,
+        title: widget.mangaTitle.isNotEmpty ? widget.mangaTitle : chapter.displayTitle,
+      );
+      if (mounted) {
+        _reloadChapterPages(chapterIndex);
+      }
+    }
+  }
+
   /// Inline loading / error state for a chapter whose pages aren't available.
   Widget _buildChapterStatus(int chapterIndex, {bool fill = false}) {
     final chapter = _chapters[chapterIndex];
     final error = _chapterErrors[chapter.id];
+    final isExtChapter = chapter.id.startsWith('ext:');
 
     final Widget content = AnimatedSwitcher(
       duration: const Duration(milliseconds: 220),
@@ -712,7 +737,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               decoration: BoxDecoration(
                 color: AppColors.surface,
                 borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: AppColors.surfaceHigh),
+                border: Border.all(color: AppColors.outline),
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -722,24 +747,38 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   Text(
                     'Could not load ${chapter.displayTitle}',
                     textAlign: TextAlign.center,
-                    style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
+                    style: AppText.cardTitle,
                   ),
                   const SizedBox(height: 6),
                   Text(
                     error,
                     textAlign: TextAlign.center,
-                    style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.4),
+                    style: AppText.caption.copyWith(height: 1.4),
                   ),
                   const SizedBox(height: 18),
                   FilledButton.icon(
                     onPressed: () => _reloadChapterPages(chapterIndex),
                     icon: const Icon(Icons.refresh_rounded, size: 18),
-                    label: const Text('Retry Chapter'),
+                    label: Text('Retry Chapter', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
                     style: FilledButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: AppColors.onPrimary,
+                      minimumSize: const Size(0, 44),
                     ),
                   ),
+                  if (isExtChapter) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () => _openChapterInWebViewAndRetry(chapterIndex),
+                      icon: const Icon(Icons.shield_outlined, size: 16),
+                      label: Text('Solve in WebView & Retry', style: AppText.bodyMedium),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.text,
+                        side: const BorderSide(color: AppColors.outline),
+                        minimumSize: const Size(0, 44),
+                      ),
+                    ),
+                  ],
                 ],
               ),
             )
@@ -766,7 +805,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 const SizedBox(height: 10),
                 Text(
                   'Loading ${chapter.displayTitle}...',
-                  style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                  style: AppText.caption,
                 ),
               ],
             ),
@@ -866,7 +905,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           decoration: BoxDecoration(
             color: AppColors.surface,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: AppColors.surfaceHigh),
+            border: Border.all(color: AppColors.outline),
           ),
           child: Column(
             children: [
@@ -875,16 +914,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 children: [
                   const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 16),
                   const SizedBox(width: 8),
-                  Text(
-                    '${item.prevChapter?.displayTitle ?? "Previous Chapter"} finished',
-                    style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                  Flexible(
+                    child: Text(
+                      '${item.prevChapter?.displayTitle ?? "Previous Chapter"} finished',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.caption,
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 8),
               Text(
                 '↓ Continuing to ${item.nextChapter?.displayTitle ?? "Next Chapter"}',
-                style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.text),
+                textAlign: TextAlign.center,
+                style: AppText.cardTitle,
               ),
             ],
           ),
@@ -900,7 +944,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
             child: FilledButton.tonalIcon(
               onPressed: _extendWebtoonFeed,
               icon: const Icon(Icons.arrow_downward_rounded, size: 18),
-              label: Text('Next: ${item.nextChapter?.displayTitle ?? "Next Chapter"}'),
+              label: Text(
+                'Next: ${item.nextChapter?.displayTitle ?? "Next Chapter"}',
+                style: AppText.bodySemiBold,
+              ),
             ),
           ),
         );
@@ -916,12 +963,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 const SizedBox(height: 12),
                 Text(
                   "You've reached the latest chapter!",
-                  style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                  style: AppText.cardTitle,
                 ),
                 const SizedBox(height: 4),
                 Text(
                   'Check back later for new releases',
-                  style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                  style: AppText.caption,
                 ),
               ],
             ),
@@ -1006,7 +1053,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             decoration: BoxDecoration(
               color: AppColors.surface,
               borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: AppColors.surfaceHigh),
+              border: Border.all(color: AppColors.outline),
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,
@@ -1015,21 +1062,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 const SizedBox(height: 16),
                 Text(
                   '${curChapter.displayTitle} Finished',
-                  style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600),
+                  textAlign: TextAlign.center,
+                  style: AppText.sheetTitle,
                 ),
                 const SizedBox(height: 8),
                 Text(
                   'Up next: ${nextCh.displayTitle}',
-                  style: GoogleFonts.inter(fontSize: 13, color: AppColors.muted),
+                  textAlign: TextAlign.center,
+                  style: AppText.body.copyWith(color: AppColors.muted),
                 ),
                 const SizedBox(height: 24),
                 FilledButton.icon(
                   onPressed: () => _switchToChapter(chapterIdx + 1),
                   icon: const Icon(Icons.play_arrow_rounded),
-                  label: const Text('Read Next Chapter'),
+                  label: Text('Read Next Chapter', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: AppColors.onPrimary,
+                    minimumSize: const Size(0, 44),
                   ),
                 ),
               ],
@@ -1046,9 +1096,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final isBookmarked = ApiService.instance.isChapterBookmarked(curChapter.id);
 
     return Container(
-      height: 76 + top,
-      padding: EdgeInsets.fromLTRB(6, top + 4, 6, 0),
-      color: const Color.fromRGBO(17, 19, 24, .92),
+      constraints: BoxConstraints(minHeight: 74 + top),
+      padding: EdgeInsets.fromLTRB(6, top + 4, 6, 4),
+      decoration: BoxDecoration(
+        color: AppColors.surface.withValues(alpha: .94),
+        border: const Border(bottom: BorderSide(color: AppColors.outline)),
+      ),
       child: Row(
         children: [
           BarIcon(Icons.arrow_back_rounded, label: 'Back', onTap: () => Navigator.of(context).maybePop()),
@@ -1062,18 +1115,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   widget.mangaTitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
+                  style: AppText.bodyMedium,
                 ),
                 const SizedBox(height: 3),
                 Text(
                   '$_chapterLabel · Page $_page/$_totalPages',
-                  style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.caption,
                 ),
               ],
             ),
           ),
           // Bookmark Chapter Icon Button
           IconButton(
+            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
             icon: Icon(
               isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
               color: isBookmarked ? AppColors.primary : AppColors.text,
@@ -1119,12 +1175,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
       children: [
         // Page Scrubber Slider
         Container(
-          height: 54,
+          constraints: const BoxConstraints(minHeight: 54),
           margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
           padding: const EdgeInsets.symmetric(horizontal: 7),
           decoration: BoxDecoration(
             color: AppColors.surface,
             borderRadius: BorderRadius.circular(27),
+            border: Border.all(color: AppColors.outline),
           ),
           child: Row(
             children: [
@@ -1146,12 +1203,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ),
                 ),
               ),
-              SizedBox(
-                width: 52,
-                child: Text(
-                  '$_page / $_totalPages',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+              ConstrainedBox(
+                constraints: const BoxConstraints(minWidth: 52),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Text(
+                    '$_page / $_totalPages',
+                    textAlign: TextAlign.center,
+                    style: AppText.caption,
+                  ),
                 ),
               ),
               _ScrubButton('›', () => _go(_page + 1)),
@@ -1160,32 +1220,39 @@ class _ReaderScreenState extends State<ReaderScreen> {
         ),
         // Clean Bottom Controls with Next/Prev Chapter & Fit
         Container(
-          height: 64 + bottom,
-          padding: EdgeInsets.only(top: 6, bottom: bottom),
-          color: const Color.fromRGBO(17, 19, 24, .95),
+          constraints: BoxConstraints(minHeight: 64 + bottom),
+          padding: EdgeInsets.only(top: 6, bottom: bottom + 4),
+          decoration: BoxDecoration(
+            color: AppColors.surface.withValues(alpha: .95),
+            border: const Border(top: BorderSide(color: AppColors.outline)),
+          ),
           child: Row(
             children: [
               // Previous Chapter
               Expanded(
                 child: InkWell(
                   onTap: _hasPrevChapter ? () => _switchToChapter(_currentChapterIndex - 1) : null,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.skip_previous_rounded,
-                        size: 20,
-                        color: _hasPrevChapter ? AppColors.text : AppColors.muted.withValues(alpha: .3),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Prev Ch.',
-                        style: GoogleFonts.inter(
-                          fontSize: 10,
-                          color: _hasPrevChapter ? AppColors.muted : AppColors.muted.withValues(alpha: .3),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 48),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.skip_previous_rounded,
+                          size: 20,
+                          color: _hasPrevChapter ? AppColors.text : AppColors.muted.withValues(alpha: .3),
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 4),
+                        Text(
+                          'Prev Ch.',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption.copyWith(
+                            color: _hasPrevChapter ? AppColors.muted : AppColors.muted.withValues(alpha: .3),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1193,13 +1260,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
               Expanded(
                 child: InkWell(
                   onTap: _showModeSheet,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(_mode.icon, size: 20, color: AppColors.primary),
-                      const SizedBox(height: 4),
-                      Text(_mode.label, style: GoogleFonts.inter(fontSize: 10, color: AppColors.primary)),
-                    ],
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 48),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(_mode.icon, size: 20, color: AppColors.primary),
+                        const SizedBox(height: 4),
+                        Text(
+                          _mode.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption.copyWith(color: AppColors.primary),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1217,20 +1292,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       ),
                     );
                   },
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        _fitMode == BoxFit.contain ? Icons.fit_screen_rounded : Icons.photo_size_select_actual_outlined,
-                        size: 20,
-                        color: AppColors.text,
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        _fitMode == BoxFit.contain ? 'Fit Page' : 'Fit Width',
-                        style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
-                      ),
-                    ],
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 48),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          _fitMode == BoxFit.contain ? Icons.fit_screen_rounded : Icons.photo_size_select_actual_outlined,
+                          size: 20,
+                          color: AppColors.text,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _fitMode == BoxFit.contain ? 'Fit Page' : 'Fit Width',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption,
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1238,23 +1318,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
               Expanded(
                 child: InkWell(
                   onTap: _hasNextChapter ? () => _switchToChapter(_currentChapterIndex + 1) : null,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.skip_next_rounded,
-                        size: 20,
-                        color: _hasNextChapter ? AppColors.primary : AppColors.muted.withValues(alpha: .3),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Next Ch.',
-                        style: GoogleFonts.inter(
-                          fontSize: 10,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minHeight: 48),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.skip_next_rounded,
+                          size: 20,
                           color: _hasNextChapter ? AppColors.primary : AppColors.muted.withValues(alpha: .3),
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 4),
+                        Text(
+                          'Next Ch.',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption.copyWith(
+                            color: _hasNextChapter ? AppColors.primary : AppColors.muted.withValues(alpha: .3),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -1273,10 +1357,11 @@ class _ScrubButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        width: 40,
+        width: 44,
+        height: 44,
         child: InkResponse(
           onTap: onTap,
-          radius: 20,
+          radius: 22,
           child: Center(
             child: Text(glyph, style: const TextStyle(fontSize: 28, color: AppColors.primary, height: 1)),
           ),
@@ -1411,7 +1496,20 @@ class _ReaderPageImageState extends State<_ReaderPageImage> {
       );
     }
 
+    void forceRetryThisPage() {
+      evictCachedImageUrl(normalizedUrl);
+      for (final fb in widget.fallbackUrls) {
+        if (fb.startsWith('http')) {
+          evictCachedImageUrl(fb);
+        }
+      }
+      if (mounted) {
+        setState(() => _localReloadGen++);
+      }
+    }
+
     return RetryingNetworkImage(
+      key: ValueKey('net:$normalizedUrl#$_localReloadGen'),
       url: normalizedUrl,
       fallbackUrls: widget.fallbackUrls,
       fit: widget.fit,
@@ -1421,31 +1519,68 @@ class _ReaderPageImageState extends State<_ReaderPageImage> {
         pageNumber: widget.pageNumber,
         progress: progress,
         fill: !widget.expandWidth,
+        onForceRetry: forceRetryThisPage,
+        onReloadChapter: widget.onReloadChapter,
       ),
       errorBuilder: (_, retry) => _PageErrorCard(
         pageNumber: widget.pageNumber,
         fill: !widget.expandWidth,
-        onRetryPage: retry,
+        onRetryPage: () {
+          evictCachedImageUrl(normalizedUrl);
+          retry();
+        },
         onReloadChapter: widget.onReloadChapter,
       ),
     );
   }
 }
 
-class _PageLoadingSkeleton extends StatelessWidget {
+class _PageLoadingSkeleton extends StatefulWidget {
   const _PageLoadingSkeleton({
     required this.pageNumber,
     required this.progress,
     required this.fill,
+    this.onForceRetry,
+    this.onReloadChapter,
   });
 
   final int pageNumber;
   final double? progress;
   final bool fill;
+  final VoidCallback? onForceRetry;
+  final VoidCallback? onReloadChapter;
+
+  @override
+  State<_PageLoadingSkeleton> createState() => _PageLoadingSkeletonState();
+}
+
+class _PageLoadingSkeletonState extends State<_PageLoadingSkeleton> {
+  bool _showSlowRetry = false;
+  Timer? _slowTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.onForceRetry != null) {
+      _slowTimer = Timer(const Duration(seconds: 4), () {
+        if (mounted) {
+          setState(() => _showSlowRetry = true);
+        }
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _slowTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final pct = (progress != null && progress! > 0) ? (progress! * 100).round().clamp(1, 99) : null;
+    final progress = widget.progress;
+    final pageNumber = widget.pageNumber;
+    final pct = (progress != null && progress > 0) ? (progress * 100).round().clamp(1, 99) : null;
     final box = Stack(
       alignment: Alignment.center,
       children: [
@@ -1459,9 +1594,9 @@ class _PageLoadingSkeleton extends StatelessWidget {
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
           decoration: BoxDecoration(
-            color: AppColors.black.withValues(alpha: 0.65),
+            color: AppColors.black.withValues(alpha: 0.72),
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppColors.surfaceHigh),
+            border: Border.all(color: AppColors.outline),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1470,7 +1605,7 @@ class _PageLoadingSkeleton extends StatelessWidget {
                 width: 28,
                 height: 28,
                 child: CircularProgressIndicator(
-                  value: (progress != null && progress! > 0 && progress! < 1) ? progress : null,
+                  value: (progress != null && progress > 0 && progress < 1) ? progress : null,
                   color: AppColors.primary,
                   backgroundColor: AppColors.surfaceHigh,
                   strokeWidth: 2.4,
@@ -1479,19 +1614,41 @@ class _PageLoadingSkeleton extends StatelessWidget {
               const SizedBox(height: 8),
               Text(
                 pct != null ? 'Page $pageNumber · $pct%' : 'Page $pageNumber',
-                style: GoogleFonts.inter(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.muted,
-                ),
+                style: AppText.caption,
               ),
+              if (_showSlowRetry && widget.onForceRetry != null) ...[
+                const SizedBox(height: 10),
+                OutlinedButton.icon(
+                  onPressed: widget.onForceRetry,
+                  icon: const Icon(Icons.refresh_rounded, size: 14),
+                  label: Text('Retry Page $pageNumber'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    side: BorderSide(color: AppColors.primary.withValues(alpha: 0.55)),
+                    minimumSize: const Size(0, 44),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    textStyle: AppText.chip,
+                  ),
+                ),
+                if (widget.onReloadChapter != null)
+                  TextButton(
+                    onPressed: widget.onReloadChapter,
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.muted,
+                      minimumSize: const Size(0, 44),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      textStyle: AppText.caption,
+                    ),
+                    child: const Text('Reload Chapter URLs'),
+                  ),
+              ],
             ],
           ),
         ),
       ],
     );
 
-    if (fill) {
+    if (widget.fill) {
       return SizedBox(
         width: double.infinity,
         height: MediaQuery.sizeOf(context).height * 0.75,
@@ -1530,7 +1687,7 @@ class _PageErrorCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: AppColors.surfaceHigh),
+          border: Border.all(color: AppColors.outline),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1548,31 +1705,26 @@ class _PageErrorCard extends StatelessWidget {
             Text(
               'Page $pageNumber failed to load',
               textAlign: TextAlign.center,
-              style: GoogleFonts.inter(
-                fontSize: 14,
-                fontWeight: FontWeight.w600,
-                color: AppColors.text,
-              ),
+              style: AppText.cardTitle,
             ),
             const SizedBox(height: 4),
             Text(
               'The image server timed out or dropped the connection.',
               textAlign: TextAlign.center,
-              style: GoogleFonts.inter(
-                fontSize: 11,
-                color: AppColors.muted,
-                height: 1.4,
-              ),
+              style: AppText.caption.copyWith(height: 1.4),
             ),
             const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: onRetryPage,
               icon: const Icon(Icons.refresh_rounded, size: 17),
-              label: Text('Retry Page $pageNumber'),
+              label: Text(
+                'Retry Page $pageNumber',
+                style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary),
+              ),
               style: FilledButton.styleFrom(
                 backgroundColor: AppColors.primary,
                 foregroundColor: AppColors.onPrimary,
-                visualDensity: VisualDensity.compact,
+                minimumSize: const Size(0, 44),
                 padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
               ),
             ),
@@ -1584,8 +1736,8 @@ class _PageErrorCard extends StatelessWidget {
                 label: const Text('Reload Chapter URLs'),
                 style: TextButton.styleFrom(
                   foregroundColor: AppColors.muted,
-                  visualDensity: VisualDensity.compact,
-                  textStyle: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w500),
+                  minimumSize: const Size(0, 44),
+                  textStyle: AppText.caption,
                 ),
               ),
             ],

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -11,14 +12,30 @@ import 'extension_service.dart';
 
 class ApiService extends ChangeNotifier {
   static final ApiService instance = ApiService._();
-  ApiService._();
+  ApiService._() {
+    ImageReferers.coverLookup = _resolveMissingCover;
+  }
+
+  Future<String?> _resolveMissingCover(String mangaId) async {
+    try {
+      final details = await getManga(mangaId);
+      final cover = details.cover.trim();
+      if (cover.isNotEmpty) {
+        unawaited(updateCachedMangaMetadata(details));
+        return cover;
+      }
+    } catch (_) {}
+    return null;
+  }
 
   String _baseUrl = '';
   String? _token;
   UserAccount? _currentUser;
   bool _initialized = false;
   bool _mongoConnected = false;
+  http.Client _httpClient = http.Client();
   final Map<String, MangaItem> _localLibrary = {};
+  final Map<String, MangaItem> _knownManga = {};
   final List<Map<String, dynamic>> _localHistory = [];
   final Map<String, Map<String, dynamic>> _localProgress = {};
   final Map<String, Set<String>> _readChapters = {};
@@ -26,6 +43,11 @@ class ApiService extends ChangeNotifier {
   final List<CategoryItem> _userCategories = [];
   final Map<String, List<String>> _mangaCategories = {};
   final Map<String, int> _mangaChapterCounts = {};
+
+  @visibleForTesting
+  void setHttpClient(http.Client? client) {
+    _httpClient = client ?? http.Client();
+  }
 
   // Request deduplication & short-TTL cache so concurrent getManga + getChapters
   // calls on the same series URL share a single network round-trip.
@@ -52,7 +74,7 @@ class ApiService extends ChangeNotifier {
       if (inflight != null) return inflight;
     }
 
-    final future = http.get(uri, headers: headers).timeout(timeout).then((res) {
+    final future = _httpClient.get(uri, headers: headers).timeout(timeout).then((res) {
       if (res.statusCode == 200) {
         if (_responseCache.length > 80) {
           final current = DateTime.now();
@@ -204,20 +226,25 @@ class ApiService extends ChangeNotifier {
   }
 
   Future<void> init() async {
-    if (_initialized) return;
     final prefs = await SharedPreferences.getInstance();
     final savedBase = prefs.getString('api_base_url');
     _baseUrl = savedBase ?? _determineDefaultHost();
 
     _token = prefs.getString('auth_token');
+    _currentUser = null;
     final userJson = prefs.getString('auth_user');
-    if (userJson != null) {
+    if (userJson != null && userJson.isNotEmpty) {
       try {
         _currentUser = UserAccount.fromJson(jsonDecode(userJson) as Map<String, dynamic>);
       } catch (_) {}
     }
+    if (_token == null || _token!.isEmpty || _currentUser == null) {
+      _token = null;
+      _currentUser = null;
+    }
 
     // Load local library / bookmarks
+    _localLibrary.clear();
     final libJson = prefs.getString('shiori_local_library');
     if (libJson != null && libJson.isNotEmpty) {
       try {
@@ -225,16 +252,17 @@ class ApiService extends ChangeNotifier {
         for (final item in list) {
           final m = MangaItem.fromJson(item as Map<String, dynamic>);
           _localLibrary[m.id] = m;
+          _knownManga[m.id] = m;
         }
       } catch (_) {}
     }
 
     // Load local history
+    _localHistory.clear();
     final histJson = prefs.getString('shiori_local_history');
     if (histJson != null && histJson.isNotEmpty) {
       try {
         final List<dynamic> list = jsonDecode(histJson);
-        _localHistory.clear();
         for (final item in list) {
           if (item is Map) _localHistory.add(Map<String, dynamic>.from(item));
         }
@@ -242,11 +270,11 @@ class ApiService extends ChangeNotifier {
     }
 
     // Load local progress
+    _localProgress.clear();
     final progJson = prefs.getString('shiori_local_progress');
     if (progJson != null && progJson.isNotEmpty) {
       try {
         final Map<String, dynamic> map = jsonDecode(progJson);
-        _localProgress.clear();
         map.forEach((k, v) {
           if (v is Map) _localProgress[k] = Map<String, dynamic>.from(v);
         });
@@ -254,11 +282,11 @@ class ApiService extends ChangeNotifier {
     }
 
     // Load read chapters
+    _readChapters.clear();
     final readJson = prefs.getString('shiori_read_chapters');
     if (readJson != null && readJson.isNotEmpty) {
       try {
         final Map<String, dynamic> map = jsonDecode(readJson);
-        _readChapters.clear();
         map.forEach((k, v) {
           if (v is List) {
             _readChapters[k] = v.map((e) => e.toString()).toSet();
@@ -268,11 +296,11 @@ class ApiService extends ChangeNotifier {
     }
 
     // Load chapter bookmarks
+    _bookmarkedChapterIds.clear();
     final bmJson = prefs.getString('shiori_chapter_bookmarks');
     if (bmJson != null && bmJson.isNotEmpty) {
       try {
         final List<dynamic> list = jsonDecode(bmJson);
-        _bookmarkedChapterIds.clear();
         for (final item in list) {
           _bookmarkedChapterIds.add(item.toString());
         }
@@ -302,11 +330,11 @@ class ApiService extends ChangeNotifier {
     }
 
     // Load manga categories mapping
+    _mangaCategories.clear();
     final mangaCatJson = prefs.getString('shiori_manga_categories');
     if (mangaCatJson != null && mangaCatJson.isNotEmpty) {
       try {
         final Map<String, dynamic> map = jsonDecode(mangaCatJson);
-        _mangaCategories.clear();
         map.forEach((k, v) {
           if (v is List) {
             _mangaCategories[k] = v.map((e) => e.toString()).toList();
@@ -316,21 +344,24 @@ class ApiService extends ChangeNotifier {
     }
 
     // Load manga chapter counts for unread badges
+    _mangaChapterCounts.clear();
     final chapterCountsJson = prefs.getString('shiori_manga_chapter_counts');
     if (chapterCountsJson != null && chapterCountsJson.isNotEmpty) {
       try {
         final Map<String, dynamic> map = jsonDecode(chapterCountsJson);
-        _mangaChapterCounts.clear();
         map.forEach((k, v) {
           if (v is num) _mangaChapterCounts[k] = v.toInt();
         });
       } catch (_) {}
     }
 
+    final firstInit = !_initialized;
     _initialized = true;
-    checkHealth();
-    if (isLoggedIn) {
-      syncAllCloudData();
+    if (firstInit) {
+      unawaited(checkHealth());
+      if (isLoggedIn) {
+        unawaited(syncAllCloudData());
+      }
     }
   }
 
@@ -436,10 +467,10 @@ class ApiService extends ChangeNotifier {
 
   Future<bool> checkHealth() async {
     try {
-      final res = await http.get(Uri.parse('$_baseUrl/health')).timeout(const Duration(seconds: 4));
+      final res = await _httpClient.get(Uri.parse('$_baseUrl/health')).timeout(const Duration(seconds: 4));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        _mongoConnected = data['database'] == 'connected';
+        _mongoConnected = data['database'] == 'connected' || data['mongo'] == 'connected';
         notifyListeners();
         return true;
       }
@@ -452,42 +483,112 @@ class ApiService extends ChangeNotifier {
 
   // ---- Auth & Automatic Real-Time Cloud Sync ----
 
-  Future<void> register(String email, String password, {String? displayName}) async {
-    final res = await http.post(
-      Uri.parse('$_baseUrl/auth/register'),
-      headers: _headers(withAuth: false),
-      body: jsonEncode({
-        'email': email,
-        'password': password,
-        if (displayName != null && displayName.isNotEmpty) 'displayName': displayName,
-      }),
-    );
+  static String _extractAuthError(http.Response res, {required String fallback}) {
+    try {
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map) {
+        final msg = (decoded['error'] ?? decoded['message'])?.toString().trim();
+        if (msg != null && msg.isNotEmpty) return msg;
+      }
+    } catch (_) {}
+    if (res.statusCode == 409) return 'Email is already registered';
+    if (res.statusCode == 401) return 'Invalid email or password';
+    if (res.statusCode == 429) return 'Too many attempts. Please try again later.';
+    if (res.statusCode >= 500) return 'Server error (${res.statusCode}). Please try again later.';
+    return fallback;
+  }
 
-    if (res.statusCode != 200 && res.statusCode != 201) {
-      final err = jsonDecode(res.body);
-      throw Exception(err['error'] ?? 'Registration failed');
+  Future<void> register(String email, String password, {String? displayName}) async {
+    final trimmedEmail = email.trim();
+    if (trimmedEmail.isEmpty || password.isEmpty) {
+      throw Exception('Please fill in email and password.');
     }
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    await _saveAuthData(data['token'] as String, UserAccount.fromJson(data['user']));
+    final http.Response res;
+    try {
+      res = await _httpClient
+          .post(
+            Uri.parse('$_baseUrl/auth/register'),
+            headers: _headers(withAuth: false),
+            body: jsonEncode({
+              'email': trimmedEmail,
+              'password': password,
+              if (displayName != null && displayName.trim().isNotEmpty)
+                'displayName': displayName.trim(),
+            }),
+          )
+          .timeout(const Duration(seconds: 12));
+    } on TimeoutException {
+      throw Exception('Connection timed out. Server may be unreachable.');
+    } catch (e) {
+      throw Exception('Network error: Unable to reach server.');
+    }
+
+    if (res.statusCode != 200 && res.statusCode != 201) {
+      throw Exception(_extractAuthError(res, fallback: 'Registration failed'));
+    }
+
+    final Map<String, dynamic> data;
+    try {
+      final decoded = jsonDecode(res.body);
+      if (decoded is! Map) throw const FormatException('Not a JSON object');
+      data = Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      throw Exception('Invalid response from server.');
+    }
+
+    final token = data['token']?.toString() ?? '';
+    final userRaw = data['user'];
+    if (token.isEmpty || userRaw is! Map) {
+      throw Exception('Invalid authentication payload from server.');
+    }
+
+    await _saveAuthData(token, UserAccount.fromJson(Map<String, dynamic>.from(userRaw)));
     // Automatically bi-directionally sync library and reading history with MongoDB
     await syncAllCloudData();
   }
 
   Future<void> login(String email, String password) async {
-    final res = await http.post(
-      Uri.parse('$_baseUrl/auth/login'),
-      headers: _headers(withAuth: false),
-      body: jsonEncode({'email': email, 'password': password}),
-    );
-
-    if (res.statusCode != 200) {
-      final err = jsonDecode(res.body);
-      throw Exception(err['error'] ?? 'Login failed');
+    final trimmedEmail = email.trim();
+    if (trimmedEmail.isEmpty || password.isEmpty) {
+      throw Exception('Please fill in email and password.');
     }
 
-    final data = jsonDecode(res.body) as Map<String, dynamic>;
-    await _saveAuthData(data['token'] as String, UserAccount.fromJson(data['user']));
+    final http.Response res;
+    try {
+      res = await _httpClient
+          .post(
+            Uri.parse('$_baseUrl/auth/login'),
+            headers: _headers(withAuth: false),
+            body: jsonEncode({'email': trimmedEmail, 'password': password}),
+          )
+          .timeout(const Duration(seconds: 12));
+    } on TimeoutException {
+      throw Exception('Connection timed out. Server may be unreachable.');
+    } catch (e) {
+      throw Exception('Network error: Unable to reach server.');
+    }
+
+    if (res.statusCode != 200) {
+      throw Exception(_extractAuthError(res, fallback: 'Login failed'));
+    }
+
+    final Map<String, dynamic> data;
+    try {
+      final decoded = jsonDecode(res.body);
+      if (decoded is! Map) throw const FormatException('Not a JSON object');
+      data = Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      throw Exception('Invalid response from server.');
+    }
+
+    final token = data['token']?.toString() ?? '';
+    final userRaw = data['user'];
+    if (token.isEmpty || userRaw is! Map) {
+      throw Exception('Invalid authentication payload from server.');
+    }
+
+    await _saveAuthData(token, UserAccount.fromJson(Map<String, dynamic>.from(userRaw)));
     // Automatically bi-directionally sync library and reading history with MongoDB
     await syncAllCloudData();
   }
@@ -518,9 +619,9 @@ class ApiService extends ChangeNotifier {
     if (!isLoggedIn) return;
 
     // 1. Upload any local library bookmarks to cloud
-    for (final manga in _localLibrary.values) {
+    for (final manga in _localLibrary.values.toList()) {
       try {
-        await http.post(
+        await _httpClient.post(
           Uri.parse('$_baseUrl/library'),
           headers: _headers(withAuth: true),
           body: jsonEncode({
@@ -537,7 +638,7 @@ class ApiService extends ChangeNotifier {
 
     // 2. Fetch all cloud bookmarks and merge into local library
     try {
-      final res = await http.get(
+      final res = await _httpClient.get(
         Uri.parse('$_baseUrl/library'),
         headers: _headers(withAuth: true),
       ).timeout(const Duration(seconds: 8));
@@ -558,6 +659,7 @@ class ApiService extends ChangeNotifier {
             source: source,
           );
           _localLibrary[m.id] = m;
+          _knownManga[m.id] = m;
         }
         await _persistLocalLibrary();
       }
@@ -565,7 +667,7 @@ class ApiService extends ChangeNotifier {
 
     // 3. Fetch cloud reading history & progress and merge into local state
     try {
-      final res = await http.get(
+      final res = await _httpClient.get(
         Uri.parse('$_baseUrl/progress/history'),
         headers: _headers(withAuth: true),
       ).timeout(const Duration(seconds: 8));
@@ -644,29 +746,45 @@ class ApiService extends ChangeNotifier {
       }
     }
 
+    final selectorIdx = pkg.indexOf('@');
+    final selectorSuffix = selectorIdx != -1 ? pkg.substring(selectorIdx) : '';
     final ext = ExtensionService.instance.getExtensionByPkg(pkg);
-    final effectivePkg = ext?.pkg ?? pkg;
+    final effectivePkg = ext != null ? '${ext.pkg}$selectorSuffix' : pkg;
 
     try {
-      final results = (query != null && query.trim().isNotEmpty)
+      final hasQuery = query != null && query.trim().isNotEmpty;
+      final results = hasQuery
           ? await ExtensionBridge.instance.searchManga(
               pkg: effectivePkg,
               query: query.trim(),
               page: page,
               type: type,
             )
-          : await ExtensionBridge.instance.fetchPopularManga(
-              pkg: effectivePkg,
-              page: page,
-              type: type,
-            );
+          : (order == 'latest'
+              ? await ExtensionBridge.instance.fetchLatestUpdates(
+                  pkg: effectivePkg,
+                  page: page,
+                  type: type,
+                )
+              : await ExtensionBridge.instance.fetchPopularManga(
+                  pkg: effectivePkg,
+                  page: page,
+                  type: type,
+                ));
 
       if (results.isNotEmpty) return results;
     } catch (e) {
       debugPrint('ExtensionBridge native execution for $effectivePkg encountered: $e');
       if (ext != null && ext.homeUrl.isNotEmpty) {
         try {
-          final webResults = await _searchWebManga(ext, query: query, page: page, limit: limit);
+          final webResults = await _searchWebManga(
+            ext,
+            sourcePkg: effectivePkg,
+            query: query,
+            order: order,
+            page: page,
+            limit: limit,
+          );
           if (webResults.isNotEmpty) return webResults;
         } catch (_) {}
       }
@@ -675,7 +793,14 @@ class ApiService extends ChangeNotifier {
 
     // Secondary fallback to web scraper ONLY if homeUrl is present
     if (ext != null && ext.homeUrl.isNotEmpty) {
-      return _searchWebManga(ext, query: query, page: page, limit: limit);
+      return _searchWebManga(
+        ext,
+        sourcePkg: effectivePkg,
+        query: query,
+        order: order,
+        page: page,
+        limit: limit,
+      );
     }
 
     // Never fallback to MangaDex or Asura! Return empty list.
@@ -1833,6 +1958,14 @@ class ApiService extends ChangeNotifier {
 
   // ---- Bookmarks & Library (Local-First + Cloud Sync) ----
 
+  bool isInLibrary(String mangaId) => _localLibrary.containsKey(mangaId);
+
+  void cacheKnownManga(MangaItem manga) {
+    if (manga.id.isNotEmpty) {
+      _knownManga[manga.id] = manga;
+    }
+  }
+
   Future<List<MangaItem>> getLibrary({String? type}) async {
     // If logged in, sync from cloud
     if (isLoggedIn) {
@@ -1840,7 +1973,9 @@ class ApiService extends ChangeNotifier {
         final uri = Uri.parse('$_baseUrl/library').replace(queryParameters: {
           if (type != null && type.isNotEmpty && type != 'all') 'type': type,
         });
-        final res = await http.get(uri, headers: _headers(withAuth: true));
+        final res = await _httpClient
+            .get(uri, headers: _headers(withAuth: true))
+            .timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
           final list = (data['items'] as List<dynamic>?) ?? [];
@@ -1858,6 +1993,7 @@ class ApiService extends ChangeNotifier {
               source: source,
             );
             _localLibrary[m.id] = m;
+            _knownManga[m.id] = m;
           }
           await _persistLocalLibrary();
         }
@@ -1876,7 +2012,9 @@ class ApiService extends ChangeNotifier {
     if (_localLibrary.containsKey(mangaId)) return true;
     if (!isLoggedIn) return false;
     try {
-      final res = await http.get(Uri.parse('$_baseUrl/library/check/$mangaId'), headers: _headers(withAuth: true));
+      final res = await _httpClient
+          .get(Uri.parse('$_baseUrl/library/check/$mangaId'), headers: _headers(withAuth: true))
+          .timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final inLib = data['inLibrary'] == true;
@@ -1884,6 +2022,7 @@ class ApiService extends ChangeNotifier {
           // Sync into local cache
           final m = await getManga(mangaId);
           _localLibrary[mangaId] = m;
+          _knownManga[mangaId] = m;
           await _persistLocalLibrary();
         }
         return inLib;
@@ -1910,28 +2049,32 @@ class ApiService extends ChangeNotifier {
           )
         : manga;
     _localLibrary[manga.id] = effective;
+    _knownManga[manga.id] = effective;
     await _persistLocalLibrary();
     notifyListeners();
 
     if (isLoggedIn) {
       try {
-        await http.post(
-          Uri.parse('$_baseUrl/library'),
-          headers: _headers(withAuth: true),
-          body: jsonEncode({
-            'mangaId': effective.id,
-            'title': effective.title,
-            'cover': effective.cover,
-            'type': effective.type,
-            'status': effective.status,
-            'latestChapter': effective.lastChapter ?? '',
-          }),
-        );
+        await _httpClient
+            .post(
+              Uri.parse('$_baseUrl/library'),
+              headers: _headers(withAuth: true),
+              body: jsonEncode({
+                'mangaId': effective.id,
+                'title': effective.title,
+                'cover': effective.cover,
+                'type': effective.type,
+                'status': effective.status,
+                'latestChapter': effective.lastChapter ?? '',
+              }),
+            )
+            .timeout(const Duration(seconds: 8));
       } catch (_) {}
     }
   }
 
   Future<void> updateCachedMangaMetadata(MangaItem updated) async {
+    _knownManga[updated.id] = updated;
     bool changed = false;
     final libExisting = _localLibrary[updated.id];
     if (libExisting != null) {
@@ -1950,6 +2093,7 @@ class ApiService extends ChangeNotifier {
         tags: updated.tags.isNotEmpty ? updated.tags : libExisting.tags,
         source: updated.source.isNotEmpty ? updated.source : libExisting.source,
       );
+      _knownManga[updated.id] = merged;
       if (merged.cover != libExisting.cover ||
           merged.status != libExisting.status ||
           merged.lastChapter != libExisting.lastChapter) {
@@ -1981,7 +2125,9 @@ class ApiService extends ChangeNotifier {
 
     if (isLoggedIn) {
       try {
-        await http.delete(Uri.parse('$_baseUrl/library/$mangaId'), headers: _headers(withAuth: true));
+        await _httpClient
+            .delete(Uri.parse('$_baseUrl/library/$mangaId'), headers: _headers(withAuth: true))
+            .timeout(const Duration(seconds: 8));
       } catch (_) {}
     }
   }
@@ -2033,11 +2179,13 @@ class ApiService extends ChangeNotifier {
     // 3. If logged in, also sync to cloud
     if (!isLoggedIn) return;
     try {
-      await http.post(
-        Uri.parse('$_baseUrl/progress'),
-        headers: _headers(withAuth: true),
-        body: jsonEncode(progressData),
-      );
+      await _httpClient
+          .post(
+            Uri.parse('$_baseUrl/progress'),
+            headers: _headers(withAuth: true),
+            body: jsonEncode(progressData),
+          )
+          .timeout(const Duration(seconds: 8));
     } catch (_) {}
   }
 
@@ -2052,7 +2200,9 @@ class ApiService extends ChangeNotifier {
 
     if (!isLoggedIn) return base;
     try {
-      final res = await http.get(Uri.parse('$_baseUrl/progress/manga/$mangaId'), headers: _headers(withAuth: true));
+      final res = await _httpClient
+          .get(Uri.parse('$_baseUrl/progress/manga/$mangaId'), headers: _headers(withAuth: true))
+          .timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         if (data['completedChapters'] is List) {
@@ -2181,18 +2331,52 @@ class ApiService extends ChangeNotifier {
     return List<String>.from(_mangaCategories[mangaId] ?? const <String>[]);
   }
 
-  Future<void> setMangaCategories(String mangaId, List<String> categoryIds) async {
-    _mangaCategories[mangaId] = List<String>.from(categoryIds);
+  Future<void> _ensureInLibraryWhenCategorizing(String mangaId, {MangaItem? manga}) async {
+    if (_localLibrary.containsKey(mangaId)) {
+      if (manga != null) {
+        await updateCachedMangaMetadata(manga);
+      }
+      return;
+    }
+    final resolved = manga ??
+        _knownManga[mangaId] ??
+        MangaItem(
+          id: mangaId,
+          title: mangaId,
+          source: _inferSourceFromId(mangaId),
+        );
+    await addToLibrary(resolved);
+  }
+
+  Future<void> setMangaCategories(
+    String mangaId,
+    List<String> categoryIds, {
+    MangaItem? manga,
+  }) async {
+    final nextIds = List<String>.from(categoryIds);
+    if (nextIds.isNotEmpty) {
+      await _ensureInLibraryWhenCategorizing(mangaId, manga: manga);
+    }
+    _mangaCategories[mangaId] = nextIds;
     await _persistMangaCategories();
     notifyListeners();
   }
 
-  Future<void> toggleMangaCategory(String mangaId, String categoryId) async {
+  Future<void> toggleMangaCategory(
+    String mangaId,
+    String categoryId, {
+    MangaItem? manga,
+  }) async {
     final list = _mangaCategories.putIfAbsent(mangaId, () => <String>[]);
     if (list.contains(categoryId)) {
+      // Removing a manga from a category (even its last category) must NOT remove it from the library.
       list.remove(categoryId);
     } else {
-      list.add(categoryId);
+      // Assigning a category to a non-library manga automatically adds it to the library first.
+      await _ensureInLibraryWhenCategorizing(mangaId, manga: manga);
+      if (!list.contains(categoryId)) {
+        list.add(categoryId);
+      }
     }
     await _persistMangaCategories();
     notifyListeners();
@@ -2201,7 +2385,9 @@ class ApiService extends ChangeNotifier {
   Future<List<Map<String, dynamic>>> getHistory() async {
     if (isLoggedIn) {
       try {
-        final res = await http.get(Uri.parse('$_baseUrl/progress/history'), headers: _headers(withAuth: true));
+        final res = await _httpClient
+            .get(Uri.parse('$_baseUrl/progress/history'), headers: _headers(withAuth: true))
+            .timeout(const Duration(seconds: 8));
         if (res.statusCode == 200) {
           final data = jsonDecode(res.body) as Map<String, dynamic>;
           final list = data['items'] as List<dynamic>? ?? [];
@@ -2459,104 +2645,209 @@ class ApiService extends ChangeNotifier {
 
   Future<List<MangaItem>> _searchWebManga(
     MangaExtension ext, {
+    String? sourcePkg,
     String? query,
+    String order = 'popular',
     int page = 1,
     int limit = 24,
   }) async {
+    final effectivePkg = (sourcePkg != null && sourcePkg.isNotEmpty) ? sourcePkg : ext.pkg;
+    // If a sub-source was selected and has its own baseUrl, prefer that sub-source's baseUrl.
+    String home = ext.homeUrl;
+    if (effectivePkg.contains('@') && ext.subSources.isNotEmpty) {
+      final sel = effectivePkg.split('@').sublist(1).join('@').toUpperCase();
+      final matchSub = ext.subSources.where((s) =>
+          (s['id'] ?? '').toUpperCase() == sel ||
+          (s['lang'] ?? '').toUpperCase() == sel ||
+          (s['name'] ?? '').toUpperCase() == sel).firstOrNull;
+      if (matchSub != null && (matchSub['baseUrl'] ?? '').startsWith('http')) {
+        home = matchSub['baseUrl']!;
+      }
+    }
+    if (home.isEmpty) return [];
+
     try {
-      final base = ext.homeUrl.endsWith('/') ? ext.homeUrl.substring(0, ext.homeUrl.length - 1) : ext.homeUrl;
+      final base = home.endsWith('/') ? home.substring(0, home.length - 1) : home;
       final referer = '$base/';
-      final String url;
+      final candidateUrls = <String>[];
       if (query != null && query.trim().isNotEmpty) {
-        url = page > 1
-            ? '$base/page/$page/?s=${Uri.encodeComponent(query.trim())}'
-            : '$base/?s=${Uri.encodeComponent(query.trim())}';
+        final q = Uri.encodeComponent(query.trim());
+        candidateUrls.addAll([
+          if (page > 1) '$base/page/$page/?s=$q&post_type=wp-manga' else '$base/?s=$q&post_type=wp-manga',
+          if (page > 1) '$base/page/$page/?s=$q' else '$base/?s=$q',
+          '$base/manga/?s=$q&page=$page',
+        ]);
+      } else if (order == 'latest') {
+        candidateUrls.addAll([
+          '$base/manga/?page=$page&order=update',
+          if (page > 1) '$base/page/$page/?s=&post_type=wp-manga&m_orderby=latest' else '$base/?s=&post_type=wp-manga&m_orderby=latest',
+          if (page > 1) '$base/page/$page/' else base,
+        ]);
       } else {
-        url = page > 1 ? '$base/page/$page/' : base;
+        candidateUrls.addAll([
+          '$base/manga/?page=$page&order=popular',
+          if (page > 1) '$base/page/$page/?s=&post_type=wp-manga&m_orderby=views' else '$base/?s=&post_type=wp-manga&m_orderby=views',
+          if (page > 1) '$base/page/$page/' else base,
+        ]);
       }
 
-      final res = await _getCached(
-        Uri.parse(url),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Referer': referer,
-        },
-        timeout: const Duration(seconds: 10),
-      );
+      const invalidTitles = {
+        'home', 'about', 'privacy', 'privacy policy', 'contact', 'contact us',
+        'dmca', 'terms', 'terms of service', 'login', 'sign in', 'register',
+        'sign up', 'discord', 'telegram', 'twitter', 'facebook', 'donate',
+        'bookmark', 'history', 'popular', 'latest', 'search', 'manga list',
+        'all manga', 'genre', 'genres', 'tags', 'news', 'read more', 'next', 'prev',
+      };
 
-      if (res.statusCode == 200) {
+      for (final url in candidateUrls) {
+        http.Response res;
+        try {
+          res = await _getCached(
+            Uri.parse(url),
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Referer': referer,
+            },
+            timeout: const Duration(seconds: 10),
+          );
+        } catch (_) {
+          continue;
+        }
+        if (res.statusCode != 200) continue;
+
         final html = res.body;
         final items = <MangaItem>[];
-
-        final linkBlockRegex = RegExp(
-          r'''<a\s+[^>]*href=["']([^"']+)["']([^>]*)>((?:(?!</a>)[\s\S])*?<img\b[^>]*>(?:(?!</a>)[\s\S])*?)</a>''',
-          caseSensitive: false,
-        );
-
-        final matches = linkBlockRegex.allMatches(html);
         final seenUrls = <String>{};
 
-        for (final m in matches) {
-          var itemUrl = (m.group(1) ?? '').trim();
-          final aAttrs = m.group(2) ?? '';
-          final innerHtml = m.group(3) ?? '';
-
-          if (itemUrl.isEmpty || itemUrl == '#' || itemUrl == base || itemUrl == '$base/') continue;
-          if (itemUrl.startsWith('javascript:') || itemUrl.startsWith('mailto:')) continue;
-
-          final imgTagMatch = RegExp(r'<img\b[^>]*>', caseSensitive: false).firstMatch(innerHtml);
-          if (imgTagMatch == null) continue;
-          final imgTag = imgTagMatch.group(0)!;
-          final coverUrl = _extractImgFromTag(imgTag, baseUrl: base, referer: referer);
-          if (coverUrl.isEmpty) continue;
-          final lowerCover = coverUrl.toLowerCase();
-          if (lowerCover.contains('logo') || lowerCover.contains('avatar') || lowerCover.contains('favicon') || lowerCover.contains('banner')) {
-            continue;
+        void tryAddItem(String rawHref, String titleHint, String coverHint) {
+          var itemUrl = rawHref.trim();
+          if (itemUrl.isEmpty || itemUrl == '#' || itemUrl == base || itemUrl == '$base/') return;
+          if (itemUrl.startsWith('javascript:') || itemUrl.startsWith('mailto:')) return;
+          final lowerHref = itemUrl.toLowerCase();
+          if (lowerHref.contains('/wp-login') ||
+              lowerHref.contains('/genre/') ||
+              lowerHref.contains('/tag/') ||
+              lowerHref.contains('/author/') ||
+              RegExp(r'(?:chapter|ch-|episode|ep-)\d', caseSensitive: false).hasMatch(lowerHref)) {
+            return;
           }
-
           if (!itemUrl.startsWith('http')) {
             itemUrl = itemUrl.startsWith('/') ? '$base$itemUrl' : '$base/$itemUrl';
           }
+          if (!seenUrls.add(itemUrl)) return;
 
-          if (!seenUrls.add(itemUrl)) continue;
-
-          final titleAttrMatch = RegExp(r'''title=["']([^"']+)["']''', caseSensitive: false).firstMatch(aAttrs) ??
-              RegExp(r'''alt=["']([^"']+)["']''', caseSensitive: false).firstMatch(imgTag);
-          var title = _unescapeHtml(titleAttrMatch?.group(1)?.trim() ?? '');
-          if (title.isEmpty) {
-            title = _unescapeHtml(innerHtml.replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim());
-          }
+          var title = _unescapeHtml(titleHint.replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim());
           if (title.isEmpty) {
             final slug = Uri.tryParse(itemUrl)?.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? '';
             title = slug.replaceAll('-', ' ').replaceAll('_', ' ');
           }
-
           final lowerTitle = title.toLowerCase().trim();
-          const invalidTitles = {
-            'home', 'about', 'privacy', 'privacy policy', 'contact', 'contact us',
-            'dmca', 'terms', 'terms of service', 'login', 'sign in', 'register',
-            'sign up', 'discord', 'telegram', 'twitter', 'facebook', 'donate',
-            'bookmark', 'history', 'popular', 'latest', 'search', 'manga list',
-            'all manga', 'genre', 'genres', 'tags', 'news'
-          };
-          if (invalidTitles.contains(lowerTitle)) continue;
+          if (title.isEmpty || invalidTitles.contains(lowerTitle)) return;
 
-          if (title.isNotEmpty) {
-            items.add(MangaItem(
-              id: 'ext:${ext.pkg}:${Uri.encodeComponent(itemUrl)}',
-              title: title,
-              cover: coverUrl,
-              source: ext.pkg,
-            ));
+          items.add(MangaItem(
+            id: 'ext:$effectivePkg:${Uri.encodeComponent(itemUrl)}',
+            title: title,
+            cover: coverHint,
+            source: effectivePkg,
+          ));
+        }
+
+        // Pattern A: <a href="..."> containing <img> or CSS background-image
+        final linkBlockRegex = RegExp(
+          r'''<a\s+[^>]*href=["']([^"']+)["']([^>]*)>((?:(?!</a>)[\s\S])*?)</a>''',
+          caseSensitive: false,
+        );
+        for (final m in linkBlockRegex.allMatches(html)) {
+          final href = m.group(1) ?? '';
+          final aAttrs = m.group(2) ?? '';
+          final innerHtml = m.group(3) ?? '';
+
+          String coverUrl = '';
+          final imgTagMatch = RegExp(r'<img\b[^>]*>', caseSensitive: false).firstMatch(innerHtml);
+          if (imgTagMatch != null) {
+            coverUrl = _extractImgFromTag(imgTagMatch.group(0)!, baseUrl: base, referer: referer);
           }
+          if (coverUrl.isEmpty) {
+            final bgMatch = RegExp(r'''url\(["']?([^"')]+)["']?\)''', caseSensitive: false)
+                .firstMatch('$aAttrs $innerHtml');
+            if (bgMatch != null) {
+              coverUrl = _normalizeImgUrl(bgMatch.group(1), baseUrl: base, referer: referer);
+            }
+          }
+          if (coverUrl.isEmpty) continue;
+          final lowerCover = coverUrl.toLowerCase();
+          if (lowerCover.contains('logo') ||
+              lowerCover.contains('avatar') ||
+              lowerCover.contains('favicon') ||
+              lowerCover.contains('banner')) {
+            continue;
+          }
+
+          final titleAttrMatch = RegExp(r'''title=["']([^"']+)["']''', caseSensitive: false).firstMatch(aAttrs) ??
+              (imgTagMatch != null
+                  ? RegExp(r'''alt=["']([^"']+)["']''', caseSensitive: false).firstMatch(imgTagMatch.group(0)!)
+                  : null);
+          final titleHint = titleAttrMatch?.group(1) ?? innerHtml;
+          tryAddItem(href, titleHint, coverUrl);
           if (items.length >= limit) break;
         }
 
-        return items;
+        // Pattern B: Madara / MangaThemesia card containers where <img> and <a title> are siblings
+        if (items.isEmpty) {
+          final cardRegex = RegExp(
+            r'''<div[^>]*class=["'][^"']*(?:page-item-detail|c-tabs-item__content|bsx|utao|manga-item|serie-card)[^"']*["'][^>]*>([\s\S]*?)</div>\s*</div>''',
+            caseSensitive: false,
+          );
+          for (final cm in cardRegex.allMatches(html)) {
+            final block = cm.group(1) ?? '';
+            final hrefMatch = RegExp(r'''<a\s+[^>]*href=["']([^"']+)["']([^>]*)>([\s\S]*?)</a>''', caseSensitive: false)
+                .firstMatch(block);
+            if (hrefMatch == null) continue;
+            final imgMatch = RegExp(r'<img\b[^>]*>', caseSensitive: false).firstMatch(block);
+            var coverUrl = imgMatch != null
+                ? _extractImgFromTag(imgMatch.group(0)!, baseUrl: base, referer: referer)
+                : '';
+            if (coverUrl.isEmpty) {
+              final bgMatch = RegExp(r'''url\(["']?([^"')]+)["']?\)''', caseSensitive: false).firstMatch(block);
+              coverUrl = _normalizeImgUrl(bgMatch?.group(1), baseUrl: base, referer: referer);
+            }
+            final titleMatch = RegExp(r'''<(?:h3|h4|h5|div)[^>]*class=["'][^"']*(?:post-title|tt|title)[^"']*["'][^>]*>([\s\S]*?)</(?:h3|h4|h5|div)>''', caseSensitive: false)
+                    .firstMatch(block) ??
+                RegExp(r'''title=["']([^"']+)["']''', caseSensitive: false).firstMatch(hrefMatch.group(2) ?? '');
+            tryAddItem(hrefMatch.group(1) ?? '', titleMatch?.group(1) ?? hrefMatch.group(3) ?? '', coverUrl);
+            if (items.length >= limit) break;
+          }
+        }
+
+        if (items.isNotEmpty) {
+          // Backfill any missing covers from detail pages (up to 6 concurrently)
+          final missingIndices = <int>[
+            for (var i = 0; i < items.length; i++)
+              if (items[i].cover.isEmpty) i,
+          ];
+          if (missingIndices.isNotEmpty) {
+            await Future.wait(missingIndices.take(6).map((idx) async {
+              try {
+                final m = items[idx];
+                final actual = m.id.split(':').sublist(2).join(':');
+                final detailed = await _getWebManga(effectivePkg, actual, ext: ext);
+                if (detailed.cover.isNotEmpty) {
+                  items[idx] = MangaItem(
+                    id: m.id,
+                    title: m.title,
+                    cover: detailed.cover,
+                    source: m.source,
+                  );
+                }
+              } catch (_) {}
+            }));
+          }
+          return items;
+        }
       }
     } catch (e) {
-      debugPrint('WebExtension search error for ${ext.pkg}: $e');
+      debugPrint('WebExtension search error for $effectivePkg: $e');
     }
     return [];
   }
@@ -2573,7 +2864,7 @@ class ApiService extends ChangeNotifier {
       final res = await _getCached(
         Uri.parse(seriesUrl),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Referer': ?referer,
         },
@@ -2587,14 +2878,14 @@ class ApiService extends ChangeNotifier {
         final rawTitle = h1Match?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
         final title = _unescapeHtml(rawTitle.isNotEmpty ? rawTitle : (ext?.name ?? 'Series'));
 
-        final descMatch = RegExp(r'''<div[^>]*class=["'][^"']*(?:description|synopsis|summary)[^"']*["'][^>]*>([\s\S]*?)</div>''', caseSensitive: false).firstMatch(html) ??
+        final descMatch = RegExp(r'''<div[^>]*class=["'][^"']*(?:description|synopsis|summary|entry-content)[^"']*["'][^>]*>([\s\S]*?)</div>''', caseSensitive: false).firstMatch(html) ??
             RegExp(r'''<p[^>]*class=["'][^"']*(?:description|synopsis|summary)[^"']*["'][^>]*>([\s\S]*?)</p>''', caseSensitive: false).firstMatch(html) ??
             RegExp(r'''<meta[^>]+(?:property=["']og:description["']|name=["']description["'])[^>]+content=["']([^"']+)["']''', caseSensitive: false).firstMatch(html);
         final desc = _unescapeHtml(descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '');
 
         String coverUrl = '';
         final coverContainerMatch = RegExp(
-          r'''<(?:div|figure)[^>]*class=["'][^"']*(?:summary_image|thumb|cover|poster)[^"']*["'][^>]*>[\s\S]*?(<img\b[^>]*>)''',
+          r'''<(?:div|figure)[^>]*class=["'][^"']*(?:summary_image|thumb|cover|poster|seriestucon)[^"']*["'][^>]*>[\s\S]*?(<img\b[^>]*>)''',
           caseSensitive: false,
         ).firstMatch(html);
         if (coverContainerMatch != null) {
@@ -2620,8 +2911,13 @@ class ApiService extends ChangeNotifier {
           coverUrl = _normalizeImgUrl(ogMatch?.group(1), baseUrl: origin, referer: referer);
         }
 
+        final mangaId = 'ext:$pkg:$actualId';
+        if (coverUrl.isNotEmpty) {
+          ImageReferers.rememberResolvedCover(mangaId, coverUrl);
+        }
+
         return MangaItem(
-          id: 'ext:$pkg:$actualId',
+          id: mangaId,
           title: title,
           description: desc,
           cover: coverUrl,
@@ -2647,11 +2943,43 @@ class ApiService extends ChangeNotifier {
         : (ext?.homeUrl ?? '');
     final referer = origin.isNotEmpty ? (origin.endsWith('/') ? origin : '$origin/') : null;
 
+    List<ChapterItem> parseHtmlChapters(String html) {
+      final chapterRegex = RegExp(
+        r'''<a\s+[^>]*href=["']([^"']*(?:chapter|ch-|episode|ep-|chap-)[^"']*)["'][^>]*>((?:(?!</a>)[\s\S])*?)</a>''',
+        caseSensitive: false,
+      );
+      final list = <ChapterItem>[];
+      final seen = <String>{};
+      for (final m in chapterRegex.allMatches(html)) {
+        var chUrl = (m.group(1) ?? '').trim();
+        final rawText = _unescapeHtml(
+          (m.group(2) ?? '').replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim(),
+        );
+        if (chUrl.isEmpty || chUrl.startsWith('#') || chUrl.startsWith('javascript:')) continue;
+        if (!chUrl.startsWith('http')) {
+          final uri = Uri.parse(seriesUrl);
+          chUrl = chUrl.startsWith('/') ? '${uri.scheme}://${uri.host}$chUrl' : '${uri.scheme}://${uri.host}/$chUrl';
+        }
+        if (!seen.add(chUrl)) continue;
+        final numMatch = RegExp(r'(?:chapter|episode|ch\.?|ep\.?|chap\.?)\s*([\d\.]+)', caseSensitive: false).firstMatch(rawText) ??
+            RegExp(r'(?:chapter|ch|ep)[-_]([\d\.]+)', caseSensitive: false).firstMatch(chUrl);
+        final chNum = numMatch?.group(1);
+        list.add(ChapterItem(
+          id: 'ext:$pkg:${Uri.encodeComponent(chUrl)}',
+          number: chNum,
+          title: rawText.isNotEmpty ? rawText : (chNum != null ? 'Chapter $chNum' : 'Chapter'),
+          group: ext?.name ?? 'Web',
+          source: pkg,
+        ));
+      }
+      return list;
+    }
+
     try {
       final res = await _getCached(
         Uri.parse(seriesUrl),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Referer': ?referer,
         },
@@ -2659,42 +2987,25 @@ class ApiService extends ChangeNotifier {
       );
 
       if (res.statusCode == 200) {
-        final html = res.body;
-        final chapterRegex = RegExp(
-          r'''<a\s+[^>]*href=["']([^"']*(?:chapter|ch-|episode|ep-)[^"']*)["'][^>]*>((?:(?!</a>)[\s\S])*?)</a>''',
-          caseSensitive: false,
-        );
-        final matches = chapterRegex.allMatches(html);
-        final list = <ChapterItem>[];
-        final seen = <String>{};
+        final directList = parseHtmlChapters(res.body);
+        if (directList.isNotEmpty) return directList;
 
-        for (final m in matches) {
-          var chUrl = (m.group(1) ?? '').trim();
-          final rawText = _unescapeHtml(
-            (m.group(2) ?? '').replaceAll(RegExp(r'<[^>]*>'), ' ').replaceAll(RegExp(r'\s+'), ' ').trim(),
-          );
-
-          if (chUrl.isEmpty || chUrl.startsWith('#') || chUrl.startsWith('javascript:')) continue;
-
-          if (!chUrl.startsWith('http')) {
-            final uri = Uri.parse(seriesUrl);
-            chUrl = chUrl.startsWith('/') ? '${uri.scheme}://${uri.host}$chUrl' : '${uri.scheme}://${uri.host}/$chUrl';
+        // Madara WordPress sites often load chapters via POST `{seriesUrl}ajax/chapters/`
+        final ajaxUrl = '${seriesUrl.endsWith('/') ? seriesUrl : '$seriesUrl/'}ajax/chapters/';
+        try {
+          final ajaxRes = await http.post(
+            Uri.parse(ajaxUrl),
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              'X-Requested-With': 'XMLHttpRequest',
+              'Referer': seriesUrl,
+            },
+          ).timeout(const Duration(seconds: 8));
+          if (ajaxRes.statusCode == 200 && ajaxRes.body.isNotEmpty) {
+            final ajaxList = parseHtmlChapters(ajaxRes.body);
+            if (ajaxList.isNotEmpty) return ajaxList;
           }
-          if (!seen.add(chUrl)) continue;
-
-          final numMatch = RegExp(r'(?:chapter|episode|ch\.?|ep\.?)\s*([\d\.]+)', caseSensitive: false).firstMatch(rawText);
-          final chNum = numMatch?.group(1);
-
-          list.add(ChapterItem(
-            id: 'ext:$pkg:${Uri.encodeComponent(chUrl)}',
-            number: chNum,
-            title: rawText.isNotEmpty ? rawText : (chNum != null ? 'Chapter $chNum' : 'Chapter'),
-            group: ext?.name ?? 'Web',
-            source: pkg,
-          ));
-        }
-
-        return list;
+        } catch (_) {}
       }
     } catch (e) {
       debugPrint('WebExtension getChapters error: $e');
@@ -2714,7 +3025,7 @@ class ApiService extends ChangeNotifier {
       final res = await http.get(
         Uri.parse(chapterUrl),
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
           'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
           'Referer': ?referer,
         },
@@ -2722,23 +3033,58 @@ class ApiService extends ChangeNotifier {
 
       if (res.statusCode == 200) {
         final html = res.body;
-        final imgTags = RegExp(r'<img\b[^>]*>', caseSensitive: false).allMatches(html);
         final pagesList = <String>[];
         final seen = <String>{};
 
-        for (final m in imgTags) {
-          final u = _extractImgFromTag(m.group(0)!, baseUrl: origin, referer: referer);
-          if (u.isEmpty) continue;
-          final lower = u.toLowerCase();
-          if (lower.contains('logo') ||
-              lower.contains('banner') ||
-              lower.contains('avatar') ||
-              lower.contains('favicon') ||
-              lower.contains('icon')) {
-            continue;
+        // 1. Check MangaThemesia / WP-Manga JS arrays (`ts_reader.run(...)` or `chapter_preloaded_images`)
+        final tsReaderMatch = RegExp(r'ts_reader\.run\((\{[\s\S]*?\})\)\s*;?', caseSensitive: false).firstMatch(html);
+        if (tsReaderMatch != null) {
+          final jsonBlock = tsReaderMatch.group(1)!;
+          final imagesArrMatch = RegExp(r'"images"\s*:\s*\[([\s\S]*?)\]').firstMatch(jsonBlock);
+          if (imagesArrMatch != null) {
+            for (final um in RegExp(r'"([^"]+)"').allMatches(imagesArrMatch.group(1)!)) {
+              final rawImg = um.group(1)!.replaceAll(r'\/', '/');
+              final u = _normalizeImgUrl(rawImg, baseUrl: origin, referer: referer);
+              if (u.isNotEmpty && seen.add(u)) pagesList.add(u);
+            }
           }
-          if (seen.add(u)) {
-            pagesList.add(u);
+        }
+
+        if (pagesList.isEmpty) {
+          final preloadMatch = RegExp(r'(?:chapter_preloaded_images|var\s+thzq)\s*=\s*\[([\s\S]*?)\]', caseSensitive: false)
+              .firstMatch(html);
+          if (preloadMatch != null) {
+            for (final um in RegExp(r'''["']([^"']+)["']''').allMatches(preloadMatch.group(1)!)) {
+              final rawImg = um.group(1)!.replaceAll(r'\/', '/');
+              final u = _normalizeImgUrl(rawImg, baseUrl: origin, referer: referer);
+              if (u.isNotEmpty && seen.add(u)) pagesList.add(u);
+            }
+          }
+        }
+
+        // 2. Standard HTML <img> tags inside reader containers or full page
+        if (pagesList.isEmpty) {
+          final readerSectionMatch = RegExp(
+            r'''<div[^>]*(?:id=["']readerarea["']|class=["'][^"']*(?:reading-content|chapter-content|vung-doc|container-chapter-reader)[^"']*["'])[^>]*>([\s\S]*?)</div>\s*</div>''',
+            caseSensitive: false,
+          ).firstMatch(html);
+          final targetHtml = readerSectionMatch?.group(1) ?? html;
+          final imgTags = RegExp(r'<img\b[^>]*>', caseSensitive: false).allMatches(targetHtml);
+          for (final m in imgTags) {
+            final u = _extractImgFromTag(m.group(0)!, baseUrl: origin, referer: referer);
+            if (u.isEmpty) continue;
+            final lower = u.toLowerCase();
+            if (lower.contains('logo') ||
+                lower.contains('banner') ||
+                lower.contains('avatar') ||
+                lower.contains('favicon') ||
+                lower.contains('icon') ||
+                lower.contains('gravatar')) {
+              continue;
+            }
+            if (seen.add(u)) {
+              pagesList.add(u);
+            }
           }
         }
 

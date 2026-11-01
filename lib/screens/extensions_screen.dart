@@ -1,7 +1,5 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../services/extension_service.dart';
 import '../services/source_manager.dart';
@@ -25,6 +23,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
   Timer? _searchDebounce;
   String _query = '';
   String _selectedLang = 'ALL';
+  bool _showNsfw = true;
 
   final List<String> _commonLangs = ['ALL', 'EN', 'ES', 'JA', 'KO', 'ZH', 'FR', 'ID', 'RU'];
 
@@ -32,7 +31,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
   void initState() {
     super.initState();
     _service.addListener(_onServiceUpdate);
-    if (_service.extensions.isEmpty && !_service.isLoading) {
+    if (!SourceManager.isIOSPlatform && _service.extensions.isEmpty && !_service.isLoading) {
       _service.fetchExtensions();
     }
   }
@@ -55,11 +54,19 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppColors.surface,
+        scrollable: true,
         title: Row(
           children: [
             const Icon(Icons.hub_rounded, color: AppColors.primary, size: 20),
             const SizedBox(width: 8),
-            Text('Extension Repository', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600)),
+            Expanded(
+              child: Text(
+                'Extension Repository',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppText.sheetTitle,
+              ),
+            ),
           ],
         ),
         content: Column(
@@ -67,26 +74,34 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              'Keiyoushi Protocol Buffer index repo:',
-              style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+              'Keiyoushi repo.json / index_v2 (index.pb):',
+              style: AppText.caption.copyWith(color: AppColors.muted),
             ),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
-              style: GoogleFonts.inter(fontSize: 12),
+              style: AppText.body,
               maxLines: 2,
               decoration: InputDecoration(
-                hintText: 'https://raw.githubusercontent.com/.../index.pb',
-                hintStyle: const TextStyle(fontSize: 11, color: AppColors.read),
+                hintText: 'https://raw.githubusercontent.com/keiyoushi/extensions/repo/repo.json',
+                hintStyle: AppText.caption.copyWith(color: AppColors.read),
                 filled: true,
                 fillColor: AppColors.surfaceHigh,
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
               ),
             ),
             const SizedBox(height: 8),
+            if (_service.repoMetadata != null && _service.repoMetadata!.signingKeyFingerprint.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 6),
+                child: Text(
+                  'Signing key: ${_service.repoMetadata!.signingKeyFingerprint.substring(0, 16)}…',
+                  style: AppText.mono.copyWith(fontSize: 10.5, color: AppColors.muted),
+                ),
+              ),
             Text(
-              'Supports Keiyoushi (index.pb) with 1,400+ extensions and automatic APK downloads.',
-              style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted, fontStyle: FontStyle.italic),
+              'Supports Keiyoushi repo.json (index_v2 protobuf) with 1,400+ extensions and PackageInstaller support.',
+              style: AppText.caption.copyWith(color: AppColors.muted, fontStyle: FontStyle.italic),
             ),
           ],
         ),
@@ -95,7 +110,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
             onPressed: () {
               controller.text = ExtensionService.defaultRepoUrl;
             },
-            child: const Text('Reset Default', style: TextStyle(color: AppColors.muted)),
+            child: Text('Reset Default', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
           ),
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
           FilledButton(
@@ -114,44 +129,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
     );
   }
 
-  void _confirmUninstallAll() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: Row(
-          children: [
-            const Icon(Icons.delete_sweep_rounded, color: Colors.redAccent, size: 22),
-            const SizedBox(width: 8),
-            Text('Uninstall All Sources?', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600)),
-          ],
-        ),
-        content: Text(
-          'This will remove all installed sources from Shiori, resetting to zero active extensions.',
-          style: GoogleFonts.inter(fontSize: 13, color: AppColors.muted),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              _service.uninstallAll();
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('All sources uninstalled')),
-              );
-            },
-            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
-            child: const Text('Uninstall All'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showExtensionDetails(MangaExtension ext) {
+  void _showExtensionDetails(MangaExtension initialExt) {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
@@ -159,244 +137,381 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.55,
-        minChildSize: 0.35,
-        maxChildSize: 0.85,
-        expand: false,
-        builder: (_, scrollCtrl) => ListView(
-          controller: scrollCtrl,
-          padding: const EdgeInsets.all(20),
-          children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceHigh,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Row(
+      builder: (ctx) => ListenableBuilder(
+        listenable: _service,
+        builder: (ctx, _) {
+          final ext = _service.getExtensionByPkg(initialExt.pkg) ?? initialExt;
+          return DraggableScrollableSheet(
+            initialChildSize: 0.55,
+            minChildSize: 0.35,
+            maxChildSize: 0.85,
+            expand: false,
+            builder: (_, scrollCtrl) => ListView(
+              controller: scrollCtrl,
+              padding: const EdgeInsets.all(20),
               children: [
-                _buildIcon(ext, size: 54),
-                const SizedBox(width: 14),
-                Expanded(
+                Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.outline,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    _buildIcon(ext, size: 54),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            ext.name,
+                            style: AppText.sheetTitle,
+                          ),
+                          const SizedBox(height: 4),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.primary.withValues(alpha: .2),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  ext.lang,
+                                  style: AppText.badge.copyWith(color: AppColors.primary),
+                                ),
+                              ),
+                              Text(
+                                ext.hasUpdate && ext.repoVersion != null
+                                    ? 'v${ext.version} → v${ext.repoVersion}'
+                                    : 'v${ext.version}',
+                                style: AppText.caption.copyWith(color: AppColors.muted),
+                              ),
+                              Text(
+                                'lib ${ext.libVersion}',
+                                style: AppText.caption.copyWith(color: AppColors.muted),
+                              ),
+                              if (ext.isNsfw)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.redAccent.withValues(alpha: .2),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    '18+',
+                                    style: AppText.badge.copyWith(color: Colors.redAccent),
+                                  ),
+                                ),
+                              if (!ext.isCompatible)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orangeAccent.withValues(alpha: .2),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    'Incompatible lib version',
+                                    style: AppText.badge.copyWith(color: Colors.orangeAccent),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.bg,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.outline),
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        ext.name,
-                        style: GoogleFonts.inter(fontSize: 17, fontWeight: FontWeight.w700),
+                      Text('PACKAGE NAME', style: AppText.badge.copyWith(color: AppColors.muted)),
+                      const SizedBox(height: 2),
+                      SelectableText(
+                        ext.pkg,
+                        style: AppText.mono,
                       ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: AppColors.primary.withValues(alpha: .2),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              ext.lang,
-                              style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.primary),
+                      if (ext.subSources.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          'INCLUDED SOURCES (${ext.subSources.length}) · TAP TO BROWSE',
+                          style: AppText.badge.copyWith(color: AppColors.muted),
+                        ),
+                        const SizedBox(height: 6),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxHeight: 150),
+                          child: SingleChildScrollView(
+                            child: Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                for (final sub in [
+                                  ...ext.subSources.where((s) =>
+                                      _selectedLang == 'ALL' ||
+                                      s['lang'] == _selectedLang ||
+                                      s['lang'] == 'ALL'),
+                                  ...ext.subSources.where((s) =>
+                                      _selectedLang != 'ALL' &&
+                                      s['lang'] != _selectedLang &&
+                                      s['lang'] != 'ALL'),
+                                ].take(30))
+                                  ActionChip(
+                                    visualDensity: VisualDensity.compact,
+                                    backgroundColor: AppColors.surfaceHigh,
+                                    side: BorderSide.none,
+                                    label: Text(
+                                      '${sub['name'] ?? ext.name} (${sub['lang'] ?? ext.lang})',
+                                      style: AppText.caption,
+                                    ),
+                                    onPressed: !ext.isCompatible
+                                        ? null
+                                        : () {
+                                            final subId = (sub['id'] ?? '').isNotEmpty
+                                                ? '${ext.pkg}@${sub['id']}'
+                                                : '${ext.pkg}@${sub['name'] ?? ''}';
+                                            Navigator.pop(ctx);
+                                            Navigator.of(context).push(
+                                              smoothRoute(
+                                                SourceCatalogScreen(
+                                                  sourceId: subId,
+                                                  sourceName: sub['name']?.isNotEmpty == true ? sub['name']! : ext.name,
+                                                  sourceLang: sub['lang'] ?? ext.lang,
+                                                ),
+                                              ),
+                                            );
+                                          },
+                                  ),
+                              ],
                             ),
                           ),
-                          const SizedBox(width: 6),
-                          Text('v${ext.version}', style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted)),
-                          if (ext.isNsfw) ...[
-                            const SizedBox(width: 6),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                              decoration: BoxDecoration(
-                                color: Colors.redAccent.withValues(alpha: .2),
-                                borderRadius: BorderRadius.circular(4),
-                              ),
-                              child: Text(
-                                '18+',
-                                style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: Colors.redAccent),
-                              ),
+                        ),
+                      ] else if (ext.sourceNames.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text('INCLUDED SOURCES (${ext.sourceNames.length})', style: AppText.badge.copyWith(color: AppColors.muted)),
+                        const SizedBox(height: 4),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: ext.sourceNames.map((s) => Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: AppColors.surfaceHigh,
+                              borderRadius: BorderRadius.circular(6),
                             ),
-                          ],
-                        ],
-                      ),
+                            child: Text(s, style: AppText.caption),
+                          )).toList(),
+                        ),
+                      ],
                     ],
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.bg,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('EXTENSION ID', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.muted)),
-                  const SizedBox(height: 2),
-                  SelectableText(
-                    ext.pkg.replaceFirst(RegExp(r'^eu\.kanade\.tachiyomi\.(?:extension\.)?'), ''),
-                    style: GoogleFonts.robotoMono(fontSize: 11, color: AppColors.text),
-                  ),
-                  if (ext.sourceNames.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    Text('INCLUDED SOURCES (${ext.sourceNames.length})', style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.muted)),
-                    const SizedBox(height: 4),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 6,
-                      children: ext.sourceNames.map((s) => Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                const SizedBox(height: 20),
+                Builder(
+                  builder: (bCtx) {
+                    final isDownloading = _service.isDownloading(ext.pkg);
+                    final progress = _service.getProgress(ext.pkg);
+
+                    if (isDownloading) {
+                      return Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
                         decoration: BoxDecoration(
                           color: AppColors.surfaceHigh,
-                          borderRadius: BorderRadius.circular(6),
+                          borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Text(s, style: GoogleFonts.inter(fontSize: 11, color: AppColors.text)),
-                      )).toList(),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-            Builder(
-              builder: (bCtx) {
-                final isDownloading = _service.isDownloading(ext.pkg);
-                final progress = _service.getProgress(ext.pkg);
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                value: progress > 0.05 ? progress : null,
+                                strokeWidth: 2,
+                                color: AppColors.primary,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                progress > 0
+                                    ? 'Downloading APK... ${(progress * 100).toInt()}%'
+                                    : 'Installing extension...',
+                                style: AppText.bodySemiBold.copyWith(color: AppColors.primary),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }
 
-                if (ext.isInstalled) {
-                  return Column(
-                    children: [
-                      SizedBox(
-                        width: double.infinity,
-                        child: FilledButton.icon(
-                          onPressed: () {
-                            Navigator.pop(ctx);
-                            Navigator.of(context).push(
-                              smoothRoute(
-                                SourceCatalogScreen(
-                                  sourceId: ext.pkg,
-                                  sourceName: ext.name,
-                                  sourceLang: ext.lang,
+                    if (ext.isInstalled) {
+                      return Column(
+                        children: [
+                          if (ext.hasUpdate) ...[
+                            SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: () async {
+                                  final ok = await _service.downloadAndInstallExtension(ext);
+                                  if (mounted) {
+                                    final updatedVer = _service.getExtensionByPkg(ext.pkg)?.version ?? ext.repoVersion ?? ext.version;
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(ok
+                                            ? 'Updated ${ext.name} to v$updatedVer'
+                                            : (_service.lastInstallError ?? 'Failed to update ${ext.name}.')),
+                                      ),
+                                    );
+                                  }
+                                },
+                                icon: const Icon(Icons.system_update_rounded, size: 20),
+                                label: Text('Update to v${ext.repoVersion ?? ext.version}'),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: AppColors.primary,
+                                  foregroundColor: AppColors.onPrimary,
+                                  minimumSize: const Size.fromHeight(46),
+                                  padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                 ),
                               ),
-                            );
-                          },
-                          icon: const Icon(Icons.grid_view_rounded, size: 20),
-                          label: Text('Browse Catalog (${ext.name})'),
-                          style: FilledButton.styleFrom(
-                            backgroundColor: AppColors.primary,
-                            foregroundColor: AppColors.onPrimary,
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
+                            const SizedBox(height: 10),
+                          ],
+                          SizedBox(
+                            width: double.infinity,
+                            child: FilledButton.icon(
+                              onPressed: !ext.isCompatible
+                                  ? null
+                                  : () {
+                                      Navigator.pop(ctx);
+                                      Navigator.of(context).push(
+                                        smoothRoute(
+                                          SourceCatalogScreen(
+                                            sourceId: ext.pkg,
+                                            sourceName: ext.name,
+                                            sourceLang: ext.lang,
+                                          ),
+                                        ),
+                                      );
+                                    },
+                              icon: const Icon(Icons.grid_view_rounded, size: 20),
+                              label: Text('Browse Catalog (${ext.name})'),
+                              style: FilledButton.styleFrom(
+                                backgroundColor: ext.hasUpdate ? AppColors.surfaceHigh : AppColors.primary,
+                                foregroundColor: ext.hasUpdate ? AppColors.primary : AppColors.onPrimary,
+                                minimumSize: const Size.fromHeight(46),
+                                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: () {
-                            _service.uninstallExtension(ext);
-                            Navigator.pop(ctx);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('Uninstalled ${ext.name}')),
-                            );
-                          },
-                          icon: const Icon(Icons.delete_outline_rounded, size: 20, color: Colors.redAccent),
-                          label: Text('Uninstall from Shiori', style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600, color: Colors.redAccent)),
-                          style: OutlinedButton.styleFrom(
-                            side: const BorderSide(color: Colors.redAccent),
-                            padding: const EdgeInsets.symmetric(vertical: 14),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: () {
+                                _service.uninstallExtension(ext);
+                                Navigator.pop(ctx);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('Uninstalled ${ext.name}')),
+                                );
+                              },
+                              icon: const Icon(Icons.delete_outline_rounded, size: 20, color: Colors.redAccent),
+                              label: Text('Uninstall', style: AppText.bodySemiBold.copyWith(color: Colors.redAccent)),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: Colors.redAccent),
+                                minimumSize: const Size.fromHeight(46),
+                                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                    ],
-                  );
-                }
+                        ],
+                      );
+                    }
 
-                if (isDownloading) {
-                  return Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceHigh,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
+                    return Column(
                       children: [
                         SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            value: progress > 0.05 ? progress : null,
-                            strokeWidth: 2,
-                            color: AppColors.primary,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            'Downloading in-app... ${(progress * 100).toInt()}%',
-                            style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.primary),
+                          width: double.infinity,
+                          child: FilledButton.icon(
+                            onPressed: !ext.isCompatible
+                                ? null
+                                : () async {
+                                    final ok = await _service.downloadAndInstallExtension(ext);
+                                    if (mounted) {
+                                      final installedVer = _service.getExtensionByPkg(ext.pkg)?.version ?? ext.version;
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(ok
+                                              ? 'Installed ${ext.name} v$installedVer'
+                                              : (_service.lastInstallError ?? 'Failed to install ${ext.name}.')),
+                                          duration: const Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  },
+                            icon: const Icon(Icons.download_rounded, size: 20),
+                            label: Text(
+                              ext.isCompatible
+                                  ? 'Install (${ext.lang} • v${ext.version})'
+                                  : 'Incompatible lib version (${ext.libVersion})',
+                            ),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: AppColors.primary,
+                              foregroundColor: AppColors.onPrimary,
+                              minimumSize: const Size.fromHeight(46),
+                              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            ),
                           ),
                         ),
                       ],
-                    ),
-                  );
-                }
-
-                return SizedBox(
-                  width: double.infinity,
-                  child: FilledButton.icon(
-                    onPressed: () async {
-                      ScaffoldMessenger.of(ctx).showSnackBar(
-                        SnackBar(
-                          content: Text('Downloading ${ext.name} in-app...'),
-                          duration: const Duration(seconds: 1),
-                        ),
-                      );
-                      final ok = await _service.downloadAndInstallExtension(ext);
-                      if (ctx.mounted) {
-                        Navigator.pop(ctx);
-                      }
-                      if (mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(ok
-                                ? 'Installed ${ext.name} in-app! Added to Browse Sources.'
-                                : 'Failed to install ${ext.name}.'),
-                            duration: const Duration(seconds: 2),
-                          ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.download_rounded, size: 20),
-                    label: Text('Install In-App (${ext.lang} • v${ext.version})'),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: AppColors.onPrimary,
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                  ),
-                );
-              },
+                    );
+                  },
+                ),
+              ],
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
 
   Widget _buildIcon(MangaExtension ext, {double size = 42}) {
+    if (ext.iconBytes != null && ext.iconBytes!.isNotEmpty) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(10),
+        child: SizedBox(
+          width: size,
+          height: size,
+          child: Image.memory(
+            ext.iconBytes!,
+            width: size,
+            height: size,
+            fit: BoxFit.cover,
+            errorBuilder: (ctx, err, st) => _buildLetterAvatar(ext, size),
+          ),
+        ),
+      );
+    }
     if (ext.iconUrl.isNotEmpty) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(10),
@@ -437,7 +552,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       child: Center(
         child: Text(
           letter,
-          style: GoogleFonts.inter(fontSize: size * 0.45, fontWeight: FontWeight.w700, color: color),
+          style: AppText.cardTitle.copyWith(fontSize: size * 0.45, fontWeight: FontWeight.w700, color: color),
         ),
       ),
     );
@@ -445,10 +560,15 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (SourceManager.isIOSPlatform) {
+      return const SizedBox.shrink();
+    }
+
     final allExts = _service.extensions;
 
-    final filtered = allExts.where((ext) {
-      if (_selectedLang != 'ALL' && ext.lang != _selectedLang) {
+    bool matchesFilters(MangaExtension ext) {
+      if (!_showNsfw && ext.isNsfw) return false;
+      if (_selectedLang != 'ALL' && !ext.supportsLang(_selectedLang)) {
         return false;
       }
       if (_query.isNotEmpty) {
@@ -459,283 +579,296 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
         if (!matchName && !matchPkg && !matchSrc) return false;
       }
       return true;
-    }).toList();
+    }
 
-    final installed = filtered.where((e) => e.isInstalled).toList();
-    final available = filtered.where((e) => !e.isInstalled).toList();
-
-    final q = _query.toLowerCase();
-    final matchDirectSources = SourceManager.directSources.where((ds) {
-      final matchLang = _selectedLang == 'ALL' ||
-          ds.lang.toUpperCase() == _selectedLang ||
-          ds.lang == 'ALL';
-      final matchQuery = q.isEmpty ||
-          ds.name.toLowerCase().contains(q) ||
-          ds.id.toLowerCase().contains(q);
-      return matchLang && matchQuery;
-    }).toList();
+    final updatesAvailable = _service.updatesAvailableExtensions.where(matchesFilters).toList();
+    final installed = _service.upToDateInstalledExtensions.where(matchesFilters).toList();
+    final available = _service.availableExtensions.where(matchesFilters).toList();
 
     final body = Column(
       children: [
         if (widget.isEmbedded)
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+            padding: const EdgeInsets.fromLTRB(16, 6, 8, 2),
             child: Row(
               children: [
                 Expanded(
                   child: Text(
-                    'Community repository',
-                    style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                    _service.repoMetadata != null
+                        ? '${_service.repoMetadata!.name} (${_service.extensions.length} extensions)'
+                        : 'Keiyoushi Extension Repository',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.caption.copyWith(color: AppColors.muted),
                   ),
                 ),
-                PopupMenuButton<String>(
-                  icon: const Icon(Icons.more_vert_rounded, size: 20, color: AppColors.muted),
-                  color: AppColors.surface,
-                  onSelected: (val) {
-                    if (val == 'repo') {
-                      _addRepoDialog();
-                    } else if (val == 'uninstall_all') {
-                      _confirmUninstallAll();
-                    }
+                IconButton(
+                  icon: const Icon(Icons.refresh_rounded, size: 18, color: AppColors.muted),
+                  constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                  tooltip: 'Refresh repository',
+                  onPressed: () {
+                    _service.refreshDeviceExtensions();
+                    _service.fetchExtensions(force: true);
                   },
-                  itemBuilder: (ctx) => [
-                    const PopupMenuItem(
-                      value: 'repo',
-                      child: Row(
-                        children: [
-                          Icon(Icons.hub_rounded, size: 18, color: AppColors.primary),
-                          SizedBox(width: 10),
-                          Text('Repository Settings'),
-                        ],
-                      ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'uninstall_all',
-                      child: Row(
-                        children: [
-                          Icon(Icons.delete_sweep_rounded, size: 18, color: Colors.redAccent),
-                          SizedBox(width: 10),
-                          Text('Uninstall All Sources', style: TextStyle(color: Colors.redAccent)),
-                        ],
-                      ),
-                    ),
-                  ],
+                ),
+                IconButton(
+                  icon: const Icon(Icons.hub_rounded, size: 18, color: AppColors.muted),
+                  constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                  tooltip: 'Repository Settings',
+                  onPressed: _addRepoDialog,
                 ),
               ],
             ),
           ),
+
         // Search box
         Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-            child: Container(
-              height: 42,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.surfaceHigh),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: TextField(
-                      controller: _searchController,
-                      onChanged: (v) {
-                        _searchDebounce?.cancel();
-                        _searchDebounce = Timer(const Duration(milliseconds: 150), () {
-                          if (mounted) setState(() => _query = v.trim());
-                        });
-                      },
-                      style: GoogleFonts.inter(fontSize: 13, color: AppColors.text),
-                      decoration: InputDecoration(
-                        hintText: Platform.isIOS
-                            ? 'Search sources (e.g. Asura, Dex, Flame)...'
-                            : 'Search 1,400+ extensions (e.g. Asura, Dex, Flame)...',
-                        hintStyle: const TextStyle(color: AppColors.muted, fontSize: 13),
-                        border: InputBorder.none,
-                        isDense: true,
-                      ),
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 44),
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: AppColors.outline),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _searchController,
+                    onChanged: (v) {
+                      _searchDebounce?.cancel();
+                      setState(() => _query = v.trim());
+                    },
+                    style: AppText.body,
+                    decoration: InputDecoration(
+                      hintText: 'Search 1,400+ extensions (e.g. Asura, Dex, Flame)...',
+                      hintStyle: AppText.body.copyWith(color: AppColors.muted),
+                      border: InputBorder.none,
+                      isDense: true,
                     ),
                   ),
-                  if (_query.isNotEmpty)
-                    GestureDetector(
-                      onTap: () {
-                        _searchController.clear();
-                        setState(() => _query = '');
-                      },
-                      child: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
-                    ),
-                ],
-              ),
+                ),
+                if (_query.isNotEmpty)
+                  IconButton(
+                    onPressed: () {
+                      _searchController.clear();
+                      setState(() => _query = '');
+                    },
+                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                    padding: EdgeInsets.zero,
+                    icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
+                  ),
+              ],
             ),
           ),
+        ),
 
-          // Language Filter Chips
-          SizedBox(
-            height: 38,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: _commonLangs.length,
-              itemBuilder: (ctx, i) {
-                final lang = _commonLangs[i];
-                final isSel = _selectedLang == lang;
-                return Padding(
+        // Language Filter Chips + NSFW Toggle
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(right: 8, bottom: 4),
+                child: FilterChip(
+                  label: const Text('18+ NSFW'),
+                  selected: _showNsfw,
+                  onSelected: (val) => setState(() => _showNsfw = val),
+                  selectedColor: Colors.redAccent.withValues(alpha: .25),
+                  backgroundColor: AppColors.surface,
+                  labelStyle: AppText.chip.copyWith(
+                    fontWeight: _showNsfw ? FontWeight.w700 : FontWeight.w500,
+                    color: _showNsfw ? Colors.redAccent : AppColors.muted,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    side: BorderSide(color: _showNsfw ? Colors.redAccent : AppColors.outline),
+                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  showCheckmark: false,
+                ),
+              ),
+              for (final lang in _commonLangs)
+                Padding(
                   padding: const EdgeInsets.only(right: 6, bottom: 4),
                   child: ChoiceChip(
                     label: Text(lang),
-                    selected: isSel,
+                    selected: _selectedLang == lang,
                     onSelected: (val) {
                       if (val) setState(() => _selectedLang = lang);
                     },
                     selectedColor: AppColors.primary,
                     backgroundColor: AppColors.surface,
-                    labelStyle: GoogleFonts.inter(
-                      fontSize: 11,
-                      fontWeight: isSel ? FontWeight.w700 : FontWeight.w500,
-                      color: isSel ? AppColors.onPrimary : AppColors.muted,
+                    labelStyle: AppText.chip.copyWith(
+                      fontWeight: _selectedLang == lang ? FontWeight.w700 : FontWeight.w500,
+                      color: _selectedLang == lang ? AppColors.onPrimary : AppColors.muted,
                     ),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(8),
-                      side: BorderSide(color: isSel ? AppColors.primary : AppColors.surfaceHigh),
+                      side: BorderSide(color: _selectedLang == lang ? AppColors.primary : AppColors.outline),
                     ),
                     padding: const EdgeInsets.symmetric(horizontal: 8),
                     showCheckmark: false,
                   ),
-                );
-              },
-            ),
+                ),
+            ],
           ),
-          const SizedBox(height: 6),
+        ),
+        const SizedBox(height: 6),
 
-          // Main list
-          Expanded(
-            child: _service.isLoading && allExts.isEmpty
-                ? ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    itemCount: 8,
-                    itemBuilder: (ctx, i) => const ExtensionTileSkeleton(),
-                  )
-                : _service.error != null && allExts.isEmpty
-                    ? Center(
-                        child: Padding(
-                          padding: const EdgeInsets.all(24),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 40),
-                              const SizedBox(height: 12),
-                              Text(_service.error!, textAlign: TextAlign.center, style: const TextStyle(color: AppColors.muted)),
-                              const SizedBox(height: 16),
-                              FilledButton(
-                                onPressed: () => _service.fetchExtensions(force: true),
-                                child: const Text('Try Again'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      )
-                    : RefreshIndicator(
-                        onRefresh: () => _service.fetchExtensions(force: true),
-                        color: AppColors.primary,
-                        child: CustomScrollView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          slivers: [
-                            // Info Banner
-                            SliverToBoxAdapter(
-                              child: Container(
-                                margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: AppColors.surface,
-                                  borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: AppColors.surfaceHigh),
-                                ),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    const Icon(Icons.info_outline_rounded, size: 20, color: AppColors.primary),
-                                    const SizedBox(width: 10),
-                                    Expanded(
-                                      child: Text(
-                                        Platform.isIOS
-                                            ? 'Direct Built-in Sources: MangaDex, Asura Scans, Flame Comics, Weeb Central, MangaPill and more are directly integrated into Shiori. Community APK extensions are not supported on iOS.'
-                                            : 'All extensions install directly in-app. Browse manga catalogs and read chapters with zero external redirects.',
-                                        style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.4),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
+        // Main list (Updates available -> Installed -> Available)
+        Expanded(
+          child: _service.isLoading && allExts.isEmpty
+              ? ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  itemCount: 8,
+                  itemBuilder: (ctx, i) => const ExtensionTileSkeleton(),
+                )
+              : RefreshIndicator(
+                  onRefresh: () async {
+                    await _service.refreshDeviceExtensions();
+                    await _service.fetchExtensions(force: true);
+                  },
+                  color: AppColors.primary,
+                  child: CustomScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    slivers: [
+                      if (_service.error != null)
+                        SliverToBoxAdapter(
+                          child: Container(
+                            margin: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: AppColors.surface,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.orangeAccent.withValues(alpha: .4)),
                             ),
-
-                            // Direct In-App Sources
-                            SliverToBoxAdapter(
-                              child: Builder(
-                                builder: (context) {
-                                  if (matchDirectSources.isEmpty) return const SizedBox.shrink();
-
-                                  return Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        _header('DIRECT IN-APP SOURCES'),
-                                        for (final ds in matchDirectSources)
-                                          _buildDirectSourceTile(
-                                            id: ds.id,
-                                            name: ds.name,
-                                            description: ds.description,
-                                            lang: ds.lang,
-                                            iconLetter: ds.iconLetter,
-                                            iconColor: Color(ds.colorValue),
-                                            isInstalled: true,
-                                          ),
-                                        const SizedBox(height: 12),
-                                      ],
-                                    ),
-                                  );
-                                },
-                              ),
-                            ),
-
-                            // Keiyoushi Community Extensions (Android APK packages)
-                            if (!Platform.isIOS && filtered.isNotEmpty) ...[
-                              SliverToBoxAdapter(
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                                  child: _header('COMMUNITY EXTENSIONS'),
-                                ),
-                              ),
-                              SliverPadding(
-                                padding: const EdgeInsets.symmetric(horizontal: 16),
-                                sliver: SliverList.builder(
-                                  itemCount: filtered.length,
-                                  itemBuilder: (_, i) => _buildExtensionTile(filtered[i]),
-                                ),
-                              ),
-                              const SliverToBoxAdapter(child: SizedBox(height: 24)),
-                            ],
-
-                            if (Platform.isIOS ? matchDirectSources.isEmpty : (matchDirectSources.isEmpty && installed.isEmpty && available.isEmpty))
-                              SliverToBoxAdapter(
-                                child: Padding(
-                                  padding: const EdgeInsets.all(40),
-                                  child: EmptyState(
-                                    icon: Icons.search_off_rounded,
-                                    title: Platform.isIOS ? 'No sources found' : 'No extensions found',
-                                    message: 'Try searching for another name or changing the language filter from $_selectedLang.',
+                            child: Row(
+                              children: [
+                                const Icon(Icons.cloud_off_rounded, size: 18, color: Colors.orangeAccent),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    'Repo offline (${_service.error}). Showing installed device extensions.',
+                                    style: AppText.caption.copyWith(color: AppColors.muted),
                                   ),
                                 ),
-                              ),
-                          ],
+                                TextButton(
+                                  onPressed: () => _service.fetchExtensions(force: true),
+                                  child: const Text('Retry'),
+                                ),
+                              ],
+                            ),
+                          ),
                         ),
-                      ),
-          ),
-        ],
-      );
+
+                      // SECTION 1: UPDATES AVAILABLE
+                      if (updatesAvailable.isNotEmpty) ...[
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: _header('UPDATES AVAILABLE (${updatesAvailable.length})'),
+                                ),
+                                TextButton.icon(
+                                  onPressed: () async {
+                                    final count = await _service.updateAllExtensions();
+                                    if (context.mounted) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(
+                                          content: Text(count > 0
+                                              ? 'Updated $count extension${count == 1 ? '' : 's'}'
+                                              : (_service.lastInstallError ?? 'Failed to update extensions.')),
+                                          duration: const Duration(seconds: 3),
+                                        ),
+                                      );
+                                    }
+                                  },
+                                  icon: const Icon(Icons.done_all_rounded, size: 15),
+                                  label: Text(
+                                    'Update All',
+                                    style: AppText.chip.copyWith(color: AppColors.primary, fontWeight: FontWeight.w700),
+                                  ),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: AppColors.primary,
+                                    minimumSize: const Size(44, 36),
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        SliverPadding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          sliver: SliverList.builder(
+                            itemCount: updatesAvailable.length,
+                            itemBuilder: (_, i) => _buildExtensionTile(updatesAvailable[i]),
+                          ),
+                        ),
+                        const SliverToBoxAdapter(child: SizedBox(height: 12)),
+                      ],
+
+                      // SECTION 2: INSTALLED
+                      if (installed.isNotEmpty) ...[
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: _header('INSTALLED (${installed.length})'),
+                          ),
+                        ),
+                        SliverPadding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          sliver: SliverList.builder(
+                            itemCount: installed.length,
+                            itemBuilder: (_, i) => _buildExtensionTile(installed[i]),
+                          ),
+                        ),
+                        const SliverToBoxAdapter(child: SizedBox(height: 12)),
+                      ],
+
+                      // SECTION 3: AVAILABLE
+                      if (available.isNotEmpty) ...[
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: _header('AVAILABLE (${available.length})'),
+                          ),
+                        ),
+                        SliverPadding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
+                          sliver: SliverList.builder(
+                            itemCount: available.length,
+                            itemBuilder: (_, i) => _buildExtensionTile(available[i]),
+                          ),
+                        ),
+                        const SliverToBoxAdapter(child: SizedBox(height: 24)),
+                      ],
+
+                      if (updatesAvailable.isEmpty && installed.isEmpty && available.isEmpty)
+                        SliverToBoxAdapter(
+                          child: Padding(
+                            padding: const EdgeInsets.all(40),
+                            child: EmptyState(
+                              icon: Icons.search_off_rounded,
+                              title: 'No extensions found',
+                              message: 'Try searching for another name or changing the language filter from $_selectedLang.',
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+        ),
+      ],
+    );
 
     if (widget.isEmbedded) {
       return body;
@@ -749,54 +882,25 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
         title: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(Platform.isIOS ? 'Sources' : 'Extensions', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w600)),
-            if (!Platform.isIOS)
-              Text(
-                'Community extensions',
-                style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
-              ),
-            if (Platform.isIOS)
-              Text(
-                'Direct sources integrated natively',
-                style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
-              ),
+            Text('Extensions', style: AppText.title),
+            Text(
+              'Tachiyomi / Keiyoushi extensions',
+              style: AppText.caption.copyWith(color: AppColors.muted),
+            ),
           ],
         ),
         actions: [
-          if (!Platform.isIOS)
-            PopupMenuButton<String>(
-              icon: const Icon(Icons.more_vert_rounded, color: AppColors.muted),
-              color: AppColors.surface,
-              onSelected: (val) {
-                if (val == 'repo') {
-                  _addRepoDialog();
-                } else if (val == 'uninstall_all') {
-                  _confirmUninstallAll();
-                }
-              },
-              itemBuilder: (ctx) => [
-                const PopupMenuItem(
-                  value: 'repo',
-                  child: Row(
-                    children: [
-                      Icon(Icons.hub_rounded, size: 18, color: AppColors.primary),
-                      SizedBox(width: 10),
-                      Text('Repository Settings'),
-                    ],
-                  ),
-                ),
-                const PopupMenuItem(
-                  value: 'uninstall_all',
-                  child: Row(
-                    children: [
-                      Icon(Icons.delete_sweep_rounded, size: 18, color: Colors.redAccent),
-                      SizedBox(width: 10),
-                      Text('Uninstall All Sources', style: TextStyle(color: Colors.redAccent)),
-                    ],
-                  ),
-                ),
-              ],
-            ),
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded, color: AppColors.muted),
+            onPressed: () {
+              _service.refreshDeviceExtensions();
+              _service.fetchExtensions(force: true);
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.hub_rounded, color: AppColors.muted),
+            onPressed: _addRepoDialog,
+          ),
         ],
       ),
       body: body,
@@ -808,166 +912,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       padding: const EdgeInsets.only(left: 4, bottom: 8, top: 4),
       child: Text(
         text,
-        style: GoogleFonts.inter(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 1,
-          color: AppColors.muted,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDirectSourceTile({
-    required String id,
-    required String name,
-    required String description,
-    required String lang,
-    required String iconLetter,
-    required Color iconColor,
-    required bool isInstalled,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Container(
-        padding: const EdgeInsets.all(12),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.surfaceHigh),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: BoxDecoration(
-                color: iconColor.withValues(alpha: .18),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: iconColor.withValues(alpha: .4)),
-              ),
-              child: Center(
-                child: Text(
-                  iconLetter,
-                  style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: iconColor),
-                ),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 3),
-                  Wrap(
-                    spacing: 4,
-                    runSpacing: 2,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: AppColors.surfaceHigh,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          lang,
-                          style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w600, color: AppColors.primary),
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: Colors.greenAccent.withValues(alpha: .15),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          'DIRECT',
-                          style: GoogleFonts.inter(fontSize: 8, fontWeight: FontWeight.w700, color: Colors.greenAccent),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    description,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            if (isInstalled)
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.all(6),
-                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                    icon: const Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
-                    tooltip: 'Browse $name Catalog',
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        smoothRoute(
-                          SourceCatalogScreen(
-                            sourceId: id,
-                            sourceName: name,
-                            sourceLang: lang,
-                          ),
-                        ),
-                      );
-                    },
-                  ),
-                  IconButton(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.all(6),
-                    constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                    icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
-                    tooltip: 'Uninstall $name',
-                    onPressed: () {
-                      _service.uninstallPackage(id);
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Uninstalled $name'),
-                          duration: const Duration(seconds: 1),
-                        ),
-                      );
-                    },
-                  ),
-                ],
-              )
-            else
-              FilledButton(
-                onPressed: () {
-                  _service.installPackageByNameOrId(id);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text('Installed $name! Added to Browse Sources.'),
-                      duration: const Duration(seconds: 2),
-                    ),
-                  );
-                },
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.primary,
-                  foregroundColor: AppColors.onPrimary,
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  minimumSize: const Size(0, 32),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-                child: Text('Install', style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600)),
-              ),
-          ],
-        ),
+        style: AppText.sectionHeader,
       ),
     );
   }
@@ -983,7 +928,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
           decoration: BoxDecoration(
             color: AppColors.surface,
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: AppColors.surfaceHigh),
+            border: Border.all(color: AppColors.outline),
           ),
           child: Row(
             children: [
@@ -999,7 +944,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                       ext.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                      style: AppText.cardTitle,
                     ),
                     const SizedBox(height: 3),
                     Wrap(
@@ -1015,7 +960,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           ),
                           child: Text(
                             ext.lang,
-                            style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w600, color: AppColors.primary),
+                            style: AppText.badge.copyWith(color: AppColors.primary),
                           ),
                         ),
                         if (ext.isNsfw)
@@ -1027,12 +972,29 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                             ),
                             child: Text(
                               '18+',
-                              style: GoogleFonts.inter(fontSize: 8, fontWeight: FontWeight.w700, color: Colors.redAccent),
+                              style: AppText.badge.copyWith(color: Colors.redAccent),
+                            ),
+                          ),
+                        if (!ext.isCompatible)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: Colors.orangeAccent.withValues(alpha: .2),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              'Incompatible lib version',
+                              style: AppText.badge.copyWith(color: Colors.orangeAccent),
                             ),
                           ),
                         Text(
-                          'v${ext.version}',
-                          style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                          ext.hasUpdate && ext.repoVersion != null
+                              ? 'v${ext.version} → v${ext.repoVersion}'
+                              : 'v${ext.version}',
+                          style: AppText.caption.copyWith(
+                            color: ext.hasUpdate ? AppColors.primary : AppColors.muted,
+                            fontWeight: ext.hasUpdate ? FontWeight.w600 : FontWeight.normal,
+                          ),
                         ),
                       ],
                     ),
@@ -1043,7 +1005,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           : ext.pkg.replaceFirst(RegExp(r'^eu\.kanade\.tachiyomi\.(?:extension\.)?'), ''),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                      style: AppText.caption.copyWith(color: AppColors.muted),
                     ),
                   ],
                 ),
@@ -1052,47 +1014,10 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
               // Action button:
               Builder(
                 builder: (bCtx) {
-                  if (ext.isInstalled) {
-                    return Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.all(6),
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          icon: const Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
-                          tooltip: 'Browse ${ext.name} Catalog',
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              smoothRoute(
-                                SourceCatalogScreen(
-                                  sourceId: ext.pkg,
-                                  sourceName: ext.name,
-                                  sourceLang: ext.lang,
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                        IconButton(
-                          visualDensity: VisualDensity.compact,
-                          padding: const EdgeInsets.all(6),
-                          constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                          icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
-                          tooltip: 'Uninstall ${ext.name}',
-                          onPressed: () {
-                            _service.uninstallExtension(ext);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Uninstalled ${ext.name}'),
-                                duration: const Duration(seconds: 1),
-                              ),
-                            );
-                          },
-                        ),
-                      ],
-                    );
-                  }
+                  final targetSourceId = (_selectedLang != 'ALL' && ext.lang == 'ALL')
+                      ? '${ext.pkg}@$_selectedLang'
+                      : ext.pkg;
+                  final targetLang = _selectedLang != 'ALL' ? _selectedLang : ext.lang;
 
                   final isDownloading = _service.isDownloading(ext.pkg);
                   final progress = _service.getProgress(ext.pkg);
@@ -1119,9 +1044,93 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           const SizedBox(width: 8),
                           Text(
                             progress > 0 ? '${(progress * 100).toInt()}%' : '...',
-                            style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.primary),
+                            style: AppText.caption.copyWith(fontWeight: FontWeight.w700, color: AppColors.primary),
                           ),
                         ],
+                      ),
+                    );
+                  }
+
+                  if (ext.isInstalled) {
+                    return Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (ext.hasUpdate)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 4),
+                            child: FilledButton(
+                              onPressed: () async {
+                                final ok = await _service.downloadAndInstallExtension(ext);
+                                if (mounted) {
+                                  final updatedVer = _service.getExtensionByPkg(ext.pkg)?.version ?? ext.repoVersion ?? ext.version;
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(ok
+                                          ? 'Updated ${ext.name} to v$updatedVer'
+                                          : (_service.lastInstallError ?? 'Failed to update ${ext.name}.')),
+                                      duration: const Duration(seconds: 3),
+                                    ),
+                                  );
+                                }
+                              },
+                              style: FilledButton.styleFrom(
+                                backgroundColor: AppColors.primary,
+                                foregroundColor: AppColors.onPrimary,
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                minimumSize: const Size(44, 44),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              child: Text(
+                                'Update',
+                                style: AppText.chip.copyWith(color: AppColors.onPrimary, fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                          ),
+                        if (ext.isCompatible)
+                          IconButton(
+                            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                            icon: const Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
+                            tooltip: 'Browse ${ext.name} Catalog',
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                smoothRoute(
+                                  SourceCatalogScreen(
+                                    sourceId: targetSourceId,
+                                    sourceName: ext.name,
+                                    sourceLang: targetLang,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                        IconButton(
+                          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                          icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
+                          tooltip: 'Uninstall ${ext.name}',
+                          onPressed: () {
+                            _service.uninstallExtension(ext);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Uninstalled ${ext.name}'),
+                                duration: const Duration(seconds: 1),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    );
+                  }
+
+                  if (!ext.isCompatible) {
+                    return Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.orangeAccent.withValues(alpha: .15),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        'Incompatible',
+                        style: AppText.badge.copyWith(color: Colors.orangeAccent),
                       ),
                     );
                   }
@@ -1130,29 +1139,33 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     onPressed: () async {
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text('Downloading ${ext.name} in-app...'),
+                          content: Text('Downloading ${ext.name}...'),
                           duration: const Duration(seconds: 1),
                         ),
                       );
                       final ok = await _service.downloadAndInstallExtension(ext);
                       if (mounted) {
+                        final installedVer = _service.getExtensionByPkg(ext.pkg)?.version ?? ext.version;
                         ScaffoldMessenger.of(context).showSnackBar(
                           SnackBar(
                             content: Text(ok
-                                ? 'Installed ${ext.name} in-app! Added to Browse Sources.'
-                                : 'Failed to install ${ext.name}.'),
-                            duration: const Duration(seconds: 2),
+                                ? 'Installed ${ext.name} v$installedVer'
+                                : (_service.lastInstallError ?? 'Failed to install ${ext.name}.')),
+                            duration: const Duration(seconds: 3),
                           ),
                         );
                       }
                     },
                     icon: const Icon(Icons.download_rounded, size: 14),
-                    label: Text('Install', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600)),
+                    label: Text(
+                      'Install',
+                      style: AppText.chip.copyWith(color: AppColors.onPrimary, fontWeight: FontWeight.w700),
+                    ),
                     style: FilledButton.styleFrom(
                       backgroundColor: AppColors.primary,
                       foregroundColor: AppColors.onPrimary,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                      minimumSize: const Size(0, 32),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      minimumSize: const Size(44, 44),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   );

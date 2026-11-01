@@ -2,87 +2,168 @@ import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-/// Design tokens ported from the Figma Make `index.css` `:root` block.
+/// Pure-black AMOLED design tokens.
 class AppColors {
   AppColors._();
 
-  static const bg = Color(0xFF111318);
+  static const bg = Color(0xFF000000);
   static const amoledBg = Color(0xFF000000);
-  static const surface = Color(0xFF1D2026);
-  static const amoledSurface = Color(0xFF0D0E12);
-  static const surfaceHigh = Color(0xFF282A2F);
-  static const amoledSurfaceHigh = Color(0xFF16181F);
-  static const text = Color(0xFFE2E2E9);
-  static const muted = Color(0xFF8E9099);
-  static const read = Color(0xFF6C707A);
+  static const surface = Color(0xFF0A0A0A);
+  static const amoledSurface = Color(0xFF0A0A0A);
+  static const surfaceHigh = Color(0xFF141414);
+  static const amoledSurfaceHigh = Color(0xFF141414);
+  static const text = Color(0xFFEDEDEF);
+  static const muted = Color(0xFF9A9CA6); // WCAG AA (~7.5:1 on #000000)
+  static const read = Color(0xFF70737D);
   static const primary = Color(0xFFADC6FF);
   static const onPrimary = Color(0xFF002E69);
-  static const active = Color(0xFF004A77);
-  static const outline = Color(0xFF44474F);
-  static const black = Color(0xFF060709);
+  static const active = Color(0xFF102A45);
+  static const outline = Color(0xFF222226);
+  static const black = Color(0xFF000000);
+}
+
+/// Consistent application-wide type scale (cached to avoid per-frame GoogleFonts lookups).
+class AppText {
+  AppText._();
+
+  /// Screen / AppBar title (20sp, w600).
+  static final TextStyle title = GoogleFonts.inter(
+    fontSize: 20,
+    fontWeight: FontWeight.w600,
+    color: AppColors.text,
+  );
+
+  /// Modal / sheet / dialog title (16.5sp, w700).
+  static final TextStyle sheetTitle = GoogleFonts.inter(
+    fontSize: 16.5,
+    fontWeight: FontWeight.w700,
+    color: AppColors.text,
+  );
+
+  /// Section header (11.5sp, w700, letter-spaced).
+  static final TextStyle sectionHeader = GoogleFonts.inter(
+    fontSize: 11.5,
+    fontWeight: FontWeight.w700,
+    letterSpacing: 1.0,
+    color: AppColors.muted,
+  );
+
+  /// Card title / prominent list item title (14.5sp, w600).
+  static final TextStyle cardTitle = GoogleFonts.inter(
+    fontSize: 14.5,
+    fontWeight: FontWeight.w600,
+    color: AppColors.text,
+  );
+
+  /// Standard body text (13sp, w400).
+  static final TextStyle body = GoogleFonts.inter(
+    fontSize: 13,
+    fontWeight: FontWeight.w400,
+    color: AppColors.text,
+  );
+
+  /// Medium body / list title text (13sp, w500).
+  static final TextStyle bodyMedium = GoogleFonts.inter(
+    fontSize: 13,
+    fontWeight: FontWeight.w500,
+    color: AppColors.text,
+  );
+
+  /// Semi-bold body / button text (13sp, w600).
+  static final TextStyle bodySemiBold = GoogleFonts.inter(
+    fontSize: 13,
+    fontWeight: FontWeight.w600,
+    color: AppColors.text,
+  );
+
+  /// Chip / tab / compact cover label (12sp, w500).
+  static final TextStyle chip = GoogleFonts.inter(
+    fontSize: 12,
+    fontWeight: FontWeight.w500,
+    color: AppColors.text,
+  );
+
+  /// Caption / subtitle / secondary metadata (11.5sp, w400).
+  static final TextStyle caption = GoogleFonts.inter(
+    fontSize: 11.5,
+    fontWeight: FontWeight.w400,
+    color: AppColors.muted,
+  );
+
+  /// Badge / pill / micro status label (9.5sp, w700).
+  static final TextStyle badge = GoogleFonts.inter(
+    fontSize: 9.5,
+    fontWeight: FontWeight.w700,
+    color: AppColors.primary,
+  );
+
+  /// Monospace text for technical identifiers & backups (11.5sp).
+  static final TextStyle mono = GoogleFonts.robotoMono(
+    fontSize: 11.5,
+    color: AppColors.text,
+  );
+
+  /// Navigation bar label styles (12.2sp).
+  static final TextStyle navLabelSelected = GoogleFonts.inter(
+    fontSize: 12.2,
+    fontWeight: FontWeight.w700,
+    color: AppColors.text,
+  );
+
+  static final TextStyle navLabelUnselected = GoogleFonts.inter(
+    fontSize: 12.2,
+    fontWeight: FontWeight.w500,
+    color: AppColors.muted,
+  );
 }
 
 class ThemeController extends ChangeNotifier {
   ThemeController._();
   static final ThemeController instance = ThemeController._();
 
-  static const String _keyAmoled = 'amoled_black_enabled';
-  bool _amoled = false;
+  bool get isAmoled => true;
 
-  bool get isAmoled => _amoled;
-
-  Color get currentBg => _amoled ? AppColors.amoledBg : AppColors.bg;
-  Color get currentSurface => _amoled ? AppColors.amoledSurface : AppColors.surface;
-  Color get currentSurfaceHigh => _amoled ? AppColors.amoledSurfaceHigh : AppColors.surfaceHigh;
+  Color get currentBg => AppColors.bg;
+  Color get currentSurface => AppColors.surface;
+  Color get currentSurfaceHigh => AppColors.surfaceHigh;
 
   Future<void> init() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      _amoled = prefs.getBool(_keyAmoled) ?? false;
-      _updateSystemUI();
-      notifyListeners();
-    } catch (_) {}
-  }
-
-  Future<void> setAmoled(bool enabled) async {
-    _amoled = enabled;
     _updateSystemUI();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_keyAmoled, enabled);
-    notifyListeners();
   }
 
   void _updateSystemUI() {
     SystemChrome.setSystemUIOverlayStyle(
-      SystemUiOverlayStyle(
+      const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
         statusBarIconBrightness: Brightness.light,
-        systemNavigationBarColor: _amoled ? Colors.black : AppColors.surface,
+        systemNavigationBarColor: AppColors.bg,
         systemNavigationBarIconBrightness: Brightness.light,
       ),
     );
   }
 }
 
-ThemeData buildTheme({bool amoled = false}) {
-  final bgColor = amoled ? AppColors.amoledBg : AppColors.bg;
-  final surfaceColor = amoled ? AppColors.amoledSurface : AppColors.surface;
-  final surfaceHighColor = amoled ? AppColors.amoledSurfaceHigh : AppColors.surfaceHigh;
+ThemeData? _cachedTheme;
+
+ThemeData buildTheme() {
+  final existing = _cachedTheme;
+  if (existing != null) return existing;
 
   final base = ThemeData(
     brightness: Brightness.dark,
     useMaterial3: true,
-    scaffoldBackgroundColor: bgColor,
-    colorScheme: ColorScheme.dark(
+    scaffoldBackgroundColor: AppColors.bg,
+    canvasColor: AppColors.surface,
+    cardColor: AppColors.surface,
+    colorScheme: const ColorScheme.dark(
       primary: AppColors.primary,
       onPrimary: AppColors.onPrimary,
-      surface: bgColor,
+      surface: AppColors.bg,
       onSurface: AppColors.text,
       outline: AppColors.outline,
-      surfaceContainer: surfaceColor,
-      surfaceContainerHigh: surfaceHighColor,
+      surfaceContainer: AppColors.surface,
+      surfaceContainerHigh: AppColors.surfaceHigh,
     ),
   );
 
@@ -91,9 +172,51 @@ ThemeData buildTheme({bool amoled = false}) {
     displayColor: AppColors.text,
   );
 
-  return base.copyWith(
+  final built = base.copyWith(
     textTheme: textTheme,
     splashFactory: InkRipple.splashFactory,
+    dividerColor: AppColors.outline,
+    appBarTheme: AppBarTheme(
+      backgroundColor: AppColors.bg,
+      surfaceTintColor: Colors.transparent,
+      foregroundColor: AppColors.text,
+      elevation: 0,
+      titleTextStyle: AppText.title,
+    ),
+    bottomSheetTheme: const BottomSheetThemeData(
+      backgroundColor: AppColors.surface,
+      modalBackgroundColor: AppColors.surface,
+      surfaceTintColor: Colors.transparent,
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: AppColors.surface,
+      surfaceTintColor: Colors.transparent,
+      titleTextStyle: AppText.sheetTitle,
+      contentTextStyle: AppText.body.copyWith(color: AppColors.muted),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      backgroundColor: AppColors.surfaceHigh,
+      contentTextStyle: AppText.body,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(10),
+        side: const BorderSide(color: AppColors.outline),
+      ),
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: AppColors.surface,
+      surfaceTintColor: Colors.transparent,
+      textStyle: AppText.body,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: AppColors.outline),
+      ),
+    ),
+    chipTheme: base.chipTheme.copyWith(
+      backgroundColor: AppColors.surface,
+      selectedColor: AppColors.active,
+      side: const BorderSide(color: AppColors.outline),
+      labelStyle: AppText.chip,
+    ),
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
         TargetPlatform.android: ZoomPageTransitionsBuilder(),
@@ -104,8 +227,8 @@ ThemeData buildTheme({bool amoled = false}) {
       },
     ),
     navigationBarTheme: NavigationBarThemeData(
-      height: 80,
-      backgroundColor: surfaceColor,
+      height: 74,
+      backgroundColor: AppColors.surface,
       surfaceTintColor: Colors.transparent,
       indicatorColor: AppColors.active,
       indicatorShape: RoundedRectangleBorder(
@@ -114,18 +237,18 @@ ThemeData buildTheme({bool amoled = false}) {
       iconTheme: WidgetStateProperty.resolveWith((states) {
         final selected = states.contains(WidgetState.selected);
         return IconThemeData(
-          size: 20,
+          size: 26,
           color: selected ? AppColors.primary : AppColors.muted,
         );
       }),
       labelTextStyle: WidgetStateProperty.resolveWith((states) {
         final selected = states.contains(WidgetState.selected);
-        return GoogleFonts.inter(
-          fontSize: 10,
-          color: selected ? AppColors.text : AppColors.muted,
-        );
+        return selected
+            ? AppText.navLabelSelected
+            : AppText.navLabelUnselected;
       }),
     ),
-    dividerColor: surfaceColor,
   );
+  _cachedTheme = built;
+  return built;
 }

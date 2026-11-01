@@ -6,8 +6,14 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
+import android.webkit.CookieManager
 import dalvik.system.PathClassLoader
+import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.NetworkHelper
+import eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor
+import eu.kanade.tachiyomi.network.interceptor.RateLimitInterceptor
+import eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor
+import eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.Source
 import eu.kanade.tachiyomi.source.SourceFactory
@@ -23,23 +29,90 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import uy.kohesive.injekt.Injekt
 import uy.kohesive.injekt.api.addSingleton
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipFile
+import android.content.pm.PackageInfo
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 
 class TachiyomiExtensionManager(private val context: Context) {
     private val TAG = "TachiyomiExtMgr"
     private val sourceCache = ConcurrentHashMap<String, CatalogueSource>()
+    private val allSourcesCache = ConcurrentHashMap<String, List<CatalogueSource>>()
     private val mangaCache = ConcurrentHashMap<String, SManga>()
     private val chapterCache = ConcurrentHashMap<String, SChapter>()
+    private val pageCache = ConcurrentHashMap<String, Page>()
+    private val iconCache = ConcurrentHashMap<String, ByteArray>()
     private val updateLocks = ConcurrentHashMap<String, Mutex>()
     private val mangaUpdateSupport = ConcurrentHashMap<Class<*>, Boolean>()
+    private val customImagePipelineSupport = ConcurrentHashMap<Class<*>, Boolean>()
+
+    companion object {
+        const val EXTENSION_FEATURE = "tachiyomi.extension"
+        const val METADATA_SOURCE_CLASS = "tachiyomi.extension.class"
+        const val METADATA_SOURCE_FACTORY = "tachiyomi.extension.factory"
+        const val METADATA_NSFW = "tachiyomi.extension.nsfw"
+        const val LIB_VERSION_MIN = 1.4
+        const val LIB_VERSION_MAX = 1.6
+
+        private val STUB_PACKAGES = setOf(
+            "eu.kanade.tachiyomi.extension.all.keiyoushi",
+            "eu.kanade.tachiyomi.extension.all.mihon"
+        )
+
+        fun isStubPackage(pkg: String): Boolean {
+            val base = pkg.substringBefore('@').trim().lowercase()
+            return base in STUB_PACKAGES ||
+                base.endsWith(".extension.all.keiyoushi") ||
+                base.endsWith(".extension.all.mihon")
+        }
+
+        fun deriveLangFromPkg(pkg: String): String {
+            val base = pkg.substringBefore('@').trim()
+            if (base.contains(".extension.")) {
+                val after = base.substringAfter(".extension.")
+                val lang = after.substringBefore('.', "")
+                if (lang.isNotEmpty()) return lang.lowercase()
+            }
+            val parts = base.split('.')
+            if (parts.size >= 5) return parts[4].lowercase()
+            return "en"
+        }
+
+        fun parseLibVersion(versionName: String?): String {
+            val v = (versionName ?: "").trim()
+            if (v.isEmpty()) return "1.4"
+            val parts = v.split('.')
+            return if (parts.size >= 2) "${parts[0]}.${parts[1]}" else v
+        }
+
+        fun isLibVersionCompatible(libVersion: String?): Boolean {
+            val parsed = libVersion?.trim()?.toDoubleOrNull() ?: return true
+            return parsed in LIB_VERSION_MIN..LIB_VERSION_MAX
+        }
+    }
+
+    private fun splitPkgSelector(pkg: String): Pair<String, String> {
+        val base = pkg.substringBefore('@').trim()
+        val selector = pkg.substringAfter('@', "").trim()
+        return base to selector
+    }
 
     init {
         setupInjekt()
@@ -81,12 +154,291 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }
             )
         } catch (_: Throwable) {}
+
+        try {
+            Injekt.addSingleton<kotlinx.serialization.protobuf.ProtoBuf>(
+                kotlinx.serialization.protobuf.ProtoBuf.Default
+            )
+        } catch (_: Throwable) {}
+    }
+
+    private fun drawableToPngBytes(drawable: Drawable): ByteArray? {
+        return try {
+            val bitmap = if (drawable is BitmapDrawable && drawable.bitmap != null) {
+                drawable.bitmap
+            } else {
+                val w = drawable.intrinsicWidth.coerceIn(48, 144)
+                val h = drawable.intrinsicHeight.coerceIn(48, 144)
+                val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                val canvas = Canvas(bmp)
+                drawable.setBounds(0, 0, canvas.width, canvas.height)
+                drawable.draw(canvas)
+                bmp
+            }
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.PNG, 90, out)
+            out.toByteArray()
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun extractSignatureSha256(pkgInfo: PackageInfo): String? {
+        return try {
+            val certBytes: ByteArray? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val signingInfo = pkgInfo.signingInfo
+                val sigs = if (signingInfo != null) {
+                    if (signingInfo.hasMultipleSigners()) signingInfo.apkContentsSigners
+                    else signingInfo.signingCertificateHistory
+                } else null
+                sigs?.firstOrNull()?.toByteArray() ?: pkgInfo.signatures?.firstOrNull()?.toByteArray()
+            } else {
+                pkgInfo.signatures?.firstOrNull()?.toByteArray()
+            }
+            if (certBytes != null) {
+                MessageDigest.getInstance("SHA-256")
+                    .digest(certBytes)
+                    .joinToString("") { "%02x".format(it) }
+            } else null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    fun getApkSignatureSha256(apkPath: String): String? {
+        return try {
+            val pm = context.packageManager
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                PackageManager.GET_SIGNING_CERTIFICATES or PackageManager.GET_SIGNATURES
+            } else {
+                PackageManager.GET_SIGNATURES
+            }
+            val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageArchiveInfo(apkPath, PackageManager.PackageInfoFlags.of(flags.toLong()))
+            } else {
+                pm.getPackageArchiveInfo(apkPath, flags)
+            }
+            if (pkgInfo != null) extractSignatureSha256(pkgInfo) else null
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun isExtensionPackage(pkgInfo: PackageInfo): Boolean {
+        val pkgName = pkgInfo.packageName ?: return false
+        if (isStubPackage(pkgName)) return false
+        val hasFeature = pkgInfo.reqFeatures?.any { it.name == EXTENSION_FEATURE } == true
+        if (hasFeature) return true
+        val meta = pkgInfo.applicationInfo?.metaData
+        if (meta != null && (meta.containsKey(METADATA_SOURCE_CLASS) || meta.containsKey(METADATA_SOURCE_FACTORY) || meta.containsKey("tachiyomi.source.class"))) {
+            return true
+        }
+        return pkgName.contains(".tachiyomi.extension.") || pkgName.startsWith("eu.kanade.tachiyomi.extension.")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun getPkgVersionCode(pkgInfo: PackageInfo): Long {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            pkgInfo.longVersionCode
+        } else {
+            pkgInfo.versionCode.toLong()
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    fun getInstalledExtensionsDetails(): List<Map<String, Any?>> {
+        val pm = context.packageManager
+        val flags = PackageManager.GET_CONFIGURATIONS or
+            PackageManager.GET_META_DATA or
+            (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES else PackageManager.GET_SIGNATURES)
+
+        val discovered = linkedMapOf<String, Pair<PackageInfo, String?>>()
+
+        try {
+            val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(flags.toLong()))
+            } else {
+                pm.getInstalledPackages(flags)
+            }
+            for (pkgInfo in installed) {
+                if (isExtensionPackage(pkgInfo)) {
+                    discovered[pkgInfo.packageName] = pkgInfo to pkgInfo.applicationInfo?.sourceDir
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Error querying installed packages: ${e.message}")
+        }
+
+        // Scan private-storage fallback APKs ONLY for extensions not installed in PackageManager.
+        // If PackageManager already owns the package, purge any stale private copy so OS versionCode stays authoritative.
+        val osInstalledPackages = discovered.keys.toHashSet()
+        val privateDir = File(context.filesDir, "shiori_extensions")
+        if (privateDir.exists() && privateDir.isDirectory) {
+            privateDir.listFiles { f -> f.extension.equals("apk", ignoreCase = true) && f.length() > 0 }?.forEach { apkFile ->
+                try {
+                    val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.PackageInfoFlags.of(flags.toLong()))
+                    } else {
+                        pm.getPackageArchiveInfo(apkFile.absolutePath, flags)
+                    }
+                    if (pkgInfo != null && isExtensionPackage(pkgInfo)) {
+                        if (osInstalledPackages.contains(pkgInfo.packageName)) {
+                            try {
+                                apkFile.setWritable(true)
+                                apkFile.delete()
+                            } catch (_: Throwable) {}
+                        } else {
+                            val candidateVer = getPkgVersionCode(pkgInfo)
+                            val existingVer = discovered[pkgInfo.packageName]?.first?.let { getPkgVersionCode(it) } ?: -1L
+                            if (!discovered.containsKey(pkgInfo.packageName) || candidateVer >= existingVer) {
+                                pkgInfo.applicationInfo?.apply {
+                                    sourceDir = apkFile.absolutePath
+                                    publicSourceDir = apkFile.absolutePath
+                                }
+                                discovered[pkgInfo.packageName] = pkgInfo to apkFile.absolutePath
+                            }
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+        }
+
+        val result = mutableListOf<Map<String, Any?>>()
+        for ((pkgName, pair) in discovered) {
+            val (pkgInfo, apkPath) = pair
+            val appInfo = pkgInfo.applicationInfo
+            val meta = appInfo?.metaData
+
+            val rawLabel = try {
+                appInfo?.loadLabel(pm)?.toString()?.trim().orEmpty()
+            } catch (_: Throwable) { "" }
+            val cleanName = rawLabel
+                .removePrefix("Tachiyomi: ")
+                .removePrefix("Mihon: ")
+                .trim()
+                .ifEmpty { pkgName.substringAfterLast('.') }
+
+            val versionName = pkgInfo.versionName ?: "1.0"
+            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                pkgInfo.longVersionCode
+            } else {
+                pkgInfo.versionCode.toLong()
+            }
+            val libVersion = parseLibVersion(versionName)
+            val compatible = isLibVersionCompatible(libVersion)
+            val lang = deriveLangFromPkg(pkgName)
+            val nsfw = (meta?.getInt(METADATA_NSFW, 0) ?: 0) == 1 ||
+                meta?.getString(METADATA_NSFW) == "1"
+
+            val cacheKey = "$pkgName:$versionCode"
+            val iconBytes = iconCache[cacheKey] ?: try {
+                val iconDrawable = appInfo?.loadIcon(pm)
+                val bytes = if (iconDrawable != null) drawableToPngBytes(iconDrawable) else null
+                if (bytes != null) iconCache[cacheKey] = bytes
+                bytes
+            } catch (_: Throwable) { null }
+
+            val signatureHash = extractSignatureSha256(pkgInfo)
+
+            val resolvedSources = mutableListOf<Map<String, Any?>>()
+            var loadError: String? = null
+            if (compatible) {
+                try {
+                    val loadedSources = loadAllSourcesForPkg(pkgName, apkPath)
+                    for (src in loadedSources) {
+                        val baseUrl = (src as? HttpSource)?.let {
+                            try { it.baseUrl } catch (_: Throwable) { "" }
+                        } ?: ""
+                        resolvedSources.add(
+                            mapOf(
+                                "id" to src.id.toString(),
+                                "name" to src.name,
+                                "lang" to src.lang.ifEmpty { lang },
+                                "baseUrl" to baseUrl,
+                                "supportsLatest" to try { src.supportsLatest } catch (_: Throwable) { false }
+                            )
+                        )
+                    }
+                } catch (e: Throwable) {
+                    loadError = e.message ?: e.toString()
+                    Log.w(TAG, "Failed to resolve CatalogueSources for $pkgName: $loadError")
+                }
+            } else {
+                loadError = "Incompatible lib version $libVersion"
+            }
+
+            result.add(
+                mapOf(
+                    "name" to cleanName,
+                    "pkg" to pkgName,
+                    "versionName" to versionName,
+                    "versionCode" to versionCode,
+                    "libVersion" to libVersion,
+                    "lang" to lang,
+                    "nsfw" to nsfw,
+                    "isCompatible" to compatible,
+                    "iconBytes" to iconBytes,
+                    "apkPath" to apkPath,
+                    "signatureHash" to signatureHash,
+                    "sources" to resolvedSources,
+                    "loadError" to loadError
+                )
+            )
+        }
+
+        return result
     }
 
     private fun findApkPath(pkg: String, hintPath: String?): String? {
+        val pm = context.packageManager
+
+        // Prefer the OS-installed system package whenever present so stale temp/cache APKs never shadow PackageManager.
+        var systemSourceDir: String? = null
+        var systemVersionCode = -1L
+        try {
+            val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(
+                    pkg,
+                    PackageManager.PackageInfoFlags.of(PackageManager.GET_META_DATA.toLong())
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(pkg, PackageManager.GET_META_DATA)
+            }
+            val srcDir = pkgInfo.applicationInfo?.sourceDir
+            if (!srcDir.isNullOrEmpty() && File(srcDir).exists()) {
+                systemSourceDir = srcDir
+                systemVersionCode = getPkgVersionCode(pkgInfo)
+            }
+        } catch (_: Exception) {}
+
+        if (systemSourceDir != null) {
+            if (!hintPath.isNullOrEmpty()) {
+                val hintFile = File(hintPath)
+                if (hintFile.exists() && hintFile.length() > 0) {
+                    try {
+                        val hintInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            pm.getPackageArchiveInfo(hintFile.absolutePath, PackageManager.PackageInfoFlags.of(0))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            pm.getPackageArchiveInfo(hintFile.absolutePath, 0)
+                        }
+                        val hintVer = if (hintInfo != null) getPkgVersionCode(hintInfo) else -1L
+                        if (hintVer > systemVersionCode) {
+                            return hintFile.absolutePath
+                        }
+                    } catch (_: Throwable) {}
+                }
+            }
+            return systemSourceDir
+        }
+
+        val candidates = linkedSetOf<String>()
         if (!hintPath.isNullOrEmpty()) {
             val f = File(hintPath)
-            if (f.exists() && f.length() > 0) return f.absolutePath
+            if (f.exists() && f.length() > 0) candidates.add(f.absolutePath)
         }
 
         val clean = pkg.replace(Regex("[^a-zA-Z0-9_.]"), "_")
@@ -97,8 +449,9 @@ class TachiyomiExtensionManager(private val context: Context) {
         )
 
         val possibleDirs = listOfNotNull(
-            File(context.cacheDir, "shiori_extensions"),
             File(context.filesDir, "shiori_extensions"),
+            File(context.codeCacheDir, "shiori_extensions"),
+            File(context.cacheDir, "shiori_extensions"),
             context.externalCacheDir?.let { File(it, "shiori_extensions") },
             System.getProperty("java.io.tmpdir")?.let { File(it, "shiori_extensions") }
         )
@@ -108,37 +461,43 @@ class TachiyomiExtensionManager(private val context: Context) {
                 for (name in possibleNames) {
                     val candidate = File(dir, name)
                     if (candidate.exists() && candidate.length() > 0) {
-                        return candidate.absolutePath
+                        candidates.add(candidate.absolutePath)
                     }
                 }
-                // Try fuzzy match in dir
                 val match = dir.listFiles()?.firstOrNull { file ->
                     val n = file.name.lowercase()
                     n.endsWith(".apk") && (n.contains(clean.lowercase()) || n.contains(pkg.lowercase()))
                 }
                 if (match != null && match.length() > 0) {
-                    return match.absolutePath
+                    candidates.add(match.absolutePath)
                 }
             }
         }
 
-        // Try installed system package
-        try {
-            val appInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.packageManager.getApplicationInfo(
-                    pkg,
-                    PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong())
-                )
-            } else {
-                @Suppress("DEPRECATION")
-                context.packageManager.getApplicationInfo(pkg, PackageManager.GET_META_DATA)
-            }
-            if (!appInfo.sourceDir.isNullOrEmpty()) {
-                return appInfo.sourceDir
-            }
-        } catch (_: Exception) {}
+        if (candidates.isEmpty()) return null
+        if (candidates.size == 1) return candidates.first()
 
-        return null
+        // Pick the APK with the highest versionCode among uninstalled fallback candidates
+        var bestPath: String? = null
+        var bestVersion = -1L
+        for (path in candidates) {
+            try {
+                val info = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getPackageArchiveInfo(path, PackageManager.PackageInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getPackageArchiveInfo(path, 0)
+                }
+                val ver = if (info != null) getPkgVersionCode(info) else 0L
+                if (bestPath == null || ver > bestVersion) {
+                    bestVersion = ver
+                    bestPath = path
+                }
+            } catch (_: Throwable) {
+                if (bestPath == null) bestPath = path
+            }
+        }
+        return bestPath
     }
 
     private fun extractExtensionClassFromApk(apkPath: String, classLoader: ClassLoader): String? {
@@ -206,19 +565,115 @@ class TachiyomiExtensionManager(private val context: Context) {
         return null
     }
 
+    /**
+     * Stages the APK into codeCacheDir with read-only permissions (mandatory on Android 14+ / API 34+
+     * where PathClassLoader throws SecurityException on writable DEX files) and extracts any bundled
+     * native .so libraries (e.g. QuickJS) matching the device ABI.
+     */
+    private fun stageReadOnlyDexAndLibs(basePkg: String, rawApkPath: String): Pair<String, String?> {
+        val srcFile = File(rawApkPath)
+        val safePkg = basePkg.replace(Regex("[^a-zA-Z0-9_.]"), "_")
+
+        // System-installed APKs under /data/app are already read-only
+        val stagedApk: File = if (rawApkPath.startsWith("/data/app/") && !srcFile.canWrite()) {
+            srcFile
+        } else {
+            val dexDir = File(context.codeCacheDir, "shiori_dex_readonly")
+            if (!dexDir.exists()) dexDir.mkdirs()
+            val targetName = "${safePkg}_${srcFile.length()}_${srcFile.lastModified()}.apk"
+            val targetFile = File(dexDir, targetName)
+            if (!targetFile.exists() || targetFile.length() != srcFile.length()) {
+                // Clean up older staged versions of this extension
+                dexDir.listFiles()?.forEach { existing ->
+                    if (existing.name.startsWith("${safePkg}_") && existing.name != targetName) {
+                        try {
+                            existing.setWritable(true)
+                            existing.delete()
+                        } catch (_: Throwable) {}
+                    }
+                }
+                val tmpFile = File(dexDir, "$targetName.tmp")
+                try {
+                    if (tmpFile.exists()) {
+                        tmpFile.setWritable(true)
+                        tmpFile.delete()
+                    }
+                    srcFile.inputStream().use { input ->
+                        tmpFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (targetFile.exists()) {
+                        targetFile.setWritable(true)
+                        targetFile.delete()
+                    }
+                    if (!tmpFile.renameTo(targetFile)) {
+                        srcFile.copyTo(targetFile, overwrite = true)
+                        tmpFile.delete()
+                    }
+                } catch (e: Throwable) {
+                    Log.w(TAG, "Staging APK copy warning for $basePkg: ${e.message}")
+                    if (!targetFile.exists()) {
+                        srcFile.setReadOnly()
+                        return srcFile.absolutePath to null
+                    }
+                }
+            }
+            try {
+                targetFile.setReadOnly()
+            } catch (_: Throwable) {}
+            targetFile
+        }
+
+        // Extract native .so libraries if the extension bundles any (e.g. QuickJS)
+        var nativeLibPath: String? = null
+        try {
+            ZipFile(stagedApk).use { zip ->
+                val abis = Build.SUPPORTED_ABIS ?: emptyArray()
+                for (abi in abis) {
+                    val prefix = "lib/$abi/"
+                    val matchingEntries = zip.entries().asSequence()
+                        .filter { !it.isDirectory && it.name.startsWith(prefix) && it.name.endsWith(".so") }
+                        .toList()
+                    if (matchingEntries.isNotEmpty()) {
+                        val libDir = File(context.codeCacheDir, "shiori_native_libs/${safePkg}_$abi")
+                        if (!libDir.exists()) libDir.mkdirs()
+                        for (entry in matchingEntries) {
+                            val soName = entry.name.substringAfterLast('/')
+                            val outSo = File(libDir, soName)
+                            if (!outSo.exists() || outSo.length() != entry.size) {
+                                outSo.setWritable(true)
+                                zip.getInputStream(entry).use { input ->
+                                    outSo.outputStream().use { output -> input.copyTo(output) }
+                                }
+                                outSo.setReadOnly()
+                            }
+                        }
+                        nativeLibPath = libDir.absolutePath
+                        break
+                    }
+                }
+            }
+        } catch (_: Throwable) {}
+
+        return stagedApk.absolutePath to nativeLibPath
+    }
+
     @Synchronized
-    fun getOrLoadSource(pkg: String, hintPath: String? = null): CatalogueSource {
-        sourceCache[pkg]?.let { return it }
+    private fun loadAllSourcesForPkg(basePkg: String, hintPath: String? = null): List<CatalogueSource> {
+        allSourcesCache[basePkg]?.let { if (it.isNotEmpty()) return it }
 
-        val apkPath = findApkPath(pkg, hintPath)
-            ?: throw IllegalStateException("Extension APK for package '$pkg' not found on device.")
+        val rawApkPath = findApkPath(basePkg, hintPath)
+            ?: throw IllegalStateException("Extension APK for package '$basePkg' not found on device.")
 
-        Log.d(TAG, "Loading extension for $pkg from $apkPath")
+        val (apkPath, nativeLibPath) = stageReadOnlyDexAndLibs(basePkg, rawApkPath)
+        Log.d(TAG, "Loading extension for $basePkg from $apkPath (nativeLibs=$nativeLibPath)")
 
-        val classLoader = PathClassLoader(apkPath, context.classLoader)
+        val classLoader = PathClassLoader(apkPath, nativeLibPath, context.classLoader)
 
-        // Find main class
-        var className: String? = null
+        var manifestPkg = basePkg
+        var rawClassField: String? = null
+        var detectedLibVersion: String? = null
         try {
             val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 context.packageManager.getPackageArchiveInfo(
@@ -229,42 +684,52 @@ class TachiyomiExtensionManager(private val context: Context) {
                 @Suppress("DEPRECATION")
                 context.packageManager.getPackageArchiveInfo(apkPath, PackageManager.GET_META_DATA)
             }
+            if (!packageInfo?.packageName.isNullOrEmpty()) {
+                manifestPkg = packageInfo!!.packageName
+            }
+            if (!packageInfo?.versionName.isNullOrEmpty()) {
+                detectedLibVersion = parseLibVersion(packageInfo?.versionName)
+            }
             val metaData = packageInfo?.applicationInfo?.metaData
-            className = metaData?.getString("tachiyomi.extension.class")
+            rawClassField = metaData?.getString("tachiyomi.extension.class")
                 ?: metaData?.getString("tachiyomi.source.class")
                 ?: metaData?.getString("tachiyomi.extension.factory")
         } catch (e: Exception) {
             Log.w(TAG, "Could not read packageArchiveInfo meta-data: ${e.message}")
         }
 
-        if (className.isNullOrEmpty()) {
-            // Check installed package metadata
+        if (detectedLibVersion != null && !isLibVersionCompatible(detectedLibVersion)) {
+            throw IllegalStateException("Incompatible lib version $detectedLibVersion (supported: $LIB_VERSION_MIN–$LIB_VERSION_MAX)")
+        }
+
+        if (rawClassField.isNullOrEmpty()) {
             try {
                 val appInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     context.packageManager.getApplicationInfo(
-                        pkg,
+                        basePkg,
                         PackageManager.ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong())
                     )
                 } else {
                     @Suppress("DEPRECATION")
-                    context.packageManager.getApplicationInfo(pkg, PackageManager.GET_META_DATA)
+                    context.packageManager.getApplicationInfo(basePkg, PackageManager.GET_META_DATA)
                 }
-                className = appInfo.metaData?.getString("tachiyomi.extension.class")
+                rawClassField = appInfo.metaData?.getString("tachiyomi.extension.class")
                     ?: appInfo.metaData?.getString("tachiyomi.source.class")
             } catch (_: Exception) {}
         }
 
-        if (className.isNullOrEmpty()) {
-            className = extractExtensionClassFromApk(apkPath, classLoader)
+        if (rawClassField.isNullOrEmpty()) {
+            rawClassField = extractExtensionClassFromApk(apkPath, classLoader)
         }
 
-        if (className.isNullOrEmpty()) {
-            // Check common package naming conventions
-            val simpleName = pkg.substringAfterLast('.')
+        if (rawClassField.isNullOrEmpty()) {
+            val simpleName = basePkg.substringAfterLast('.')
             val capitalized = simpleName.replaceFirstChar { it.uppercase() }
             val potentialNames = listOf(
-                "$pkg.$capitalized",
-                "$pkg.$simpleName",
+                "$manifestPkg.$capitalized",
+                "$manifestPkg.$simpleName",
+                "$basePkg.$capitalized",
+                "$basePkg.$simpleName",
                 "eu.kanade.tachiyomi.extension.$simpleName.$capitalized"
             )
             for (pName in potentialNames) {
@@ -272,64 +737,137 @@ class TachiyomiExtensionManager(private val context: Context) {
                     val cls = Class.forName(pName, false, classLoader)
                     if (!java.lang.reflect.Modifier.isAbstract(cls.modifiers) &&
                         (CatalogueSource::class.java.isAssignableFrom(cls) || SourceFactory::class.java.isAssignableFrom(cls))) {
-                        className = pName
+                        rawClassField = pName
                         break
                     }
                 } catch (_: Throwable) {}
             }
         }
 
-        if (className.isNullOrEmpty()) {
-            throw IllegalStateException("Cannot resolve extension class name for $pkg in $apkPath")
+        if (rawClassField.isNullOrEmpty()) {
+            throw IllegalStateException("Cannot resolve extension class name for $basePkg in $apkPath")
         }
 
-        if (className.startsWith(".")) {
-            className = pkg + className
-        }
+        val collectedSources = mutableListOf<CatalogueSource>()
+        val classTokens = rawClassField.split(";").map { it.trim() }.filter { it.isNotEmpty() }
 
-        Log.d(TAG, "Instantiating extension class $className")
-        val loadedClass = Class.forName(className, false, classLoader)
+        for (token in classTokens) {
+            val candidates = if (token.startsWith(".")) {
+                listOf("$manifestPkg$token", "$basePkg$token").distinct()
+            } else {
+                listOf(token)
+            }
+            var loadedClass: Class<*>? = null
+            for (cName in candidates) {
+                try {
+                    loadedClass = Class.forName(cName, false, classLoader)
+                    break
+                } catch (_: Throwable) {}
+            }
+            if (loadedClass == null) continue
 
-        val source: CatalogueSource = when {
-            SourceFactory::class.java.isAssignableFrom(loadedClass) -> {
-                val factory = loadedClass.getDeclaredConstructor().newInstance() as SourceFactory
-                val sources = factory.createSources().filterIsInstance<CatalogueSource>()
-                val pkgLang = if (pkg.contains(".extension.")) {
-                    pkg.substringAfter(".extension.").substringBefore('.').lowercase()
-                } else {
-                    val parts = pkg.split('.')
-                    if (parts.size >= 5) parts[4].lowercase() else ""
+            try {
+                when {
+                    SourceFactory::class.java.isAssignableFrom(loadedClass) -> {
+                        val factory = loadedClass.getDeclaredConstructor().newInstance() as SourceFactory
+                        collectedSources.addAll(factory.createSources().filterIsInstance<CatalogueSource>())
+                    }
+                    CatalogueSource::class.java.isAssignableFrom(loadedClass) -> {
+                        val instance = loadedClass.getDeclaredConstructor().newInstance() as CatalogueSource
+                        collectedSources.add(instance)
+                    }
                 }
-                val matching = if (pkgLang.isNotEmpty() && pkgLang != "all") {
-                    sources.firstOrNull { it.lang.lowercase() == pkgLang }
-                } else null
-                matching ?: sources.firstOrNull { it.lang.lowercase() == "en" }
-                    ?: sources.firstOrNull()
-                    ?: throw IllegalStateException("SourceFactory $className produced no CatalogueSources")
-            }
-            CatalogueSource::class.java.isAssignableFrom(loadedClass) -> {
-                loadedClass.getDeclaredConstructor().newInstance() as CatalogueSource
-            }
-            else -> {
-                throw IllegalStateException("Class $className does not implement CatalogueSource or SourceFactory")
+            } catch (e: Throwable) {
+                Log.w(TAG, "Error instantiating $loadedClass for $basePkg: ${e.message}", e)
             }
         }
 
-        sourceCache[pkg] = source
-        return source
+        if (collectedSources.isEmpty()) {
+            throw IllegalStateException("Extension $basePkg ($rawClassField) produced no CatalogueSources")
+        }
+
+        allSourcesCache[basePkg] = collectedSources
+        return collectedSources
+    }
+
+    @Synchronized
+    fun getOrLoadSource(pkg: String, hintPath: String? = null): CatalogueSource {
+        sourceCache[pkg]?.let { return it }
+
+        val (basePkg, selector) = splitPkgSelector(pkg)
+        val sources = loadAllSourcesForPkg(basePkg, hintPath)
+
+        val chosen: CatalogueSource = if (selector.isNotEmpty()) {
+            sources.firstOrNull { it.id.toString() == selector }
+                ?: sources.firstOrNull { it.name.equals(selector, ignoreCase = true) }
+                ?: sources.firstOrNull { it.lang.equals(selector, ignoreCase = true) }
+                ?: sources.firstOrNull { it.name.contains(selector, ignoreCase = true) }
+                ?: sources.first()
+        } else {
+            val pkgLang = if (basePkg.contains(".extension.")) {
+                basePkg.substringAfter(".extension.").substringBefore('.').lowercase()
+            } else {
+                val parts = basePkg.split('.')
+                if (parts.size >= 5) parts[4].lowercase() else ""
+            }
+            val matching = if (pkgLang.isNotEmpty() && pkgLang != "all") {
+                sources.firstOrNull { it.lang.equals(pkgLang, ignoreCase = true) }
+            } else null
+            matching
+                ?: sources.firstOrNull { it.lang.equals("en", ignoreCase = true) }
+                ?: sources.firstOrNull { it.lang.equals("all", ignoreCase = true) }
+                ?: sources.first()
+        }
+
+        sourceCache[pkg] = chosen
+        return chosen
     }
 
     fun removeSource(pkg: String) {
-        sourceCache.remove(pkg)
-        val prefix = "$pkg:"
+        val (basePkg, _) = splitPkgSelector(pkg)
+        sourceCache.keys.filter { it == basePkg || it.startsWith("$basePkg@") }.forEach { sourceCache.remove(it) }
+        allSourcesCache.remove(basePkg)
+        val prefix = "$basePkg:"
         mangaCache.keys.filter { it.startsWith(prefix) }.forEach { mangaCache.remove(it) }
         chapterCache.keys.filter { it.startsWith(prefix) }.forEach { chapterCache.remove(it) }
+
+        val safePkg = basePkg.replace(Regex("[^a-zA-Z0-9_.]"), "_")
+        if (safePkg.isNotEmpty()) {
+            try {
+                val dexDir = File(context.codeCacheDir, "shiori_dex_readonly")
+                if (dexDir.exists()) {
+                    dexDir.listFiles()?.forEach { f ->
+                        if (f.name.startsWith("${safePkg}_")) {
+                            try {
+                                f.setWritable(true)
+                                f.delete()
+                            } catch (_: Throwable) {}
+                        }
+                    }
+                }
+                val libsRoot = File(context.codeCacheDir, "shiori_native_libs")
+                if (libsRoot.exists()) {
+                    libsRoot.listFiles()?.forEach { dir ->
+                        if (dir.name.startsWith("${safePkg}_")) {
+                            try {
+                                dir.walkBottomUp().forEach { child ->
+                                    try { child.setWritable(true) } catch (_: Throwable) {}
+                                    try { child.delete() } catch (_: Throwable) {}
+                                }
+                            } catch (_: Throwable) {}
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
+        }
     }
 
     fun clearCache() {
         sourceCache.clear()
+        allSourcesCache.clear()
         mangaCache.clear()
         chapterCache.clear()
+        pageCache.clear()
     }
 
     fun getSourceBaseUrl(pkg: String, hintPath: String? = null): String? {
@@ -461,15 +999,205 @@ class TachiyomiExtensionManager(private val context: Context) {
         }
     }
 
+    private fun getCookiesForUrl(url: String): String {
+        if (url.isBlank()) return ""
+        return try {
+            CookieManager.getInstance().getCookie(url)?.trim().orEmpty()
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
+    private fun hasCustomImagePipeline(source: CatalogueSource): Boolean {
+        if (source !is HttpSource) return false
+        val baseUrl = try { source.baseUrl } catch (_: Throwable) { "" }
+        if (getCookiesForUrl(baseUrl).isNotEmpty()) return true
+
+        return customImagePipelineSupport.getOrPut(source.javaClass) {
+            try {
+                val overridesImageReq = source.javaClass.methods.any {
+                    (it.name == "imageRequest" || it.name == "fetchImage" || it.name == "getImage") &&
+                        it.declaringClass != HttpSource::class.java
+                }
+                if (overridesImageReq) return@getOrPut true
+
+                val interceptors = source.client.interceptors
+                val hasCustomInterceptor = interceptors.any { interceptor ->
+                    interceptor !is UncaughtExceptionInterceptor &&
+                        interceptor !is UserAgentInterceptor &&
+                        interceptor !is CloudflareInterceptor &&
+                        interceptor !is RateLimitInterceptor &&
+                        interceptor.javaClass.name != "okhttp3.CompressionInterceptor" &&
+                        !interceptor.javaClass.name.startsWith("okhttp3.brotli.")
+                }
+                hasCustomInterceptor || source.client.networkInterceptors.isNotEmpty()
+            } catch (_: Throwable) {
+                false
+            }
+        }
+    }
+
+    private fun extractHeadersMap(source: CatalogueSource?, targetUrl: String = ""): Map<String, String> {
+        if (source !is HttpSource) return emptyMap()
+        val result = linkedMapOf<String, String>()
+        try {
+            val h = source.headers
+            for (i in 0 until h.size) {
+                result[h.name(i)] = h.value(i)
+            }
+        } catch (_: Throwable) {}
+
+        val base = try { source.baseUrl } catch (_: Throwable) { "" }
+        if (!result.keys.any { it.equals("Referer", ignoreCase = true) } && base.startsWith("http")) {
+            result["Referer"] = if (base.endsWith("/")) base else "$base/"
+        }
+        if (!result.keys.any { it.equals("User-Agent", ignoreCase = true) }) {
+            try {
+                result["User-Agent"] = source.network.defaultUserAgentProvider()
+            } catch (_: Throwable) {}
+        }
+        val cookieUrl = targetUrl.ifBlank { base }
+        val cookies = getCookiesForUrl(cookieUrl).ifBlank { getCookiesForUrl(base) }
+        if (cookies.isNotEmpty() && !result.keys.any { it.equals("Cookie", ignoreCase = true) }) {
+            result["Cookie"] = cookies
+        }
+        return result
+    }
+
+    fun getSourceHeaders(pkg: String, hintPath: String? = null): Map<String, Any?> {
+        return try {
+            val src = getOrLoadSource(pkg, hintPath)
+            val baseUrl = if (src is HttpSource) src.baseUrl else ""
+            val headers = extractHeadersMap(src, baseUrl)
+            val referer = headers.entries.firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value ?: baseUrl
+            mapOf(
+                "baseUrl" to baseUrl,
+                "referer" to referer,
+                "headers" to headers,
+                "nativeImages" to hasCustomImagePipeline(src),
+                "supportsLatest" to src.supportsLatest
+            )
+        } catch (_: Throwable) {
+            emptyMap()
+        }
+    }
+
+    private fun resolveSourceUrl(raw: String, source: CatalogueSource?): String {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return ""
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+        if (trimmed.startsWith("//")) return "https:$trimmed"
+        if (source is HttpSource) {
+            val baseHttp = try { source.baseUrl.toHttpUrlOrNull() } catch (_: Throwable) { null }
+            val resolved = try { baseHttp?.resolve(trimmed)?.toString() } catch (_: Throwable) { null }
+            if (!resolved.isNullOrEmpty()) return resolved
+            val base = source.baseUrl.trimEnd('/')
+            if (base.startsWith("http")) {
+                return "$base/${trimmed.trimStart('/')}"
+            }
+        }
+        return trimmed
+    }
+
+    private suspend fun loadSingleDetailsInternal(
+        pkg: String,
+        source: CatalogueSource,
+        sManga: SManga
+    ): SManga? {
+        if (supportsMangaUpdate(source) && source is HttpSource) {
+            try {
+                return fetchViaMangaUpdate(pkg, source, sManga, emptyList(), true, false).manga
+            } catch (_: Throwable) {}
+        }
+        try {
+            return try {
+                source.getMangaDetails(sManga)
+            } catch (_: NoSuchMethodError) {
+                source.fetchMangaDetails(sManga).toBlocking().first()
+            } catch (_: AbstractMethodError) {
+                source.fetchMangaDetails(sManga).toBlocking().first()
+            }
+        } catch (_: Throwable) {
+            try {
+                return source.fetchMangaDetails(sManga).toBlocking().first()
+            } catch (_: Throwable) {}
+        }
+        if (!supportsMangaUpdate(source) && source is HttpSource) {
+            try {
+                return fetchViaMangaUpdate(pkg, source, sManga, emptyList(), true, false).manga
+            } catch (_: Throwable) {}
+        }
+        return null
+    }
+
+    private suspend fun enrichMissingThumbnails(
+        pkg: String,
+        source: CatalogueSource,
+        mangas: List<SManga>
+    ) {
+        val (basePkg, _) = splitPkgSelector(pkg)
+        val missing = mutableListOf<SManga>()
+        for (m in mangas) {
+            if (m.thumbnail_url.isNullOrBlank() && m.url.isNotBlank()) {
+                val cached = mangaCache["$pkg:${m.url}"] ?: mangaCache["$basePkg:${m.url}"]
+                if (cached != null && !cached.thumbnail_url.isNullOrBlank()) {
+                    m.thumbnail_url = cached.thumbnail_url
+                } else {
+                    missing.add(m)
+                }
+            }
+        }
+        if (missing.isEmpty()) return
+
+        val sem = Semaphore(4)
+        coroutineScope {
+            missing.take(8).map { m ->
+                async {
+                    sem.withPermit {
+                        withTimeoutOrNull(3500L) {
+                            val details = loadSingleDetailsInternal(pkg, source, m)
+                            if (details != null && !details.thumbnail_url.isNullOrBlank()) {
+                                m.thumbnail_url = details.thumbnail_url
+                                if (details.url.isEmpty()) details.url = m.url
+                                if (details.title.isEmpty()) details.title = m.title
+                                mangaCache["$pkg:${m.url}"] = details
+                                mangaCache["$basePkg:${m.url}"] = details
+                            }
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+    }
+
+    private fun filterItemsByType(items: List<Map<String, Any?>>, type: String?): List<Map<String, Any?>> {
+        if (items.isEmpty() || type.isNullOrBlank() || type.equals("all", ignoreCase = true)) {
+            return items
+        }
+        val target = type.lowercase()
+        val filtered = items.filter { item ->
+            val genre = (item["genre"] as? String)?.lowercase() ?: ""
+            val title = (item["title"] as? String)?.lowercase() ?: ""
+            val url = (item["url"] as? String)?.lowercase() ?: ""
+            val combined = "$genre $title $url"
+            when (target) {
+                "manhwa" -> combined.contains("manhwa") || combined.contains("webtoon")
+                "manhua" -> combined.contains("manhua")
+                else -> !combined.contains("manhwa") && !combined.contains("manhua")
+            }
+        }
+        return filtered.ifEmpty { items }
+    }
+
     suspend fun fetchPopularManga(
         pkg: String,
         page: Int,
         type: String? = null,
         hintPath: String? = null
     ): List<Map<String, Any?>> = withContext(Dispatchers.IO) {
+        val (basePkg, _) = splitPkgSelector(pkg)
         val source = getOrLoadSource(pkg, hintPath)
 
-        // If a specific type (manhwa, manhua) is requested, attempt filter search with getSearchManga
         if (!type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
             try {
                 val filters = getSafeFilterList(source)
@@ -494,8 +1222,10 @@ class TachiyomiExtensionManager(private val context: Context) {
                 if (filterSearchPage.mangas.isNotEmpty()) {
                     filterSearchPage.mangas.forEach { m ->
                         mangaCache["$pkg:${m.url}"] = m
+                        mangaCache["$basePkg:${m.url}"] = m
                     }
-                    return@withContext filterSearchPage.mangas.map { sMangaToMap(it, source) }
+                    enrichMissingThumbnails(pkg, source, filterSearchPage.mangas)
+                    return@withContext filterSearchPage.mangas.map { sMangaToMap(it, source, pkg) }
                 }
             } catch (e: Throwable) {
                 Log.d(TAG, "Filtering popular manga with type '$type' via getSearchManga failed for $pkg: ${e.message}")
@@ -544,25 +1274,99 @@ class TachiyomiExtensionManager(private val context: Context) {
             throw lastError
         }
 
-        mangasPage?.mangas?.forEach { m ->
+        val list = mangasPage?.mangas ?: emptyList()
+        list.forEach { m ->
             mangaCache["$pkg:${m.url}"] = m
+            mangaCache["$basePkg:${m.url}"] = m
+        }
+        enrichMissingThumbnails(pkg, source, list)
+
+        val items = list.map { sMangaToMap(it, source, pkg) }
+        filterItemsByType(items, type)
+    }
+
+    suspend fun fetchLatestUpdates(
+        pkg: String,
+        page: Int,
+        type: String? = null,
+        hintPath: String? = null
+    ): List<Map<String, Any?>> = withContext(Dispatchers.IO) {
+        val (basePkg, _) = splitPkgSelector(pkg)
+        val source = getOrLoadSource(pkg, hintPath)
+
+        if (!source.supportsLatest) {
+            return@withContext fetchPopularManga(pkg, page, type, hintPath)
         }
 
-        val items = mangasPage?.mangas?.map { sMangaToMap(it, source) } ?: emptyList()
-        if (items.isNotEmpty() && !type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
-            val target = type.lowercase()
-            val filtered = items.filter { item ->
-                val genre = (item["genre"] as? String)?.lowercase() ?: ""
-                val title = (item["title"] as? String)?.lowercase() ?: ""
-                val url = (item["url"] as? String)?.lowercase() ?: ""
-                val combined = "$genre $title $url"
-                if (target == "manhwa") combined.contains("manhwa") || combined.contains("webtoon")
-                else if (target == "manhua") combined.contains("manhua")
-                else !combined.contains("manhwa") && !combined.contains("manhua")
-            }
-            if (filtered.isNotEmpty()) return@withContext filtered
+        if (!type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
+            try {
+                val filters = getSafeFilterList(source)
+                applyTypeFilter(filters, type)
+                filters.filterIsInstance<Filter.Sort>().forEach { sort ->
+                    val values = sort.values
+                    for (i in values.indices) {
+                        val v = values[i].lowercase()
+                        if (v.contains("latest") || v.contains("update") || v.contains("new") || v.contains("recent")) {
+                            sort.state = Filter.Sort.Selection(i, false)
+                            break
+                        }
+                    }
+                }
+                val filterSearchPage = try {
+                    source.getSearchManga(page, "", filters)
+                } catch (_: NoSuchMethodError) {
+                    source.fetchSearchManga(page, "", filters).toBlocking().first()
+                } catch (_: AbstractMethodError) {
+                    source.fetchSearchManga(page, "", filters).toBlocking().first()
+                }
+                if (filterSearchPage.mangas.isNotEmpty()) {
+                    filterSearchPage.mangas.forEach { m ->
+                        mangaCache["$pkg:${m.url}"] = m
+                        mangaCache["$basePkg:${m.url}"] = m
+                    }
+                    enrichMissingThumbnails(pkg, source, filterSearchPage.mangas)
+                    return@withContext filterSearchPage.mangas.map { sMangaToMap(it, source, pkg) }
+                }
+            } catch (_: Throwable) {}
         }
-        items
+
+        var lastError: Throwable? = null
+        val mangasPage = try {
+            try {
+                source.getLatestUpdates(page)
+            } catch (_: NoSuchMethodError) {
+                source.fetchLatestUpdates(page).toBlocking().first()
+            } catch (_: AbstractMethodError) {
+                source.fetchLatestUpdates(page).toBlocking().first()
+            }
+        } catch (e: Throwable) {
+            try {
+                source.fetchLatestUpdates(page).toBlocking().first()
+            } catch (_: Throwable) {
+                lastError = e
+                Log.w(TAG, "getLatestUpdates failed for $pkg: ${e.message}")
+                null
+            }
+        }
+
+        if (mangasPage == null || mangasPage.mangas.isEmpty()) {
+            try {
+                return@withContext fetchPopularManga(pkg, page, type, hintPath)
+            } catch (_: Throwable) {
+                if (lastError != null) throw lastError
+                return@withContext emptyList()
+            }
+        }
+
+        val list = mangasPage.mangas
+        list.forEach { m ->
+            mangaCache["$pkg:${m.url}"] = m
+            mangaCache["$basePkg:${m.url}"] = m
+        }
+        enrichMissingThumbnails(pkg, source, list)
+
+        val items = list.map { sMangaToMap(it, source, pkg) }
+        filterItemsByType(items, type)
     }
 
     suspend fun searchManga(
@@ -572,6 +1376,7 @@ class TachiyomiExtensionManager(private val context: Context) {
         type: String? = null,
         hintPath: String? = null
     ): List<Map<String, Any?>> = withContext(Dispatchers.IO) {
+        val (basePkg, _) = splitPkgSelector(pkg)
         val source = getOrLoadSource(pkg, hintPath)
         val trimmed = query.trim()
 
@@ -582,7 +1387,6 @@ class TachiyomiExtensionManager(private val context: Context) {
         var mangasPage: MangasPage? = null
         var lastSearchError: Throwable? = null
 
-        // 1. Try search with configured filters (including type filter if requested)
         try {
             val filters = getSafeFilterList(source)
             if (!type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
@@ -600,7 +1404,6 @@ class TachiyomiExtensionManager(private val context: Context) {
             Log.w(TAG, "Search with filters failed for $pkg (query='$trimmed'): ${e.message}")
         }
 
-        // 2. If initial search failed or threw and type was specified, retry with clean default filters
         if (mangasPage == null && !type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
             try {
                 val cleanFilters = getSafeFilterList(source)
@@ -618,7 +1421,6 @@ class TachiyomiExtensionManager(private val context: Context) {
             }
         }
 
-        // 3. If query is short (< 3 chars) or source rejected it, fallback to popular list match
         if (mangasPage == null && (trimmed.length < 3 || lastSearchError?.message?.contains("3 characters", ignoreCase = true) == true)) {
             try {
                 val popular = fetchPopularManga(pkg, 1, type, hintPath)
@@ -633,65 +1435,102 @@ class TachiyomiExtensionManager(private val context: Context) {
             throw lastSearchError
         }
 
-        mangasPage?.mangas?.forEach { m ->
+        val list = mangasPage?.mangas ?: emptyList()
+        list.forEach { m ->
             mangaCache["$pkg:${m.url}"] = m
+            mangaCache["$basePkg:${m.url}"] = m
         }
+        enrichMissingThumbnails(pkg, source, list)
 
-        mangasPage?.mangas?.map { sMangaToMap(it, source) } ?: emptyList()
+        list.map { sMangaToMap(it, source, pkg) }
+    }
+
+    private fun computeLegacySlugUrl(url: String): String? {
+        return if (url.startsWith("/comic/")) {
+            url.removePrefix("/comic/").trim('/')
+        } else if (url.contains("/comic/")) {
+            url.substringAfterLast("/comic/").trim('/')
+        } else {
+            null
+        }
     }
 
     suspend fun fetchMangaDetails(pkg: String, url: String, title: String?, hintPath: String? = null): Map<String, Any?> =
         withContext(Dispatchers.IO) {
+            val (basePkg, _) = splitPkgSelector(pkg)
             val source = getOrLoadSource(pkg, hintPath)
-            val cleanUrl = if (url.startsWith("/comic/")) {
-                url.removePrefix("/comic/").trim('/')
-            } else if (url.contains("/comic/")) {
-                url.substringAfterLast("/comic/").trim('/')
-            } else {
-                url
-            }
-            val sManga = mangaCache["$pkg:$url"] ?: mangaCache["$pkg:$cleanUrl"] ?: SManga.create().apply {
-                this.url = cleanUrl
-                if (!title.isNullOrEmpty()) this.title = title
-            }
+            val legacySlug = computeLegacySlugUrl(url)
+            val useLegacyFirst = basePkg.contains("comick", ignoreCase = true) && !legacySlug.isNullOrEmpty()
+            val primaryUrl = if (useLegacyFirst) legacySlug!! else url
 
-            var details: SManga? = null
-            var lastError: Throwable? = null
-
-            if (supportsMangaUpdate(source)) {
-                try {
-                    details = fetchViaMangaUpdate(pkg, source as HttpSource, sManga, emptyList(), true, false).manga
-                } catch (e: Throwable) {
-                    lastError = e
-                    Log.w(TAG, "fetchViaMangaUpdate failed for details of $url ($pkg): ${e.message}")
+            val sManga = mangaCache["$pkg:$url"]
+                ?: mangaCache["$basePkg:$url"]
+                ?: (if (legacySlug != null) mangaCache["$pkg:$legacySlug"] ?: mangaCache["$basePkg:$legacySlug"] else null)
+                ?: SManga.create().apply {
+                    this.url = primaryUrl
+                    if (!title.isNullOrEmpty()) this.title = title
                 }
-            }
 
-            if (details == null) {
-                try {
-                    details = try {
-                        source.getMangaDetails(sManga)
-                    } catch (e: NoSuchMethodError) {
-                        source.fetchMangaDetails(sManga).toBlocking().first()
-                    } catch (e: AbstractMethodError) {
-                        source.fetchMangaDetails(sManga).toBlocking().first()
-                    }
-                } catch (e: Throwable) {
+            suspend fun tryResolveDetails(targetManga: SManga): Pair<SManga?, Throwable?> {
+                var resolved: SManga? = null
+                var err: Throwable? = null
+
+                if (supportsMangaUpdate(source)) {
                     try {
-                        details = source.fetchMangaDetails(sManga).toBlocking().first()
-                    } catch (rxErr: Throwable) {
-                        if (lastError == null) lastError = e
-                        Log.w(TAG, "source.getMangaDetails failed for $url ($pkg): ${e.message}")
+                        resolved = fetchViaMangaUpdate(pkg, source as HttpSource, targetManga, emptyList(), true, false).manga
+                    } catch (e: Throwable) {
+                        err = e
+                        Log.w(TAG, "fetchViaMangaUpdate failed for details of ${targetManga.url} ($pkg): ${e.message}")
                     }
                 }
+
+                if (resolved == null) {
+                    try {
+                        resolved = try {
+                            source.getMangaDetails(targetManga)
+                        } catch (_: NoSuchMethodError) {
+                            source.fetchMangaDetails(targetManga).toBlocking().first()
+                        } catch (_: AbstractMethodError) {
+                            source.fetchMangaDetails(targetManga).toBlocking().first()
+                        }
+                    } catch (e: Throwable) {
+                        try {
+                            resolved = source.fetchMangaDetails(targetManga).toBlocking().first()
+                        } catch (_: Throwable) {
+                            if (err == null) err = e
+                            Log.w(TAG, "source.getMangaDetails failed for ${targetManga.url} ($pkg): ${e.message}")
+                        }
+                    }
+                }
+
+                if (resolved == null && !supportsMangaUpdate(source) && source is HttpSource) {
+                    try {
+                        resolved = fetchViaMangaUpdate(pkg, source, targetManga, emptyList(), true, false).manga
+                    } catch (_: Throwable) {}
+                }
+
+                return resolved to err
             }
 
-            // Fallback to fetchViaMangaUpdate if standard getMangaDetails failed and wasn't tried yet
-            if (details == null && !supportsMangaUpdate(source) && source is HttpSource) {
-                try {
-                    details = fetchViaMangaUpdate(pkg, source, sManga, emptyList(), true, false).manga
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Fallback fetchViaMangaUpdate also failed for $url ($pkg): ${e.message}")
+            var (details, lastError) = tryResolveDetails(sManga)
+
+            if (details == null && source is HttpSource) {
+                val relativeUrl = if (url.startsWith("http")) source.getUrlWithoutDomain(url) else null
+                val altUrl = when {
+                    !relativeUrl.isNullOrEmpty() && relativeUrl != sManga.url -> relativeUrl
+                    !legacySlug.isNullOrEmpty() && legacySlug != sManga.url -> legacySlug
+                    else -> null
+                }
+                if (altUrl != null) {
+                    val altManga = SManga.create().apply {
+                        this.url = altUrl
+                        if (!title.isNullOrEmpty()) this.title = title
+                        this.thumbnail_url = sManga.thumbnail_url
+                    }
+                    val (altDetails, _) = tryResolveDetails(altManga)
+                    if (altDetails != null) {
+                        details = altDetails
+                    }
                 }
             }
 
@@ -699,7 +1538,7 @@ class TachiyomiExtensionManager(private val context: Context) {
                 throw (lastError ?: IllegalStateException("Failed to load details for $url"))
             }
 
-            if (details.url.isEmpty()) details.url = cleanUrl
+            if (details.url.isEmpty()) details.url = sManga.url.ifEmpty { url }
             if (details.title.isEmpty() && !title.isNullOrEmpty()) details.title = title
             if (details.thumbnail_url.isNullOrEmpty() && !sManga.thumbnail_url.isNullOrEmpty()) {
                 details.thumbnail_url = sManga.thumbnail_url
@@ -708,62 +1547,86 @@ class TachiyomiExtensionManager(private val context: Context) {
                 details.memo = sManga.memo
             }
             mangaCache["$pkg:$url"] = details
-            mangaCache["$pkg:$cleanUrl"] = details
-            sMangaToMap(details, source)
+            mangaCache["$basePkg:$url"] = details
+            mangaCache["$pkg:${details.url}"] = details
+            sMangaToMap(details, source, pkg)
         }
 
     suspend fun fetchChapterList(pkg: String, url: String, title: String?, hintPath: String? = null): List<Map<String, Any?>> =
         withContext(Dispatchers.IO) {
+            val (basePkg, _) = splitPkgSelector(pkg)
             val source = getOrLoadSource(pkg, hintPath)
-            val cleanUrl = if (url.startsWith("/comic/")) {
-                url.removePrefix("/comic/").trim('/')
-            } else if (url.contains("/comic/")) {
-                url.substringAfterLast("/comic/").trim('/')
-            } else {
-                url
-            }
-            val sManga = mangaCache["$pkg:$url"] ?: mangaCache["$pkg:$cleanUrl"] ?: SManga.create().apply {
-                this.url = cleanUrl
-                if (!title.isNullOrEmpty()) this.title = title
-            }
+            val legacySlug = computeLegacySlugUrl(url)
+            val useLegacyFirst = basePkg.contains("comick", ignoreCase = true) && !legacySlug.isNullOrEmpty()
+            val primaryUrl = if (useLegacyFirst) legacySlug!! else url
 
-            var chapters: List<SChapter>? = null
-            var lastError: Throwable? = null
-
-            if (supportsMangaUpdate(source)) {
-                try {
-                    chapters = fetchViaMangaUpdate(pkg, source as HttpSource, sManga, emptyList(), false, true).chapters
-                } catch (e: Throwable) {
-                    lastError = e
-                    Log.w(TAG, "fetchViaMangaUpdate failed for chapters of $url ($pkg): ${e.message}")
+            val sManga = mangaCache["$pkg:$url"]
+                ?: mangaCache["$basePkg:$url"]
+                ?: (if (legacySlug != null) mangaCache["$pkg:$legacySlug"] ?: mangaCache["$basePkg:$legacySlug"] else null)
+                ?: SManga.create().apply {
+                    this.url = primaryUrl
+                    if (!title.isNullOrEmpty()) this.title = title
                 }
-            }
 
-            if (chapters == null) {
-                try {
-                    chapters = try {
-                        source.getChapterList(sManga)
-                    } catch (e: NoSuchMethodError) {
-                        source.fetchChapterList(sManga).toBlocking().first()
-                    } catch (e: AbstractMethodError) {
-                        source.fetchChapterList(sManga).toBlocking().first()
-                    }
-                } catch (e: Throwable) {
+            suspend fun tryResolveChapters(targetManga: SManga): Pair<List<SChapter>?, Throwable?> {
+                var resolved: List<SChapter>? = null
+                var err: Throwable? = null
+
+                if (supportsMangaUpdate(source)) {
                     try {
-                        chapters = source.fetchChapterList(sManga).toBlocking().first()
-                    } catch (rxErr: Throwable) {
-                        if (lastError == null) lastError = e
-                        Log.w(TAG, "source.getChapterList failed for $url ($pkg): ${e.message}")
+                        resolved = fetchViaMangaUpdate(pkg, source as HttpSource, targetManga, emptyList(), false, true).chapters
+                    } catch (e: Throwable) {
+                        err = e
+                        Log.w(TAG, "fetchViaMangaUpdate failed for chapters of ${targetManga.url} ($pkg): ${e.message}")
                     }
                 }
+
+                if (resolved == null) {
+                    try {
+                        resolved = try {
+                            source.getChapterList(targetManga)
+                        } catch (_: NoSuchMethodError) {
+                            source.fetchChapterList(targetManga).toBlocking().first()
+                        } catch (_: AbstractMethodError) {
+                            source.fetchChapterList(targetManga).toBlocking().first()
+                        }
+                    } catch (e: Throwable) {
+                        try {
+                            resolved = source.fetchChapterList(targetManga).toBlocking().first()
+                        } catch (_: Throwable) {
+                            if (err == null) err = e
+                            Log.w(TAG, "source.getChapterList failed for ${targetManga.url} ($pkg): ${e.message}")
+                        }
+                    }
+                }
+
+                if (resolved == null && !supportsMangaUpdate(source) && source is HttpSource) {
+                    try {
+                        resolved = fetchViaMangaUpdate(pkg, source, targetManga, emptyList(), false, true).chapters
+                    } catch (_: Throwable) {}
+                }
+
+                return resolved to err
             }
 
-            // Fallback to fetchViaMangaUpdate if standard getChapterList failed and wasn't tried yet
-            if (chapters == null && !supportsMangaUpdate(source) && source is HttpSource) {
-                try {
-                    chapters = fetchViaMangaUpdate(pkg, source, sManga, emptyList(), false, true).chapters
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Fallback fetchViaMangaUpdate also failed for chapters of $url ($pkg): ${e.message}")
+            var (chapters, lastError) = tryResolveChapters(sManga)
+
+            if (chapters == null && source is HttpSource) {
+                val relativeUrl = if (url.startsWith("http")) source.getUrlWithoutDomain(url) else null
+                val altUrl = when {
+                    !relativeUrl.isNullOrEmpty() && relativeUrl != sManga.url -> relativeUrl
+                    !legacySlug.isNullOrEmpty() && legacySlug != sManga.url -> legacySlug
+                    else -> null
+                }
+                if (altUrl != null) {
+                    val altManga = SManga.create().apply {
+                        this.url = altUrl
+                        if (!title.isNullOrEmpty()) this.title = title
+                    }
+                    val (altChapters, _) = tryResolveChapters(altManga)
+                    if (altChapters != null) {
+                        chapters = altChapters
+                    }
                 }
             }
 
@@ -773,6 +1636,11 @@ class TachiyomiExtensionManager(private val context: Context) {
 
             val mangaSlug = sManga.memo?.get("slug")?.toString()?.trim('"')
             chapters.forEach { c ->
+                if (source is HttpSource && c.chapter_number < 0f) {
+                    try {
+                        source.prepareNewChapter(c, sManga)
+                    } catch (_: Throwable) {}
+                }
                 if (c.memo == null && !mangaSlug.isNullOrEmpty()) {
                     c.memo = kotlinx.serialization.json.buildJsonObject {
                         put("mangaSlug", kotlinx.serialization.json.JsonPrimitive(mangaSlug))
@@ -780,8 +1648,11 @@ class TachiyomiExtensionManager(private val context: Context) {
                     }
                 }
                 chapterCache["$pkg:${c.url}"] = c
+                chapterCache["$basePkg:${c.url}"] = c
                 if (source is HttpSource) {
-                    chapterCache["$pkg:${source.getUrlWithoutDomain(c.url)}"] = c
+                    val rel = source.getUrlWithoutDomain(c.url)
+                    chapterCache["$pkg:$rel"] = c
+                    chapterCache["$basePkg:$rel"] = c
                 }
             }
             chapters.map { sChapterToMap(it) }
@@ -789,82 +1660,188 @@ class TachiyomiExtensionManager(private val context: Context) {
 
     suspend fun fetchPageList(pkg: String, chapterUrl: String, hintPath: String? = null): List<String> =
         withContext(Dispatchers.IO) {
+            val (basePkg, _) = splitPkgSelector(pkg)
             val source = getOrLoadSource(pkg, hintPath)
             val sChapter = chapterCache["$pkg:$chapterUrl"]
-                ?: (if (source is HttpSource) chapterCache["$pkg:${source.getUrlWithoutDomain(chapterUrl)}"] else null)
+                ?: chapterCache["$basePkg:$chapterUrl"]
+                ?: (if (source is HttpSource) {
+                    val rel = source.getUrlWithoutDomain(chapterUrl)
+                    chapterCache["$pkg:$rel"] ?: chapterCache["$basePkg:$rel"]
+                } else null)
                 ?: SChapter.create().apply {
-                    this.url = chapterUrl
+                    this.url = if (source is HttpSource && chapterUrl.startsWith("http")) {
+                        source.getUrlWithoutDomain(chapterUrl)
+                    } else {
+                        chapterUrl
+                    }
                 }
+
             val pages = try {
                 try {
                     source.getPageList(sChapter)
-                } catch (e: NoSuchMethodError) {
+                } catch (_: NoSuchMethodError) {
                     source.fetchPageList(sChapter).toBlocking().first()
-                } catch (e: AbstractMethodError) {
+                } catch (_: AbstractMethodError) {
                     source.fetchPageList(sChapter).toBlocking().first()
                 }
             } catch (e: Throwable) {
                 try {
                     source.fetchPageList(sChapter).toBlocking().first()
                 } catch (_: Throwable) {
-                    throw e
+                    if (sChapter.url != chapterUrl) {
+                        val altChapter = SChapter.create().apply { this.url = chapterUrl }
+                        try {
+                            source.getPageList(altChapter)
+                        } catch (_: Throwable) {
+                            source.fetchPageList(altChapter).toBlocking().first()
+                        }
+                    } else {
+                        throw e
+                    }
                 }
             }
 
+            if (pageCache.size > 600) {
+                pageCache.clear()
+            }
+
+            val sem = Semaphore(4)
             coroutineScope {
-                pages.map { page ->
+                pages.mapIndexed { idx, page ->
                     async {
-                        var imgUrl = page.imageUrl
-                        if (imgUrl.isNullOrEmpty() && page.url.isNotEmpty()) {
-                            try {
-                                imgUrl = try {
-                                    source.getImageUrl(page)
-                                } catch (e: NoSuchMethodError) {
-                                    source.fetchImageUrl(page).toBlocking().first()
-                                } catch (e: AbstractMethodError) {
-                                    source.fetchImageUrl(page).toBlocking().first()
+                        sem.withPermit {
+                            var imgUrl = page.imageUrl
+                            if (imgUrl.isNullOrEmpty() && page.url.isNotEmpty()) {
+                                for (attempt in 0..1) {
+                                    try {
+                                        imgUrl = try {
+                                            source.getImageUrl(page)
+                                        } catch (_: NoSuchMethodError) {
+                                            source.fetchImageUrl(page).toBlocking().first()
+                                        } catch (_: AbstractMethodError) {
+                                            source.fetchImageUrl(page).toBlocking().first()
+                                        }
+                                        if (!imgUrl.isNullOrEmpty()) break
+                                    } catch (e: Throwable) {
+                                        if (attempt == 1) {
+                                            Log.w(TAG, "Failed to fetch image URL for page ${page.index}: ${e.message}")
+                                        }
+                                    }
                                 }
-                            } catch (e: Exception) {
-                                Log.w(TAG, "Failed to fetch image URL for page ${page.index}: ${e.message}")
                             }
-                        }
-                        var finalUrl = imgUrl ?: page.url
-                        if (finalUrl.startsWith("//")) {
-                            finalUrl = "https:$finalUrl"
-                        } else if (source is HttpSource && !finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) {
-                            finalUrl = source.baseUrl.trimEnd('/') + "/" + finalUrl.trimStart('/')
-                        }
-                        if (source is HttpSource && finalUrl.isNotEmpty()) {
-                            try {
-                                val resolvedPage = Page(page.index, page.url, finalUrl)
-                                val reqUrl = source.imageRequest(resolvedPage).url.toString()
-                                if (reqUrl.startsWith("http://") || reqUrl.startsWith("https://")) {
-                                    finalUrl = reqUrl
+
+                            var finalUrl = resolveSourceUrl(imgUrl ?: "", source)
+                            if (finalUrl.isEmpty() && page.url.isNotEmpty()) {
+                                finalUrl = resolveSourceUrl(page.url, source)
+                            }
+                            if (source is HttpSource && finalUrl.isNotEmpty() && !imgUrl.isNullOrEmpty()) {
+                                try {
+                                    val resolvedPage = Page(page.index, page.url, finalUrl)
+                                    val reqUrl = source.imageRequest(resolvedPage).url.toString()
+                                    if (reqUrl.startsWith("http://") || reqUrl.startsWith("https://")) {
+                                        finalUrl = reqUrl
+                                    }
+                                    pageCache[finalUrl] = Page(page.index, page.url, finalUrl)
+                                } catch (_: Throwable) {
+                                    pageCache[finalUrl] = Page(page.index, page.url, finalUrl)
                                 }
-                            } catch (_: Throwable) {}
+                            } else if (finalUrl.isNotEmpty()) {
+                                pageCache[finalUrl] = Page(idx, page.url, imgUrl)
+                            }
+                            finalUrl
                         }
-                        finalUrl
                     }
                 }.awaitAll()
             }
         }
 
-    private fun sMangaToMap(sManga: SManga, source: CatalogueSource? = null): Map<String, Any?> {
-        var thumb = (sManga.thumbnail_url ?: "").trim()
-        if (thumb.startsWith("//")) {
-            thumb = "https:$thumb"
-        } else if (thumb.isNotEmpty() && !thumb.startsWith("http://") && !thumb.startsWith("https://") && source is HttpSource) {
-            thumb = source.baseUrl.trimEnd('/') + "/" + thumb.trimStart('/')
+    suspend fun fetchImageBytes(
+        pkg: String,
+        imageUrl: String,
+        pageUrl: String? = null,
+        hintPath: String? = null
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val source = getOrLoadSource(pkg, hintPath)
+        if (source !is HttpSource) {
+            throw IllegalStateException("Source $pkg is not an HttpSource")
         }
-        val referer = if (source is HttpSource) {
+
+        var cachedPage = pageCache[imageUrl]
+        var targetImgUrl = imageUrl
+
+        if (cachedPage != null && cachedPage.imageUrl.isNullOrEmpty() && cachedPage.url.isNotEmpty()) {
             try {
-                source.headers["Referer"] ?: source.baseUrl
-            } catch (_: Throwable) {
-                source.baseUrl
-            }
-        } else {
-            ""
+                val freshlyResolved = try {
+                    source.getImageUrl(cachedPage)
+                } catch (_: NoSuchMethodError) {
+                    source.fetchImageUrl(cachedPage).toBlocking().first()
+                } catch (_: AbstractMethodError) {
+                    source.fetchImageUrl(cachedPage).toBlocking().first()
+                }
+                if (freshlyResolved.isNotBlank()) {
+                    targetImgUrl = resolveSourceUrl(freshlyResolved, source)
+                    cachedPage = Page(cachedPage.index, cachedPage.url, targetImgUrl)
+                    pageCache[imageUrl] = cachedPage
+                    pageCache[targetImgUrl] = cachedPage
+                }
+            } catch (_: Throwable) {}
         }
+
+        val page = cachedPage ?: Page(0, pageUrl ?: "", targetImgUrl)
+        var lastErr: Throwable? = null
+
+        try {
+            val response = try {
+                source.getImage(page)
+            } catch (_: NoSuchMethodError) {
+                source.fetchImage(page).toBlocking().first()
+            } catch (_: AbstractMethodError) {
+                source.fetchImage(page).toBlocking().first()
+            }
+            response.use { res ->
+                if (res.isSuccessful) {
+                    val bytes = res.body?.bytes()
+                    if (bytes != null && bytes.isNotEmpty()) {
+                        return@withContext bytes
+                    }
+                } else {
+                    lastErr = IllegalStateException("HTTP ${res.code} loading image from ${source.name}")
+                }
+            }
+        } catch (e: Throwable) {
+            lastErr = e
+        }
+
+        try {
+            val req = try {
+                GET(targetImgUrl, source.headers)
+            } catch (_: Throwable) {
+                Request.Builder().url(targetImgUrl).headers(source.headers).build()
+            }
+            source.client.newCall(req).execute().use { res ->
+                if (res.isSuccessful) {
+                    val bytes = res.body?.bytes()
+                    if (bytes != null && bytes.isNotEmpty()) {
+                        return@withContext bytes
+                    }
+                } else if (lastErr == null) {
+                    lastErr = IllegalStateException("HTTP ${res.code} loading image")
+                }
+            }
+        } catch (e: Throwable) {
+            if (lastErr == null) lastErr = e
+        }
+
+        throw (lastErr ?: IllegalStateException("Empty image response for $targetImgUrl"))
+    }
+
+    private fun sMangaToMap(sManga: SManga, source: CatalogueSource? = null, pkg: String = ""): Map<String, Any?> {
+        val thumb = resolveSourceUrl(sManga.thumbnail_url ?: "", source)
+        val headers = extractHeadersMap(source, thumb)
+        val referer = headers.entries.firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
+            ?: (if (source is HttpSource) source.baseUrl else "")
+        val nativeImages = source != null && hasCustomImagePipeline(source)
+
         return mapOf(
             "url" to sManga.url,
             "title" to sManga.title,
@@ -875,6 +1852,9 @@ class TachiyomiExtensionManager(private val context: Context) {
             "status" to sManga.status,
             "thumbnail_url" to thumb,
             "referer" to referer,
+            "headers" to headers,
+            "nativeImages" to nativeImages,
+            "pkg" to pkg,
             "memo" to sManga.memo?.toString()
         )
     }

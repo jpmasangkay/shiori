@@ -1,10 +1,8 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../services/api_service.dart';
 import '../services/download_service.dart';
+import '../services/source_manager.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
 import '../widgets/auth_modal.dart';
@@ -28,7 +26,6 @@ class _MoreScreenState extends State<MoreScreen> {
     ApiService.instance.addListener(_onChange);
     DownloadService.instance.addListener(_onChange);
     TrackerService.instance.addListener(_onChange);
-    ThemeController.instance.addListener(_onChange);
     ApiService.instance.checkHealth();
   }
 
@@ -37,7 +34,6 @@ class _MoreScreenState extends State<MoreScreen> {
     ApiService.instance.removeListener(_onChange);
     DownloadService.instance.removeListener(_onChange);
     TrackerService.instance.removeListener(_onChange);
-    ThemeController.instance.removeListener(_onChange);
     super.dispose();
   }
 
@@ -54,7 +50,6 @@ class _MoreScreenState extends State<MoreScreen> {
     final downloadedCount = ds.downloadedChapters.length;
     final totalDownloadBytes = ds.getTotalDownloadSizeBytes();
     final tracker = TrackerService.instance;
-    final amoled = ThemeController.instance.isAmoled;
 
     return Column(
       children: [
@@ -63,13 +58,13 @@ class _MoreScreenState extends State<MoreScreen> {
           child: ListView(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
             children: [
-              // User Account Card (Fixed layout with zero text overlap)
+              // User Account Card
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: AppColors.surface,
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.surfaceHigh),
+                  border: Border.all(color: AppColors.outline),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -94,17 +89,16 @@ class _MoreScreenState extends State<MoreScreen> {
                                 loggedIn
                                     ? (user?.displayName.isNotEmpty == true ? user!.displayName : user!.email)
                                     : 'Guest User',
-                                style: GoogleFonts.inter(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w600,
-                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.cardTitle,
                               ),
                               const SizedBox(height: 3),
                               Text(
                                 loggedIn ? user!.email : 'Sign in to sync your library across devices',
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
-                                style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                                style: AppText.caption,
                               ),
                             ],
                           ),
@@ -117,12 +111,13 @@ class _MoreScreenState extends State<MoreScreen> {
                         onPressed: _confirmLogout,
                         style: OutlinedButton.styleFrom(
                           side: const BorderSide(color: AppColors.outline),
-                          padding: const EdgeInsets.symmetric(vertical: 8),
+                          minimumSize: const Size.fromHeight(44),
+                          padding: const EdgeInsets.symmetric(vertical: 10),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         ),
                         child: Text(
                           'Sign Out',
-                          style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, fontWeight: FontWeight.w500),
+                          style: AppText.bodyMedium.copyWith(color: AppColors.muted),
                         ),
                       )
                     else
@@ -131,12 +126,13 @@ class _MoreScreenState extends State<MoreScreen> {
                         style: FilledButton.styleFrom(
                           backgroundColor: AppColors.primary,
                           foregroundColor: AppColors.onPrimary,
+                          minimumSize: const Size.fromHeight(44),
                           padding: const EdgeInsets.symmetric(vertical: 10),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         ),
                         child: Text(
                           'Sign In / Create Account',
-                          style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600),
+                          style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary),
                         ),
                       ),
                   ],
@@ -165,7 +161,7 @@ class _MoreScreenState extends State<MoreScreen> {
                         ),
                         child: Text(
                           '${ds.activeTasks.length} downloading',
-                          style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: AppColors.onPrimary),
+                          style: AppText.badge.copyWith(color: AppColors.onPrimary),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -188,17 +184,6 @@ class _MoreScreenState extends State<MoreScreen> {
                 subtitle: 'Columns, grid modes, and category tabs',
                 onTap: () => showDisplaySheet(context),
               ),
-              _settingTile(
-                icon: Icons.dark_mode_rounded,
-                title: 'True AMOLED Pure Black',
-                subtitle: 'Turns off OLED pixels (#000000) for infinite contrast & battery saving',
-                trailing: Switch(
-                  value: amoled,
-                  activeThumbColor: AppColors.primary,
-                  onChanged: (val) => ThemeController.instance.setAmoled(val),
-                ),
-                onTap: () => ThemeController.instance.setAmoled(!amoled),
-              ),
 
               const SizedBox(height: 22),
 
@@ -220,9 +205,7 @@ class _MoreScreenState extends State<MoreScreen> {
                   ),
                   child: Text(
                     tracker.isAuthenticated ? 'CONNECTED' : 'CONNECT',
-                    style: GoogleFonts.inter(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
+                    style: AppText.badge.copyWith(
                       color: tracker.isAuthenticated ? Colors.greenAccent : AppColors.primary,
                     ),
                   ),
@@ -230,15 +213,14 @@ class _MoreScreenState extends State<MoreScreen> {
                 onTap: _showTrackerSheet,
               ),
 
-              const SizedBox(height: 22),
-
-              // Sources & Extensions
-              _sectionHeader(Platform.isIOS ? 'SOURCES' : 'SOURCES & EXTENSIONS'),
-              if (!Platform.isIOS)
+              // Sources & Extensions (Android only; iOS uses built-in Direct Sources in Browse)
+              if (!SourceManager.isIOSPlatform) ...[
+                const SizedBox(height: 22),
+                _sectionHeader('EXTENSIONS'),
                 _settingTile(
                   icon: Icons.extension_outlined,
                   title: 'Extensions',
-                  subtitle: 'Browse community extension sources',
+                  subtitle: 'Manage installed Tachiyomi / Keiyoushi extensions',
                   trailing: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
@@ -246,63 +228,38 @@ class _MoreScreenState extends State<MoreScreen> {
                       borderRadius: BorderRadius.circular(6),
                     ),
                     child: Text(
-                      'Sources',
-                      style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.primary),
+                      'Manage',
+                      style: AppText.badge.copyWith(color: AppColors.primary),
                     ),
                   ),
                   onTap: () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const ExtensionsScreen()),
                   ),
                 ),
-              _settingTile(
-                icon: Icons.public_rounded,
-                title: 'Active Sources',
-                subtitle: 'Built-in direct sources and community extensions',
-                trailing: const Icon(Icons.check_circle_outline_rounded, color: AppColors.primary, size: 20),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const ExtensionsScreen()),
-                ),
-              ),
+              ],
 
               const SizedBox(height: 22),
 
-              // Automatic Cloud Sync & Web Access (No manual backups needed)
-              _sectionHeader('AUTOMATIC CLOUD SYNC'),
-              _settingTile(
-                icon: Icons.cloud_done_rounded,
-                title: loggedIn ? 'Cloud Sync Active' : 'Enable Cloud Sync',
-                subtitle: loggedIn
-                    ? 'Synced with ${user?.email}. All devices stay in sync automatically.'
-                    : 'Sign in to save bookmarks & history to the cloud database across devices with zero manual backups.',
-                trailing: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: loggedIn ? Colors.greenAccent.withValues(alpha: .15) : AppColors.surfaceHigh,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    loggedIn ? 'ACTIVE' : 'SIGN IN',
-                    style: GoogleFonts.inter(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: loggedIn ? Colors.greenAccent : AppColors.primary,
+              // Data & Backup (Cloud sync entry hidden when signed in; silent background sync)
+              _sectionHeader('DATA & BACKUP'),
+              if (!loggedIn)
+                _settingTile(
+                  icon: Icons.cloud_upload_outlined,
+                  title: 'Sign in to sync',
+                  subtitle: 'Save bookmarks & history to the cloud across devices',
+                  trailing: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceHigh,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      'SIGN IN',
+                      style: AppText.badge.copyWith(color: AppColors.primary),
                     ),
                   ),
+                  onTap: () => showAuthModal(context),
                 ),
-                onTap: loggedIn
-                    ? () async {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Syncing library and reading history with cloud...')),
-                        );
-                        await ApiService.instance.syncAllCloudData();
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Cloud sync complete! All devices up to date.')),
-                          );
-                        }
-                      }
-                    : () => showAuthModal(context),
-              ),
               _settingTile(
                 icon: Icons.sync_alt_rounded,
                 title: 'Offline Backup & File Export',
@@ -332,7 +289,7 @@ class _MoreScreenState extends State<MoreScreen> {
               Center(
                 child: Text(
                   'Shiori v1.0.0 • Material 3 Dark',
-                  style: GoogleFonts.inter(fontSize: 11, color: AppColors.read),
+                  style: AppText.caption.copyWith(color: AppColors.read),
                 ),
               ),
             ],
@@ -360,7 +317,7 @@ class _MoreScreenState extends State<MoreScreen> {
           final user = tracker.currentUser;
 
           return SafeArea(
-            child: Padding(
+            child: SingleChildScrollView(
               padding: EdgeInsets.only(
                 left: 20,
                 right: 20,
@@ -388,12 +345,12 @@ class _MoreScreenState extends State<MoreScreen> {
                           children: [
                             Text(
                               'AniList Tracking',
-                              style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w700),
+                              style: AppText.sheetTitle,
                             ),
                             const SizedBox(height: 2),
                             Text(
                               'Automatically update read chapters on AniList',
-                              style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                              style: AppText.caption,
                             ),
                           ],
                         ),
@@ -422,17 +379,18 @@ class _MoreScreenState extends State<MoreScreen> {
                               children: [
                                 Text(
                                   user?.name ?? 'AniList User',
-                                  style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                                  style: AppText.cardTitle,
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
                                   'Status: Connected',
-                                  style: GoogleFonts.inter(fontSize: 11, color: Colors.greenAccent),
+                                  style: AppText.caption.copyWith(color: Colors.greenAccent),
                                 ),
                               ],
                             ),
                           ),
                           IconButton(
+                            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                             icon: const Icon(Icons.logout_rounded, color: Colors.redAccent),
                             tooltip: 'Disconnect AniList',
                             onPressed: () async {
@@ -449,11 +407,11 @@ class _MoreScreenState extends State<MoreScreen> {
                       contentPadding: EdgeInsets.zero,
                       title: Text(
                         'Auto-update reading progress',
-                        style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
+                        style: AppText.bodyMedium,
                       ),
                       subtitle: Text(
                         'Updates AniList chapter count whenever you finish a chapter in the reader',
-                        style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                        style: AppText.caption,
                       ),
                       activeThumbColor: AppColors.primary,
                       value: tracker.autoUpdateEnabled,
@@ -465,13 +423,15 @@ class _MoreScreenState extends State<MoreScreen> {
                   ] else ...[
                     Text(
                       'Enter your AniList Personal Access Token to connect:',
-                      style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                      style: AppText.caption,
                     ),
                     const SizedBox(height: 10),
                     TextField(
                       controller: tokenController,
+                      style: AppText.body,
                       decoration: InputDecoration(
                         hintText: 'Paste AniList token here',
+                        hintStyle: AppText.caption,
                         filled: true,
                         fillColor: AppColors.surfaceHigh,
                         border: OutlineInputBorder(
@@ -485,7 +445,7 @@ class _MoreScreenState extends State<MoreScreen> {
                     const SizedBox(height: 8),
                     Text(
                       'You can generate a token in AniList Settings > Developer > Create New Client.',
-                      style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                      style: AppText.caption,
                     ),
                     const SizedBox(height: 16),
                     SizedBox(
@@ -519,6 +479,7 @@ class _MoreScreenState extends State<MoreScreen> {
                               },
                         style: FilledButton.styleFrom(
                           backgroundColor: const Color(0xFF02A9FF),
+                          minimumSize: const Size.fromHeight(44),
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         ),
@@ -528,7 +489,7 @@ class _MoreScreenState extends State<MoreScreen> {
                                 height: 20,
                                 child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                               )
-                            : const Text('Connect AniList', style: TextStyle(fontWeight: FontWeight.w600)),
+                            : Text('Connect AniList', style: AppText.bodySemiBold),
                       ),
                     ),
                   ],
@@ -546,12 +507,7 @@ class _MoreScreenState extends State<MoreScreen> {
       padding: const EdgeInsets.only(left: 4, bottom: 8),
       child: Text(
         text,
-        style: GoogleFonts.inter(
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 1.2,
-          color: AppColors.muted,
-        ),
+        style: AppText.sectionHeader,
       ),
     );
   }
@@ -571,41 +527,44 @@ class _MoreScreenState extends State<MoreScreen> {
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            child: Row(
-              children: [
-                Icon(icon, color: AppColors.primary, size: 22),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
-                      ),
-                    ],
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 56),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  Icon(icon, color: AppColors.primary, size: 22),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.bodyMedium,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption,
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                if (trailing != null) ...[
-                  const SizedBox(width: 8),
-                  trailing,
-                ] else if (onTap != null) ...[
-                  const SizedBox(width: 8),
-                  const Icon(Icons.chevron_right_rounded, color: AppColors.muted, size: 20),
+                  if (trailing != null) ...[
+                    const SizedBox(width: 8),
+                    trailing,
+                  ] else if (onTap != null) ...[
+                    const SizedBox(width: 8),
+                    const Icon(Icons.chevron_right_rounded, color: AppColors.muted, size: 20),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -617,18 +576,29 @@ class _MoreScreenState extends State<MoreScreen> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        scrollable: true,
         backgroundColor: AppColors.surface,
-        title: const Text('Sign Out'),
-        content: const Text('Are you sure you want to sign out? Your library remains saved to your account.'),
+        title: Text('Sign Out', style: AppText.sheetTitle),
+        content: Text(
+          'Are you sure you want to sign out? Your library remains saved to your account.',
+          style: AppText.body,
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            style: TextButton.styleFrom(minimumSize: const Size(44, 44)),
+            child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+          ),
           FilledButton(
             onPressed: () {
               Navigator.pop(ctx);
               ApiService.instance.logout();
             },
-            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-            child: const Text('Sign Out', style: TextStyle(color: AppColors.onPrimary)),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              minimumSize: const Size(64, 44),
+            ),
+            child: Text('Sign Out', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
           ),
         ],
       ),

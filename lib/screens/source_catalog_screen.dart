@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
@@ -19,12 +18,14 @@ class SourceCatalogScreen extends StatefulWidget {
     required this.sourceName,
     this.sourceLang = 'EN',
     this.initialOrder = 'popular',
+    this.autofocusSearch = false,
   });
 
   final String sourceId;
   final String sourceName;
   final String sourceLang;
   final String initialOrder;
+  final bool autofocusSearch;
 
   @override
   State<SourceCatalogScreen> createState() => _SourceCatalogScreenState();
@@ -58,6 +59,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   void initState() {
     super.initState();
     _scrollController.addListener(_onScroll);
+    ApiService.instance.addListener(_onLibraryChanged);
     _initTypeAndFetch();
   }
 
@@ -100,10 +102,15 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
 
   @override
   void dispose() {
+    ApiService.instance.removeListener(_onLibraryChanged);
     _debounce?.cancel();
     _searchController.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onLibraryChanged() {
+    if (mounted) setState(() {});
   }
 
   void _onScroll() {
@@ -123,7 +130,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
       _loading = true;
       _error = null;
     });
-    _debounce = Timer(const Duration(milliseconds: 280), () {
+    _debounce = Timer(const Duration(milliseconds: 140), () {
       if (!mounted) return;
       _fetch();
     });
@@ -237,11 +244,13 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           children: [
             Text(
               widget.sourceName,
-              style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.title,
             ),
             Text(
               '${widget.sourceLang} • Catalog',
-              style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+              style: AppText.caption.copyWith(color: AppColors.muted),
             ),
           ],
         ),
@@ -269,12 +278,12 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
             child: Container(
-              height: 42,
+              constraints: const BoxConstraints(minHeight: 44),
               padding: const EdgeInsets.symmetric(horizontal: 12),
               decoration: BoxDecoration(
                 color: AppColors.surface,
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.surfaceHigh),
+                border: Border.all(color: AppColors.outline),
               ),
               child: Row(
                 children: [
@@ -283,24 +292,27 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                   Expanded(
                     child: TextField(
                       controller: _searchController,
+                      autofocus: widget.autofocusSearch,
                       onChanged: _onSearchChanged,
-                      style: GoogleFonts.inter(fontSize: 13, color: AppColors.text),
+                      style: AppText.body,
                       decoration: InputDecoration(
                         hintText: 'Search ${widget.sourceName}...',
-                        hintStyle: const TextStyle(color: AppColors.muted, fontSize: 13),
+                        hintStyle: AppText.body.copyWith(color: AppColors.muted),
                         border: InputBorder.none,
                         isDense: true,
                       ),
                     ),
                   ),
                   if (_searchController.text.isNotEmpty)
-                    GestureDetector(
-                      onTap: () {
+                    IconButton(
+                      onPressed: () {
                         _debounce?.cancel();
                         _searchController.clear();
                         _fetch();
                       },
-                      child: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
+                      constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                      padding: EdgeInsets.zero,
+                      icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
                     ),
                 ],
               ),
@@ -308,18 +320,17 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           ),
 
           // Sort + Types
-          SizedBox(
-            height: 38,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
               children: [
                 for (final (orderKey, orderLabel, orderIcon) in const [
                   ('popular', 'Popular', Icons.local_fire_department_rounded),
                   ('latest', 'Latest', Icons.schedule_rounded),
                 ])
                   Padding(
-                    padding: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.only(right: 6, bottom: 2),
                     child: ChoiceChip(
                       avatar: Icon(
                         orderIcon,
@@ -334,26 +345,25 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                       showCheckmark: false,
                       backgroundColor: AppColors.surface,
                       selectedColor: AppColors.active,
-                      labelStyle: GoogleFonts.inter(
-                        fontSize: 12,
+                      labelStyle: AppText.chip.copyWith(
                         color: _selectedOrder == orderKey ? AppColors.primary : AppColors.muted,
-                        fontWeight: _selectedOrder == orderKey ? FontWeight.w600 : FontWeight.normal,
+                        fontWeight: _selectedOrder == orderKey ? FontWeight.w600 : FontWeight.w500,
                       ),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(20),
                         side: BorderSide(
-                          color: _selectedOrder == orderKey ? AppColors.primary : Colors.transparent,
+                          color: _selectedOrder == orderKey ? AppColors.primary : AppColors.outline,
                         ),
                       ),
                     ),
                   ),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-                  child: Container(width: 1, color: AppColors.surfaceHigh),
+                  child: Container(width: 1, height: 22, color: AppColors.outline),
                 ),
                 for (final (typeKey, typeLabel) in _types)
                   Padding(
-                    padding: const EdgeInsets.only(right: 8),
+                    padding: const EdgeInsets.only(right: 8, bottom: 2),
                     child: ChoiceChip(
                       label: Text(typeLabel),
                       selected: _selectedType == typeKey,
@@ -363,15 +373,14 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                       showCheckmark: false,
                       backgroundColor: AppColors.surface,
                       selectedColor: AppColors.active,
-                      labelStyle: GoogleFonts.inter(
-                        fontSize: 12,
+                      labelStyle: AppText.chip.copyWith(
                         color: _selectedType == typeKey ? AppColors.primary : AppColors.muted,
-                        fontWeight: _selectedType == typeKey ? FontWeight.w600 : FontWeight.normal,
+                        fontWeight: _selectedType == typeKey ? FontWeight.w600 : FontWeight.w500,
                       ),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(20),
                         side: BorderSide(
-                          color: _selectedType == typeKey ? AppColors.primary : Colors.transparent,
+                          color: _selectedType == typeKey ? AppColors.primary : AppColors.outline,
                         ),
                       ),
                     ),
@@ -434,13 +443,13 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
               const SizedBox(height: 12),
               Text(
                 'Could not load ${widget.sourceName} catalog',
-                style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
+                style: AppText.cardTitle,
               ),
               const SizedBox(height: 6),
               Text(
                 _error!,
                 textAlign: TextAlign.center,
-                style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                style: AppText.caption.copyWith(color: AppColors.muted),
               ),
               const SizedBox(height: 16),
               if (isCloudflareOrWeb) ...[
@@ -463,6 +472,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: AppColors.onPrimary,
+                    minimumSize: const Size(0, 44),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -471,7 +481,10 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                 onPressed: _fetch,
                 icon: const Icon(Icons.refresh_rounded, size: 18),
                 label: const Text('Try Again'),
-                style: FilledButton.styleFrom(backgroundColor: AppColors.surfaceHigh),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.surfaceHigh,
+                  minimumSize: const Size(0, 44),
+                ),
               ),
             ],
           ),
@@ -493,7 +506,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
               Text(
                 'No $typeLabel found on ${widget.sourceName}',
                 textAlign: TextAlign.center,
-                style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600, color: AppColors.text),
+                style: AppText.cardTitle,
               ),
               const SizedBox(height: 6),
               Text(
@@ -501,7 +514,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                     ? '${widget.sourceName} may not carry $typeLabel or specializes in other comic categories. Try selecting "All" or a different category.'
                     : 'This source returned no results for this query. Try another search or pull to refresh.',
                 textAlign: TextAlign.center,
-                style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted, height: 1.4),
+                style: AppText.caption.copyWith(color: AppColors.muted, height: 1.4),
               ),
               const SizedBox(height: 18),
               if (_selectedType != 'all')
@@ -512,6 +525,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: AppColors.onPrimary,
+                    minimumSize: const Size(0, 44),
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
@@ -524,6 +538,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: AppColors.onPrimary,
+                    minimumSize: const Size(0, 44),
                     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                   ),
@@ -571,7 +586,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                   fit: StackFit.expand,
                   children: [
                     const ColoredBox(color: AppColors.surfaceHigh),
-                    CoverImage(imageUrl: manga.cover, saturation: .75),
+                    CoverImage(imageUrl: manga.cover, mangaId: manga.id, saturation: .75),
                     const Align(
                       alignment: Alignment.bottomCenter,
                       child: FractionallySizedBox(
@@ -599,7 +614,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                         ),
                         child: Text(
                           manga.type.toUpperCase(),
-                          style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: AppColors.primary),
+                          style: AppText.badge.copyWith(color: AppColors.primary),
                         ),
                       ),
                     ),
@@ -611,11 +626,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                         manga.title,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          height: 16 / 12,
-                        ),
+                        style: AppText.bodyMedium.copyWith(height: 16 / 13),
                       ),
                     ),
                   ],

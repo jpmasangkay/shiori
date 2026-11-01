@@ -57,7 +57,11 @@ void main() {
           failures.add('[$s] ${missingBrowseCovers.length} browse items missing http cover URL');
         }
 
-        final searchList = await ApiService.instance.searchManga(source: s, query: 'level');
+        var searchList = await ApiService.instance.searchManga(source: s, query: 'level');
+        if (searchList.isEmpty) {
+          await Future<void>.delayed(const Duration(milliseconds: 600));
+          searchList = await ApiService.instance.searchManga(source: s, query: 'level');
+        }
         print('[$s] Search("level") count: ${searchList.length}');
         if (searchList.isEmpty) {
           failures.add('[$s] search("level") returned 0 items');

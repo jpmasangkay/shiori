@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../services/api_service.dart';
 import '../services/extension_service.dart';
 import '../theme.dart';
+import '../widgets/auth_modal.dart';
 
 class BackupScreen extends StatefulWidget {
   const BackupScreen({super.key});
@@ -47,13 +47,14 @@ class _BackupScreenState extends State<BackupScreen> {
       showDialog(
         context: context,
         builder: (ctx) => AlertDialog(
+          scrollable: true,
           backgroundColor: AppColors.surface,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
           title: Row(
             children: [
               const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 22),
               const SizedBox(width: 10),
-              Text('Backup Created!', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w700)),
+              Expanded(child: Text('Backup Created!', style: AppText.sheetTitle)),
             ],
           ),
           content: Column(
@@ -62,7 +63,7 @@ class _BackupScreenState extends State<BackupScreen> {
             children: [
               Text(
                 'Your complete backup has been copied to your clipboard. You can paste it into a file, send it to another device via Quick Share, Drive, WhatsApp, or email.',
-                style: GoogleFonts.inter(fontSize: 13, color: AppColors.muted, height: 1.4),
+                style: AppText.body.copyWith(color: AppColors.muted, height: 1.4),
               ),
               const SizedBox(height: 14),
               Container(
@@ -74,7 +75,7 @@ class _BackupScreenState extends State<BackupScreen> {
                 child: Text(
                   'Size: ${(jsonStr.length / 1024).toStringAsFixed(1)} KB\n'
                   'Contains all bookmarks, reading progress, and installed sources.',
-                  style: GoogleFonts.robotoMono(fontSize: 11, color: AppColors.text),
+                  style: AppText.mono,
                 ),
               ),
             ],
@@ -82,8 +83,11 @@ class _BackupScreenState extends State<BackupScreen> {
           actions: [
             FilledButton(
               onPressed: () => Navigator.pop(ctx),
-              style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-              child: const Text('Got it'),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                minimumSize: const Size(64, 44),
+              ),
+              child: Text('Got it', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
             ),
           ],
         ),
@@ -125,94 +129,100 @@ class _BackupScreenState extends State<BackupScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
-          left: 20,
-          right: 20,
-          top: 20,
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
-              children: [
-                const Icon(Icons.settings_backup_restore_rounded, color: AppColors.primary, size: 22),
-                const SizedBox(width: 10),
-                Text('Restore Backup', style: GoogleFonts.inter(fontSize: 17, fontWeight: FontWeight.w700)),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close_rounded, size: 20, color: AppColors.muted),
-                  onPressed: () => Navigator.pop(ctx),
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+            left: 20,
+            right: 20,
+            top: 20,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.settings_backup_restore_rounded, color: AppColors.primary, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(child: Text('Restore Backup', style: AppText.sheetTitle)),
+                  IconButton(
+                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                    icon: const Icon(Icons.close_rounded, size: 20, color: AppColors.muted),
+                    onPressed: () => Navigator.pop(ctx),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Paste the backup JSON text exported from your other device below:',
+                style: AppText.body.copyWith(color: AppColors.muted),
+              ),
+              const SizedBox(height: 14),
+              TextField(
+                controller: textController,
+                maxLines: 6,
+                style: AppText.mono,
+                decoration: InputDecoration(
+                  hintText: '{\n  "version": 1,\n  "app": "Shiori", ...\n}',
+                  hintStyle: AppText.mono.copyWith(color: AppColors.muted.withValues(alpha: .5)),
+                  filled: true,
+                  fillColor: AppColors.bg,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: AppColors.outline),
+                  ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'Paste the backup JSON text exported from your other device below:',
-              style: GoogleFonts.inter(fontSize: 13, color: AppColors.muted),
-            ),
-            const SizedBox(height: 14),
-            TextField(
-              controller: textController,
-              maxLines: 6,
-              style: GoogleFonts.robotoMono(fontSize: 12, color: AppColors.text),
-              decoration: InputDecoration(
-                hintText: '{\n  "version": 1,\n  "app": "Shiori", ...\n}',
-                hintStyle: TextStyle(color: AppColors.muted.withValues(alpha: .5), fontSize: 12),
-                filled: true,
-                fillColor: AppColors.bg,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
               ),
-            ),
-            const SizedBox(height: 16),
-            FilledButton.icon(
-              onPressed: () async {
-                final raw = textController.text.trim();
-                if (raw.isEmpty) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Please paste a valid backup first.')),
-                  );
-                  return;
-                }
-
-                Navigator.pop(ctx);
-                setState(() => _restoring = true);
-
-                try {
-                  final result = await _api.restoreBackupJson(raw);
-                  if (mounted) {
-                    setState(() => _restoring = false);
+              const SizedBox(height: 16),
+              FilledButton.icon(
+                onPressed: () async {
+                  final raw = textController.text.trim();
+                  if (raw.isEmpty) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content: Text(
-                          'Restored ${result['bookmarks']} bookmarks and ${result['history']} reading progress entries!',
+                      const SnackBar(content: Text('Please paste a valid backup first.')),
+                    );
+                    return;
+                  }
+
+                  Navigator.pop(ctx);
+                  setState(() => _restoring = true);
+
+                  try {
+                    final result = await _api.restoreBackupJson(raw);
+                    if (mounted) {
+                      setState(() => _restoring = false);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            'Restored ${result['bookmarks']} bookmarks and ${result['history']} reading progress entries!',
+                          ),
+                          backgroundColor: Colors.green.shade800,
+                          duration: const Duration(seconds: 4),
                         ),
-                        backgroundColor: Colors.green.shade800,
-                        duration: const Duration(seconds: 4),
-                      ),
-                    );
+                      );
+                    }
+                  } catch (e) {
+                    if (mounted) {
+                      setState(() => _restoring = false);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('Failed to restore backup: Invalid format ($e)')),
+                      );
+                    }
                   }
-                } catch (e) {
-                  if (mounted) {
-                    setState(() => _restoring = false);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Failed to restore backup: Invalid format ($e)')),
-                    );
-                  }
-                }
-              },
-              icon: const Icon(Icons.download_done_rounded, size: 18),
-              label: const Text('Restore Now'),
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: AppColors.onPrimary,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                },
+                icon: const Icon(Icons.download_done_rounded, size: 18),
+                label: Text('Restore Now', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: AppColors.onPrimary,
+                  minimumSize: const Size.fromHeight(44),
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -225,7 +235,7 @@ class _BackupScreenState extends State<BackupScreen> {
       appBar: AppBar(
         backgroundColor: AppColors.bg,
         elevation: 0,
-        title: Text('Backup & Transfer', style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w600)),
+        title: Text('Backup & Transfer', style: AppText.title),
       ),
       body: FutureBuilder(
         future: Future.wait([
@@ -275,12 +285,12 @@ class _BackupScreenState extends State<BackupScreen> {
                             children: [
                               Text(
                                 'Pass Data Across Devices',
-                                style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w700),
+                                style: AppText.cardTitle,
                               ),
                               const SizedBox(height: 2),
                               Text(
                                 'Move bookmarks and reading progress to any phone or tablet.',
-                                style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                                style: AppText.caption,
                               ),
                             ],
                           ),
@@ -292,7 +302,7 @@ class _BackupScreenState extends State<BackupScreen> {
                       '1. Tap "Export & Copy Backup" on this device.\n'
                       '2. Send the backup to your other device (Drive, Quick Share, chat).\n'
                       '3. Open Shiori on the new device and tap "Restore Backup".',
-                      style: GoogleFonts.inter(fontSize: 12, color: AppColors.text, height: 1.5),
+                      style: AppText.body.copyWith(height: 1.5),
                     ),
                   ],
                 ),
@@ -306,7 +316,7 @@ class _BackupScreenState extends State<BackupScreen> {
                 decoration: BoxDecoration(
                   color: AppColors.surface,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.surfaceHigh),
+                  border: Border.all(color: AppColors.outline),
                 ),
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceAround,
@@ -322,7 +332,7 @@ class _BackupScreenState extends State<BackupScreen> {
 
               const SizedBox(height: 24),
 
-              Text('BACKUP ACTIONS', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.2, color: AppColors.muted)),
+              Text('BACKUP ACTIONS', style: AppText.sectionHeader),
               const SizedBox(height: 10),
 
               // Export Button
@@ -330,7 +340,7 @@ class _BackupScreenState extends State<BackupScreen> {
                 decoration: BoxDecoration(
                   color: AppColors.surface,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.surfaceHigh),
+                  border: Border.all(color: AppColors.outline),
                 ),
                 child: ListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -342,8 +352,8 @@ class _BackupScreenState extends State<BackupScreen> {
                     ),
                     child: const Icon(Icons.upload_rounded, color: AppColors.primary, size: 22),
                   ),
-                  title: Text('Export & Copy Backup', style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Generate full backup and copy to clipboard', style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted)),
+                  title: Text('Export & Copy Backup', style: AppText.cardTitle),
+                  subtitle: Text('Generate full backup and copy to clipboard', style: AppText.caption),
                   trailing: _exporting
                       ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary))
                       : const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.muted),
@@ -358,7 +368,7 @@ class _BackupScreenState extends State<BackupScreen> {
                 decoration: BoxDecoration(
                   color: AppColors.surface,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.surfaceHigh),
+                  border: Border.all(color: AppColors.outline),
                 ),
                 child: ListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -370,8 +380,8 @@ class _BackupScreenState extends State<BackupScreen> {
                     ),
                     child: const Icon(Icons.download_rounded, color: Colors.blueAccent, size: 22),
                   ),
-                  title: Text('Restore from Backup', style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600)),
-                  subtitle: Text('Paste backup text to restore bookmarks & progress', style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted)),
+                  title: Text('Restore from Backup', style: AppText.cardTitle),
+                  subtitle: Text('Paste backup text to restore bookmarks & progress', style: AppText.caption),
                   trailing: _restoring
                       ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blueAccent))
                       : const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.muted),
@@ -379,48 +389,49 @@ class _BackupScreenState extends State<BackupScreen> {
                 ),
               ),
 
-              const SizedBox(height: 24),
-
-              Text('AUTOMATIC CLOUD SYNC', style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 1.2, color: AppColors.muted)),
-              const SizedBox(height: 10),
-
-              // Cloud Sync Info Card
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
+              if (!_api.isLoggedIn) ...[
+                const SizedBox(height: 24),
+                Text('CLOUD SYNC', style: AppText.sectionHeader),
+                const SizedBox(height: 10),
+                InkWell(
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: AppColors.surfaceHigh),
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      _api.isLoggedIn ? Icons.cloud_done_rounded : Icons.cloud_queue_rounded,
-                      color: _api.isLoggedIn ? Colors.greenAccent : AppColors.muted,
-                      size: 28,
+                  onTap: () => showAuthModal(context),
+                  child: Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppColors.outline),
                     ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            _api.isLoggedIn ? 'Cloud Sync Active' : 'Automatic Wireless Sync',
-                            style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.cloud_queue_rounded,
+                          color: AppColors.muted,
+                          size: 28,
+                        ),
+                        const SizedBox(width: 14),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'Sign in to sync',
+                                style: AppText.cardTitle,
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                'Sign into the same account on any device to sync without files.',
+                                style: AppText.caption,
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 2),
-                          Text(
-                            _api.isLoggedIn
-                                ? 'Logged in as ${_api.currentUser?.email}. All bookmarks sync automatically.'
-                                : 'Sign into the same account on any device to sync without files.',
-                            style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
-                          ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ],
           );
         },
@@ -433,9 +444,9 @@ class _BackupScreenState extends State<BackupScreen> {
       children: [
         Icon(icon, size: 18, color: AppColors.primary),
         const SizedBox(height: 6),
-        Text(value, style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w700)),
+        Text(value, style: AppText.title.copyWith(fontSize: 18)),
         const SizedBox(height: 2),
-        Text(label, style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted)),
+        Text(label, style: AppText.caption),
       ],
     );
   }
@@ -444,7 +455,7 @@ class _BackupScreenState extends State<BackupScreen> {
     return Container(
       width: 1,
       height: 36,
-      color: AppColors.surfaceHigh,
+      color: AppColors.outline,
     );
   }
 }

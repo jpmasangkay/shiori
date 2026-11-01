@@ -23,6 +23,8 @@ interface Source {
 
     suspend fun getImageUrl(page: Page): String
     fun fetchImageUrl(page: Page): Observable<String> = Observable.just(page.imageUrl ?: page.url)
+
+    suspend fun fetchRelatedMangaList(manga: SManga): List<SManga> = emptyList()
 }
 
 interface CatalogueSource : Source {

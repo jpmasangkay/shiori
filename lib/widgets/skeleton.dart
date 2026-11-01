@@ -59,7 +59,7 @@ class _ShimmerLoadingState extends State<ShimmerLoading> with SingleTickerProvid
               ],
               colors: const [
                 AppColors.surface,
-                AppColors.surfaceHigh,
+                AppColors.outline,
                 AppColors.surface,
               ],
             ).createShader(bounds);

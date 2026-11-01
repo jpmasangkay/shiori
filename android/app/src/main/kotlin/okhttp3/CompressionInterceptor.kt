@@ -18,8 +18,22 @@ open class CompressionInterceptor(
         fun decompress(source: BufferedSource): Source
     }
 
+    internal val acceptEncoding: String =
+        algorithms.map { it.getEncoding() }.filter { it.isNotEmpty() }.joinToString(", ")
+
     override fun intercept(chain: Interceptor.Chain): Response {
-        val request = chain.request()
+        val originalRequest = chain.request()
+        val request = if (
+            algorithms.isNotEmpty() &&
+            originalRequest.header("Accept-Encoding") == null &&
+            originalRequest.header("Range") == null
+        ) {
+            originalRequest.newBuilder()
+                .header("Accept-Encoding", acceptEncoding)
+                .build()
+        } else {
+            originalRequest
+        }
         val response = chain.proceed(request)
         val body = response.body ?: return response
 

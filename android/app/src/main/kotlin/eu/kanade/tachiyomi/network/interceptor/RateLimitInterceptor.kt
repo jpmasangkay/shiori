@@ -62,41 +62,62 @@ open class UserAgentInterceptor(
 }
 
 open class RateLimitInterceptor @JvmOverloads constructor(
+    private val host: String?,
     val permits: Int,
     val period: Long = 1,
     val unit: TimeUnit = TimeUnit.SECONDS
 ) : Interceptor {
+
+    @JvmOverloads
+    constructor(
+        permits: Int,
+        period: Long = 1,
+        unit: TimeUnit = TimeUnit.SECONDS
+    ) : this(null, permits, period, unit)
+
+    private val requestQueue = ArrayDeque<Long>(permits.coerceAtLeast(1))
+    private val rateLimitMillis = unit.toMillis(period).coerceAtLeast(1L)
+
     override fun intercept(chain: Interceptor.Chain): Response {
-        return chain.proceed(chain.request())
+        val req = chain.request()
+        if (host != null && !req.url.host.equals(host, ignoreCase = true)) {
+            return chain.proceed(req)
+        }
+        if (permits > 0) {
+            var sleepMs = 0L
+            synchronized(requestQueue) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                while (requestQueue.isNotEmpty() && now - requestQueue.first() >= rateLimitMillis) {
+                    requestQueue.removeFirst()
+                }
+                if (requestQueue.size >= permits) {
+                    val oldest = requestQueue.removeFirst()
+                    val waitTime = rateLimitMillis - (now - oldest)
+                    if (waitTime > 0L) {
+                        sleepMs = waitTime
+                        requestQueue.addLast(now + waitTime)
+                    } else {
+                        requestQueue.addLast(now)
+                    }
+                } else {
+                    requestQueue.addLast(now)
+                }
+            }
+            if (sleepMs > 0L) {
+                try {
+                    Thread.sleep(sleepMs.coerceAtMost(5000L))
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+        }
+        return chain.proceed(req)
     }
 }
 
-@JvmOverloads
-fun okhttp3.OkHttpClient.Builder.rateLimit(
+open class SpecificHostRateLimitInterceptor @JvmOverloads constructor(
+    val httpUrl: okhttp3.HttpUrl,
     permits: Int,
     period: Long = 1,
     unit: TimeUnit = TimeUnit.SECONDS
-): okhttp3.OkHttpClient.Builder = addInterceptor(RateLimitInterceptor(permits, period, unit))
-
-@JvmOverloads
-fun okhttp3.OkHttpClient.Builder.rateLimitHost(
-    url: okhttp3.HttpUrl,
-    permits: Int,
-    period: Long = 1,
-    unit: TimeUnit = TimeUnit.SECONDS
-): okhttp3.OkHttpClient.Builder = addInterceptor(RateLimitInterceptor(permits, period, unit))
-
-@JvmOverloads
-fun okhttp3.OkHttpClient.Builder.rateLimitHost(
-    url: String,
-    permits: Int,
-    period: Long = 1,
-    unit: TimeUnit = TimeUnit.SECONDS
-): okhttp3.OkHttpClient.Builder {
-    val httpUrl = url.toHttpUrlOrNull()
-    return if (httpUrl != null) {
-        rateLimitHost(httpUrl, permits, period, unit)
-    } else {
-        rateLimit(permits, period, unit)
-    }
-}
+) : RateLimitInterceptor(httpUrl.host, permits, period, unit)

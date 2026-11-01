@@ -1,19 +1,232 @@
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/screens/reader_screen.dart';
 import 'package:manga_reader/services/api_service.dart';
+import 'package:manga_reader/theme.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+  GoogleFonts.config.allowRuntimeFetching = false;
+
   setUp(() async {
     TestWidgetsFlutterBinding.ensureInitialized();
     SharedPreferences.setMockInitialValues({});
+    ApiService.instance.setHttpClient(null);
     await ApiService.instance.init();
   });
 
-  group('Category Management', () {
+  tearDown(() {
+    ApiService.instance.setHttpClient(null);
+  });
+
+  group('Authentication & Cloud Sync Unit Tests', () {
+    test('register() succeeds, stores session, and triggers cloud sync', () async {
+      final requestedPaths = <String>[];
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          requestedPaths.add('${request.method} ${request.url.path}');
+          if (request.url.path.endsWith('/auth/register')) {
+            final body = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response(
+              jsonEncode({
+                'token': 'jwt_signup_token_123',
+                'user': {
+                  'id': 'u_new',
+                  'email': body['email'],
+                  'displayName': body['displayName'],
+                },
+              }),
+              201,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.url.path.endsWith('/library') && request.method == 'GET') {
+            return http.Response(jsonEncode({'items': []}), 200);
+          }
+          if (request.url.path.endsWith('/history') && request.method == 'GET') {
+            return http.Response(jsonEncode({'items': []}), 200);
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+
+      await ApiService.instance.register(
+        'reader@example.com',
+        'secret123',
+        displayName: 'Reader One',
+      );
+
+      expect(ApiService.instance.isLoggedIn, isTrue);
+      expect(ApiService.instance.currentUser?.email, 'reader@example.com');
+      expect(ApiService.instance.currentUser?.displayName, 'Reader One');
+      expect(ApiService.instance.currentUser?.id, 'u_new');
+      expect(requestedPaths, contains('POST /api/auth/register'));
+      // Cloud sync runs after registration
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      expect(requestedPaths, contains('GET /api/library'));
+      expect(requestedPaths, contains('GET /api/progress/history'));
+    });
+
+    test('login() succeeds, stores session, and syncs remote library', () async {
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          if (request.url.path.endsWith('/auth/login')) {
+            return http.Response(
+              jsonEncode({
+                'token': 'jwt_login_token_456',
+                'user': {
+                  'id': 'u_existing',
+                  'email': 'existing@example.com',
+                  'displayName': 'Existing Reader',
+                },
+              }),
+              200,
+              headers: {'content-type': 'application/json'},
+            );
+          }
+          if (request.url.path.endsWith('/library') && request.method == 'GET') {
+            return http.Response(
+              jsonEncode({
+                'items': [
+                  {
+                    'mangaId': 'cloud_manga_1',
+                    'title': 'Cloud Manga',
+                    'coverUrl': 'https://example.com/cover.jpg',
+                    'type': 'manga',
+                  }
+                ]
+              }),
+              200,
+            );
+          }
+          if (request.url.path.endsWith('/history') && request.method == 'GET') {
+            return http.Response(jsonEncode({'items': []}), 200);
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+
+      await ApiService.instance.login('existing@example.com', 'correct_password');
+      expect(ApiService.instance.isLoggedIn, isTrue);
+      expect(ApiService.instance.currentUser?.displayName, 'Existing Reader');
+
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      expect(ApiService.instance.isInLibrary('cloud_manga_1'), isTrue);
+    });
+
+    test('login() with wrong password throws clear error and stays logged out', () async {
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          return http.Response(
+            jsonEncode({'error': 'Invalid email or password'}),
+            401,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await expectLater(
+        () => ApiService.instance.login('user@example.com', 'wrong_pass'),
+        throwsA(
+          predicate((e) => e.toString().contains('Invalid email or password')),
+        ),
+      );
+      expect(ApiService.instance.isLoggedIn, isFalse);
+      expect(ApiService.instance.currentUser, isNull);
+    });
+
+    test('register() with duplicate email throws clear error and stays logged out', () async {
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          return http.Response(
+            jsonEncode({'error': 'Email is already registered'}),
+            409,
+            headers: {'content-type': 'application/json'},
+          );
+        }),
+      );
+
+      await expectLater(
+        () => ApiService.instance.register('dup@example.com', 'password123'),
+        throwsA(
+          predicate((e) => e.toString().contains('Email is already registered')),
+        ),
+      );
+      expect(ApiService.instance.isLoggedIn, isFalse);
+    });
+
+    test('login() and register() handle network failure gracefully without crashing', () async {
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          throw const SocketException('Failed host lookup: shiori-n5hd.onrender.com');
+        }),
+      );
+
+      await expectLater(
+        () => ApiService.instance.login('offline@example.com', 'password123'),
+        throwsA(
+          predicate((e) => e.toString().contains('Unable to reach server')),
+        ),
+      );
+      await expectLater(
+        () => ApiService.instance.register('offline@example.com', 'password123'),
+        throwsA(
+          predicate((e) => e.toString().contains('Unable to reach server')),
+        ),
+      );
+      expect(ApiService.instance.isLoggedIn, isFalse);
+    });
+
+    test('Session survives app restart via init() and Sign Out clears it', () async {
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          if (request.url.path.endsWith('/auth/login')) {
+            return http.Response(
+              jsonEncode({
+                'token': 'persistent_jwt_token',
+                'user': {
+                  'id': 'u_persist',
+                  'email': 'persist@example.com',
+                  'displayName': 'Persistent User',
+                },
+              }),
+              200,
+            );
+          }
+          return http.Response(jsonEncode({'items': []}), 200);
+        }),
+      );
+
+      await ApiService.instance.login('persist@example.com', 'password123');
+      expect(ApiService.instance.isLoggedIn, isTrue);
+
+      // Simulate app restart by calling init() again (SharedPreferences retains values)
+      await ApiService.instance.init();
+      expect(ApiService.instance.isLoggedIn, isTrue);
+      expect(ApiService.instance.currentUser?.email, 'persist@example.com');
+      expect(ApiService.instance.currentUser?.displayName, 'Persistent User');
+
+      // Sign Out clears session both in memory and across subsequent restart
+      await ApiService.instance.logout();
+      expect(ApiService.instance.isLoggedIn, isFalse);
+      expect(ApiService.instance.currentUser, isNull);
+
+      await ApiService.instance.init();
+      expect(ApiService.instance.isLoggedIn, isFalse);
+      expect(ApiService.instance.currentUser, isNull);
+    });
+  });
+
+  group('Category Management & Direct Category Assignment', () {
     test('Default categories initialized', () {
       final cats = ApiService.instance.getCategories();
       expect(cats, isNotEmpty);
@@ -34,16 +247,91 @@ void main() {
       expect(ApiService.instance.getCategories().any((c) => c.id == newCat.id), isFalse);
     });
 
-    test('Assigning and toggling manga categories', () async {
-      const mangaId = 'test_manga_1';
-      expect(ApiService.instance.getMangaCategoryIds(mangaId), isEmpty);
+    test('Assigning a category to a non-library manga automatically adds it to library with metadata/cover and persists across init()', () async {
+      const nonLibManga = MangaItem(
+        id: 'ext:asura::solo-leveling',
+        title: 'Solo Leveling',
+        cover: 'https://example.com/solo-cover.jpg',
+        type: 'manhwa',
+        status: 'Completed',
+        authors: ['Chugong'],
+      );
 
-      await ApiService.instance.setMangaCategories(mangaId, ['reading', 'favorites']);
-      expect(ApiService.instance.getMangaCategoryIds(mangaId), containsAll(['reading', 'favorites']));
+      expect(ApiService.instance.isInLibrary(nonLibManga.id), isFalse);
+      expect(ApiService.instance.getMangaCategoryIds(nonLibManga.id), isEmpty);
 
-      await ApiService.instance.toggleMangaCategory(mangaId, 'reading');
-      expect(ApiService.instance.getMangaCategoryIds(mangaId), isNot(contains('reading')));
-      expect(ApiService.instance.getMangaCategoryIds(mangaId), contains('favorites'));
+      // Assign category directly without calling addToLibrary first
+      await ApiService.instance.toggleMangaCategory(
+        nonLibManga.id,
+        'reading',
+        manga: nonLibManga,
+      );
+
+      // Must now be in library AND in the 'reading' category
+      expect(ApiService.instance.isInLibrary(nonLibManga.id), isTrue);
+      expect(ApiService.instance.getMangaCategoryIds(nonLibManga.id), contains('reading'));
+
+      final libItems = await ApiService.instance.getLibrary();
+      final added = libItems.firstWhere((m) => m.id == nonLibManga.id);
+      expect(added.title, 'Solo Leveling');
+      expect(added.cover, 'https://example.com/solo-cover.jpg');
+
+      // Simulate app restart via ApiService.init()
+      await ApiService.instance.init();
+      expect(ApiService.instance.isInLibrary(nonLibManga.id), isTrue);
+      expect(ApiService.instance.getMangaCategoryIds(nonLibManga.id), contains('reading'));
+      final persistedLib = await ApiService.instance.getLibrary();
+      final persistedItem = persistedLib.firstWhere((m) => m.id == nonLibManga.id);
+      expect(persistedItem.title, 'Solo Leveling');
+      expect(persistedItem.cover, 'https://example.com/solo-cover.jpg');
+
+      // Removing manga from its last category must NOT remove it from the library
+      await ApiService.instance.toggleMangaCategory(nonLibManga.id, 'reading');
+      expect(ApiService.instance.getMangaCategoryIds(nonLibManga.id), isEmpty);
+      expect(ApiService.instance.isInLibrary(nonLibManga.id), isTrue);
+    });
+
+    test('Assigning and toggling manga categories via setMangaCategories', () async {
+      const manga = MangaItem(
+        id: 'test_manga_1',
+        title: 'Berserk',
+        cover: 'https://example.com/berserk.jpg',
+      );
+      expect(ApiService.instance.isInLibrary(manga.id), isFalse);
+      expect(ApiService.instance.getMangaCategoryIds(manga.id), isEmpty);
+
+      await ApiService.instance.setMangaCategories(
+        manga.id,
+        ['reading', 'favorites'],
+        manga: manga,
+      );
+      expect(ApiService.instance.isInLibrary(manga.id), isTrue);
+      expect(ApiService.instance.getMangaCategoryIds(manga.id), containsAll(['reading', 'favorites']));
+
+      await ApiService.instance.toggleMangaCategory(manga.id, 'reading');
+      expect(ApiService.instance.getMangaCategoryIds(manga.id), isNot(contains('reading')));
+      expect(ApiService.instance.getMangaCategoryIds(manga.id), contains('favorites'));
+
+      // Clear all categories — manga stays in library
+      await ApiService.instance.setMangaCategories(manga.id, []);
+      expect(ApiService.instance.getMangaCategoryIds(manga.id), isEmpty);
+      expect(ApiService.instance.isInLibrary(manga.id), isTrue);
+    });
+  });
+
+  group('Permanent True AMOLED & Type Scale', () {
+    test('Theme is permanently pure black (#000000) with WCAG AA muted text', () {
+      expect(AppColors.bg, const Color(0xFF000000));
+      expect(ThemeController.instance.isAmoled, isTrue);
+      final theme = buildTheme();
+      expect(theme.scaffoldBackgroundColor, const Color(0xFF000000));
+      expect(AppText.title.fontSize, 20);
+      expect(AppText.sectionHeader.fontSize, 11.5);
+      expect(AppText.cardTitle.fontSize, 14.5);
+      expect(AppText.body.fontSize, 13);
+      expect(AppText.caption.fontSize, 11.5);
+      expect(AppText.badge.fontSize, 9.5);
+      expect(AppText.chip.fontSize, 12);
     });
   });
 

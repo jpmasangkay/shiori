@@ -24,7 +24,9 @@ class AndroidCookieJar : CookieJar {
         } catch (_: Throwable) {}
     }
 
-    override fun loadForRequest(url: HttpUrl): List<Cookie> {
+    override fun loadForRequest(url: HttpUrl): List<Cookie> = get(url)
+
+    fun get(url: HttpUrl): List<Cookie> {
         val rawCookies = try {
             manager.getCookie(url.toString())
         } catch (_: Throwable) {
@@ -38,5 +40,32 @@ class AndroidCookieJar : CookieJar {
                 null
             }
         }
+    }
+
+    @JvmOverloads
+    fun remove(url: HttpUrl, cookieNames: List<String>? = null, maxAge: Int = -1): Int {
+        val urlString = url.toString()
+        val cookies = get(url)
+        val filtered = if (cookieNames != null) {
+            cookies.filter { it.name in cookieNames }
+        } else {
+            cookies
+        }
+        for (cookie in filtered) {
+            try {
+                manager.setCookie(urlString, "${cookie.name}=; Max-Age=$maxAge")
+            } catch (_: Throwable) {}
+        }
+        try {
+            manager.flush()
+        } catch (_: Throwable) {}
+        return filtered.size
+    }
+
+    fun removeAll() {
+        try {
+            manager.removeAllCookies(null)
+            manager.flush()
+        } catch (_: Throwable) {}
     }
 }

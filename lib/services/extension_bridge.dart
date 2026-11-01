@@ -12,29 +12,88 @@ class ExtensionBridge {
 
   static const MethodChannel _channel = MethodChannel('com.example.manga_reader/extensions');
   final Map<String, String> _baseUrlCache = {};
+  final Map<String, Map<String, String>> _sourceHeadersCache = {};
+  final Map<String, bool> _preferNativeImagesCache = {};
+
+  /// Test hook allowing unit tests on desktop CI/macOS to exercise MethodChannel logic.
+  @visibleForTesting
+  bool? forceAndroidForTesting;
+
+  bool get _isAndroidSupported => forceAndroidForTesting ?? (!kIsWeb && Platform.isAndroid);
+
+  void evictSourceCache(String pkg) {
+    final basePkg = pkg.split('@').first.trim();
+    _baseUrlCache.removeWhere((k, _) => k == pkg || k.startsWith('$basePkg@') || k == basePkg);
+    _sourceHeadersCache.removeWhere((k, _) => k == pkg || k.startsWith('$basePkg@') || k == basePkg);
+    _preferNativeImagesCache.removeWhere((k, _) => k == pkg || k.startsWith('$basePkg@') || k == basePkg);
+  }
+
+  @visibleForTesting
+  void clearCachesForTesting() {
+    _baseUrlCache.clear();
+    _sourceHeadersCache.clear();
+    _preferNativeImagesCache.clear();
+  }
 
   String? _findApkPath(String pkg) {
+    final basePkg = pkg.split('@').first.trim();
+    if (basePkg.isEmpty) return null;
     try {
-      final cleanName = pkg.replaceAll(RegExp(r'[^a-zA-Z0-9_\.]'), '_');
+      final cleanName = basePkg.replaceAll(RegExp(r'[^a-zA-Z0-9_\.]'), '_');
       final f1 = File('${Directory.systemTemp.path}/shiori_extensions/$cleanName.apk');
-      if (f1.existsSync() && f1.lengthSync() > 0) {
+      if (f1.existsSync() && f1.lengthSync() > 1024) {
         return f1.path;
       }
-      final f2 = File('${Directory.systemTemp.path}/shiori_extensions/$pkg.apk');
-      if (f2.existsSync() && f2.lengthSync() > 0) {
+      final f2 = File('${Directory.systemTemp.path}/shiori_extensions/$basePkg.apk');
+      if (f2.existsSync() && f2.lengthSync() > 1024) {
         return f2.path;
       }
     } catch (_) {}
     return null;
   }
 
+  /// Ensures the extension's APK is available locally on-demand even if the user
+  /// hasn't manually installed it yet or if OS temp storage was cleared.
+  Future<String?> _ensureApkPath(String pkg) async {
+    final basePkg = pkg.split('@').first.trim();
+    if (basePkg.isEmpty) return null;
+    final lowerBase = basePkg.toLowerCase();
+
+    // When installed on the Android device, let native TachiyomiExtensionManager
+    // load directly from PackageManager (/data/app/...) rather than downloading
+    // repo update APKs into temp/private storage during normal browse/search.
+    if (ExtensionService.instance.deviceExtensionsMap.containsKey(lowerBase)) {
+      return null;
+    }
+
+    final existing = _findApkPath(pkg);
+    if (existing != null) return existing;
+    if (!_isAndroidSupported) return null;
+
+    var ext = ExtensionService.instance.getExtensionByPkg(basePkg);
+    if (ext == null && ExtensionService.instance.extensions.isEmpty) {
+      await ExtensionService.instance.fetchExtensions();
+      ext = ExtensionService.instance.getExtensionByPkg(basePkg);
+    }
+    if (ext != null && ext.apkUrl.trim().isNotEmpty) {
+      final downloaded = await ExtensionService.instance.ensureApkDownloaded(ext, notify: false);
+      if (downloaded != null && downloaded.isNotEmpty) {
+        return downloaded;
+      }
+    }
+    return _findApkPath(pkg);
+  }
+
   Future<void> openInWebView({required String url, String? title}) async {
-    if (!Platform.isAndroid) return;
+    if (!_isAndroidSupported) return;
     try {
       await _channel.invokeMethod('openInWebView', {
         'url': url,
         'title': title ?? '',
       });
+      // Clear cached headers so newly acquired Cloudflare cookies apply immediately.
+      _sourceHeadersCache.clear();
+      _preferNativeImagesCache.clear();
     } catch (e) {
       debugPrint('ExtensionBridge openInWebView error: $e');
     }
@@ -43,9 +102,9 @@ class ExtensionBridge {
   Future<String?> getSourceBaseUrl({required String pkg}) async {
     final cached = _baseUrlCache[pkg];
     if (cached != null && cached.isNotEmpty) return cached;
-    if (!Platform.isAndroid) return null;
+    if (!_isAndroidSupported) return null;
     try {
-      final apkPath = _findApkPath(pkg);
+      final apkPath = await _ensureApkPath(pkg);
       final base = await _channel.invokeMethod<String>('getSourceBaseUrl', {
         'pkg': pkg,
         'apkPath': apkPath,
@@ -60,14 +119,105 @@ class ExtensionBridge {
     }
   }
 
+  Future<Map<String, String>> getSourceHeaders({
+    required String pkg,
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh && _sourceHeadersCache.containsKey(pkg)) {
+      return _sourceHeadersCache[pkg]!;
+    }
+    if (!_isAndroidSupported) return const {};
+    try {
+      final apkPath = await _ensureApkPath(pkg);
+      final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>('getSourceHeaders', {
+        'pkg': pkg,
+        'apkPath': apkPath,
+      });
+      if (raw == null) return const {};
+
+      final headers = <String, String>{};
+      final rawHeaders = raw['headers'];
+      if (rawHeaders is Map) {
+        rawHeaders.forEach((k, v) {
+          final key = k?.toString().trim() ?? '';
+          final val = v?.toString().trim() ?? '';
+          if (key.isNotEmpty && val.isNotEmpty) {
+            headers[key] = val;
+          }
+        });
+      }
+      final baseUrl = raw['baseUrl']?.toString().trim() ?? '';
+      if (baseUrl.isNotEmpty) {
+        _baseUrlCache[pkg] = baseUrl;
+      }
+      final nativeImages = raw['nativeImages'] == true;
+      _preferNativeImagesCache[pkg] = nativeImages;
+      _sourceHeadersCache[pkg] = headers;
+      return headers;
+    } catch (e) {
+      debugPrint('ExtensionBridge getSourceHeaders error ($pkg): $e');
+      return const {};
+    }
+  }
+
+  Future<Uint8List?> fetchImageBytes({
+    required String pkg,
+    required String url,
+    String? pageUrl,
+  }) async {
+    if (!_isAndroidSupported || url.trim().isEmpty) return null;
+    try {
+      final apkPath = await _ensureApkPath(pkg);
+      final bytes = await _channel.invokeMethod<Uint8List>('fetchImageBytes', {
+        'pkg': pkg,
+        'url': url,
+        'pageUrl': pageUrl,
+        'apkPath': apkPath,
+      });
+      if (bytes != null && bytes.isNotEmpty) return bytes;
+    } catch (e) {
+      debugPrint('ExtensionBridge fetchImageBytes error ($pkg, $url): $e');
+    }
+    return null;
+  }
+
+  Future<void> _registerImagesForPkg(
+    String pkg,
+    Iterable<String> urls, {
+    String? refererHint,
+    String? pageUrl,
+  }) async {
+    final nonEmpty = urls.where((u) => u.startsWith('http')).toList();
+    if (nonEmpty.isEmpty) return;
+
+    final headers = await getSourceHeaders(pkg: pkg);
+    final referer = (refererHint != null && refererHint.isNotEmpty)
+        ? refererHint
+        : (_baseUrlCache[pkg] ??
+            headers['Referer'] ??
+            ExtensionService.instance.getExtensionByPkg(pkg)?.homeUrl ??
+            '');
+    final preferNative = _preferNativeImagesCache[pkg] ?? false;
+
+    ImageReferers.registerSourceConfig(
+      nonEmpty,
+      referer: referer,
+      headers: headers,
+      nativeLoader: _isAndroidSupported
+          ? (u) => fetchImageBytes(pkg: pkg, url: u, pageUrl: pageUrl)
+          : null,
+      preferNative: preferNative,
+    );
+  }
+
   Future<List<MangaItem>> fetchPopularManga({
     required String pkg,
     int page = 1,
     String? type,
   }) async {
-    if (!Platform.isAndroid) return [];
+    if (!_isAndroidSupported) return [];
     try {
-      final apkPath = _findApkPath(pkg);
+      final apkPath = await _ensureApkPath(pkg);
       final rawList = await _channel.invokeMethod<List<dynamic>>(
         'fetchPopularManga',
         {
@@ -79,9 +229,39 @@ class ExtensionBridge {
       );
 
       if (rawList == null) return [];
-      return rawList.map((item) => _mapToMangaItem(pkg, item as Map, requestedType: type)).toList();
+      final items = rawList.map((item) => _mapToMangaItem(pkg, item as Map, requestedType: type)).toList();
+      await _registerImagesForPkg(pkg, items.map((m) => m.cover), refererHint: _baseUrlCache[pkg]);
+      return items;
     } catch (e) {
       debugPrint('ExtensionBridge fetchPopularManga error ($pkg): $e');
+      rethrow;
+    }
+  }
+
+  Future<List<MangaItem>> fetchLatestUpdates({
+    required String pkg,
+    int page = 1,
+    String? type,
+  }) async {
+    if (!_isAndroidSupported) return [];
+    try {
+      final apkPath = await _ensureApkPath(pkg);
+      final rawList = await _channel.invokeMethod<List<dynamic>>(
+        'fetchLatestUpdates',
+        {
+          'pkg': pkg,
+          'page': page,
+          'type': type,
+          'apkPath': apkPath,
+        },
+      );
+
+      if (rawList == null) return [];
+      final items = rawList.map((item) => _mapToMangaItem(pkg, item as Map, requestedType: type)).toList();
+      await _registerImagesForPkg(pkg, items.map((m) => m.cover), refererHint: _baseUrlCache[pkg]);
+      return items;
+    } catch (e) {
+      debugPrint('ExtensionBridge fetchLatestUpdates error ($pkg): $e');
       rethrow;
     }
   }
@@ -92,9 +272,9 @@ class ExtensionBridge {
     int page = 1,
     String? type,
   }) async {
-    if (!Platform.isAndroid) return [];
+    if (!_isAndroidSupported) return [];
     try {
-      final apkPath = _findApkPath(pkg);
+      final apkPath = await _ensureApkPath(pkg);
       final rawList = await _channel.invokeMethod<List<dynamic>>(
         'searchManga',
         {
@@ -107,7 +287,9 @@ class ExtensionBridge {
       );
 
       if (rawList == null) return [];
-      return rawList.map((item) => _mapToMangaItem(pkg, item as Map, requestedType: type)).toList();
+      final items = rawList.map((item) => _mapToMangaItem(pkg, item as Map, requestedType: type)).toList();
+      await _registerImagesForPkg(pkg, items.map((m) => m.cover), refererHint: _baseUrlCache[pkg]);
+      return items;
     } catch (e) {
       debugPrint('ExtensionBridge searchManga error ($pkg): $e');
       rethrow;
@@ -119,11 +301,11 @@ class ExtensionBridge {
     required String url,
     String? title,
   }) async {
-    if (!Platform.isAndroid) {
+    if (!_isAndroidSupported) {
       throw UnsupportedError('Extensions are only supported on Android');
     }
     try {
-      final apkPath = _findApkPath(pkg);
+      final apkPath = await _ensureApkPath(pkg);
       final raw = await _channel.invokeMethod<Map<dynamic, dynamic>>(
         'fetchMangaDetails',
         {
@@ -138,7 +320,11 @@ class ExtensionBridge {
         throw Exception('Extension returned null details for $url');
       }
 
-      return _mapToMangaItem(pkg, raw, fallbackUrl: url, fallbackTitle: title);
+      final item = _mapToMangaItem(pkg, raw, fallbackUrl: url, fallbackTitle: title);
+      if (item.cover.isNotEmpty) {
+        await _registerImagesForPkg(pkg, [item.cover], refererHint: _baseUrlCache[pkg]);
+      }
+      return item;
     } catch (e) {
       debugPrint('ExtensionBridge fetchMangaDetails error ($pkg, $url): $e');
       rethrow;
@@ -150,9 +336,9 @@ class ExtensionBridge {
     required String url,
     String? title,
   }) async {
-    if (!Platform.isAndroid) return [];
+    if (!_isAndroidSupported) return [];
     try {
-      final apkPath = _findApkPath(pkg);
+      final apkPath = await _ensureApkPath(pkg);
       final rawList = await _channel.invokeMethod<List<dynamic>>(
         'fetchChapterList',
         {
@@ -175,9 +361,9 @@ class ExtensionBridge {
     required String pkg,
     required String chapterUrl,
   }) async {
-    if (!Platform.isAndroid) return [];
+    if (!_isAndroidSupported) return [];
     try {
-      final apkPath = _findApkPath(pkg);
+      final apkPath = await _ensureApkPath(pkg);
       final rawList = await _channel.invokeMethod<List<dynamic>>(
         'fetchPageList',
         {
@@ -188,18 +374,21 @@ class ExtensionBridge {
       );
 
       if (rawList == null) return [];
+      final referer = _baseUrlCache[pkg] ??
+          await getSourceBaseUrl(pkg: pkg) ??
+          ExtensionService.instance.getExtensionByPkg(pkg)?.homeUrl ??
+          '';
       final pages = rawList
-          .map((e) => _normalizeUrl(e.toString()))
+          .map((e) => _normalizeUrl(e.toString(), baseUrl: referer))
           .where((u) => u.isNotEmpty)
           .toList();
       if (pages.isNotEmpty) {
-        final referer = _baseUrlCache[pkg] ??
-            await getSourceBaseUrl(pkg: pkg) ??
-            ExtensionService.instance.getExtensionByPkg(pkg)?.homeUrl ??
-            '';
-        if (referer.isNotEmpty) {
-          ImageReferers.registerAll(pages, referer);
-        }
+        await _registerImagesForPkg(
+          pkg,
+          pages,
+          refererHint: referer,
+          pageUrl: chapterUrl,
+        );
       }
       return pages;
     } catch (e) {
@@ -211,11 +400,17 @@ class ExtensionBridge {
   static String _normalizeUrl(String raw, {String? baseUrl}) {
     var u = raw.trim();
     if (u.isEmpty) return '';
+    if (u.startsWith('data:')) return '';
     if (u.startsWith('//')) u = 'https:$u';
     if (!u.startsWith('http://') && !u.startsWith('https://')) {
       if (baseUrl != null && baseUrl.startsWith('http')) {
-        final cleanBase = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
-        u = u.startsWith('/') ? '$cleanBase$u' : '$cleanBase/$u';
+        try {
+          final baseUri = Uri.parse(baseUrl.endsWith('/') ? baseUrl : '$baseUrl/');
+          u = baseUri.resolve(u).toString();
+        } catch (_) {
+          final cleanBase = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
+          u = u.startsWith('/') ? '$cleanBase$u' : '$cleanBase/$u';
+        }
       }
     }
     if (u.contains(' ')) u = u.replaceAll(' ', '%20');
@@ -238,8 +433,18 @@ class ExtensionBridge {
       _baseUrlCache[pkg] = referer;
     }
     final cover = _normalizeUrl(raw['thumbnail_url']?.toString() ?? '', baseUrl: referer);
-    if (cover.isNotEmpty && referer.isNotEmpty) {
-      ImageReferers.register(cover, referer);
+    final mangaId = 'ext:$pkg:${Uri.encodeComponent(url)}';
+    if (cover.isNotEmpty) {
+      ImageReferers.rememberResolvedCover(mangaId, cover);
+      if (referer.isNotEmpty) {
+        ImageReferers.registerSourceConfig(
+          [cover],
+          referer: referer,
+          headers: _sourceHeadersCache[pkg],
+          nativeLoader: _isAndroidSupported ? (u) => fetchImageBytes(pkg: pkg, url: u) : null,
+          preferNative: _preferNativeImagesCache[pkg] ?? false,
+        );
+      }
     }
     final author = raw['author']?.toString() ?? '';
     final artist = raw['artist']?.toString() ?? '';
@@ -274,7 +479,7 @@ class ExtensionBridge {
     }
 
     return MangaItem(
-      id: 'ext:$pkg:${Uri.encodeComponent(url)}',
+      id: mangaId,
       title: title,
       cover: cover,
       description: desc,

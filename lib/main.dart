@@ -24,17 +24,11 @@ class ShioriApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: ThemeController.instance,
-      builder: (context, _) {
-        final amoled = ThemeController.instance.isAmoled;
-        return MaterialApp(
-          title: 'Shiori',
-          debugShowCheckedModeBanner: false,
-          theme: buildTheme(amoled: amoled),
-          home: const RootShell(),
-        );
-      },
+    return MaterialApp(
+      title: 'Shiori',
+      debugShowCheckedModeBanner: false,
+      theme: buildTheme(),
+      home: const RootShell(),
     );
   }
 }
@@ -46,20 +40,9 @@ class RootShell extends StatefulWidget {
   State<RootShell> createState() => _RootShellState();
 }
 
-class _RootShellState extends State<RootShell> with SingleTickerProviderStateMixin {
+class _RootShellState extends State<RootShell> {
   int _index = 0;
-  late final AnimationController _tabController = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 200),
-    value: 1.0,
-  );
-  late final Animation<double> _fadeAnim = Tween<double>(begin: 0.72, end: 1.0).animate(
-    CurvedAnimation(parent: _tabController, curve: Curves.easeOutCubic),
-  );
-  late final Animation<Offset> _slideAnim = Tween<Offset>(
-    begin: const Offset(0, 0.012),
-    end: Offset.zero,
-  ).animate(CurvedAnimation(parent: _tabController, curve: Curves.easeOutCubic));
+  final Set<int> _loadedTabs = {0};
 
   static const _destinations = [
     (Icons.collections_bookmark_outlined, Icons.collections_bookmark_rounded, 'Library'),
@@ -69,49 +52,57 @@ class _RootShellState extends State<RootShell> with SingleTickerProviderStateMix
     (Icons.more_horiz_rounded, Icons.more_horiz_rounded, 'More'),
   ];
 
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
   void _onSelectTab(int i) {
     if (i == _index) return;
-    setState(() => _index = i);
-    _tabController.forward(from: 0.0);
+    setState(() {
+      _index = i;
+      _loadedTabs.add(i);
+    });
+  }
+
+  Widget _buildTab(int index) {
+    if (!_loadedTabs.contains(index)) {
+      return const SizedBox.shrink();
+    }
+    return RepaintBoundary(
+      child: switch (index) {
+        0 => const LibraryScreen(),
+        1 => const UpdatesScreen(),
+        2 => const HistoryScreen(),
+        3 => const BrowseScreen(),
+        4 => const MoreScreen(),
+        _ => const SizedBox.shrink(),
+      },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: FadeTransition(
-        opacity: _fadeAnim,
-        child: SlideTransition(
-          position: _slideAnim,
-          child: IndexedStack(
-            index: _index,
-            children: const [
-              LibraryScreen(),
-              UpdatesScreen(),
-              HistoryScreen(),
-              BrowseScreen(),
-              MoreScreen(),
-            ],
-          ),
-        ),
-      ),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: _onSelectTab,
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        destinations: [
-          for (final (icon, selected, label) in _destinations)
-            NavigationDestination(
-              icon: Icon(icon),
-              selectedIcon: Icon(selected),
-              label: label,
-            ),
+      body: IndexedStack(
+        index: _index,
+        children: [
+          for (var i = 0; i < _destinations.length; i++) _buildTab(i),
         ],
+      ),
+      bottomNavigationBar: DecoratedBox(
+        decoration: const BoxDecoration(
+          border: Border(top: BorderSide(color: AppColors.outline, width: 0.8)),
+        ),
+        child: NavigationBar(
+          height: 74,
+          selectedIndex: _index,
+          onDestinationSelected: _onSelectTab,
+          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+          destinations: [
+            for (final (icon, selected, label) in _destinations)
+              NavigationDestination(
+                icon: Icon(icon, size: 26),
+                selectedIcon: Icon(selected, size: 26),
+                label: label,
+              ),
+          ],
+        ),
       ),
     );
   }

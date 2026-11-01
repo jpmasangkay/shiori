@@ -3,10 +3,23 @@ package eu.kanade.tachiyomi.network
 
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.Response
 import rx.Observable
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
+
+interface ProgressListener {
+    fun update(bytesRead: Long, contentLength: Long, done: Boolean)
+}
+
+fun OkHttpClient.newCallWithProgress(request: Request, listener: ProgressListener): Call {
+    return newCall(request)
+}
 
 fun Call.asObservable(): Observable<Response> {
     return Observable.create { subscriber ->
@@ -102,5 +115,35 @@ suspend fun <T> Observable<T>.awaitSingle(): T {
             }
         )
         continuation.invokeOnCancellation { subscription.unsubscribe() }
+    }
+}
+
+@JvmOverloads
+fun OkHttpClient.Builder.rateLimit(
+    permits: Int,
+    period: Long = 1,
+    unit: TimeUnit = TimeUnit.SECONDS
+): OkHttpClient.Builder = addInterceptor(eu.kanade.tachiyomi.network.interceptor.RateLimitInterceptor(null, permits, period, unit))
+
+@JvmOverloads
+fun OkHttpClient.Builder.rateLimitHost(
+    host: HttpUrl,
+    permits: Int,
+    period: Long = 1,
+    unit: TimeUnit = TimeUnit.SECONDS
+): OkHttpClient.Builder = addInterceptor(eu.kanade.tachiyomi.network.interceptor.SpecificHostRateLimitInterceptor(host, permits, period, unit))
+
+@JvmOverloads
+fun OkHttpClient.Builder.rateLimitHost(
+    host: String,
+    permits: Int,
+    period: Long = 1,
+    unit: TimeUnit = TimeUnit.SECONDS
+): OkHttpClient.Builder {
+    val httpUrl = host.toHttpUrlOrNull()
+    return if (httpUrl != null) {
+        rateLimitHost(httpUrl, permits, period, unit)
+    } else {
+        rateLimit(permits, period, unit)
     }
 }

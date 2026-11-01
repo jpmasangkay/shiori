@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
@@ -193,17 +192,10 @@ class _DateHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-    child: SizedBox(
-      height: 21,
-      child: Text(
-        text,
-        style: GoogleFonts.inter(
-          fontSize: 11,
-          fontWeight: FontWeight.w600,
-          color: AppColors.primary,
-        ),
-      ),
+    padding: const EdgeInsets.fromLTRB(12, 10, 12, 4),
+    child: Text(
+      text,
+      style: AppText.sectionHeader.copyWith(color: AppColors.primary),
     ),
   );
 }
@@ -231,18 +223,22 @@ class _ApiUpdateRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Container(
-        height: 60,
-        padding: const EdgeInsets.fromLTRB(12, 2, 7, 2),
+        constraints: const BoxConstraints(minHeight: 62),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         child: Row(
           children: [
             GestureDetector(
               onTap: onCoverTap,
               child: SizedBox(
-                width: 42,
+                width: 44,
                 height: 56,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(4),
-                  child: CoverImage(imageUrl: item['cover'], saturation: .6),
+                  child: CoverImage(
+                    imageUrl: item['cover']?.toString(),
+                    mangaId: item['mangaId']?.toString(),
+                    saturation: .6,
+                  ),
                 ),
               ),
             ),
@@ -256,20 +252,14 @@ class _ApiUpdateRow extends StatelessWidget {
                     mangaTitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                    ),
+                    style: AppText.bodyMedium,
                   ),
-                  const SizedBox(height: 5),
+                  const SizedBox(height: 4),
                   Text(
                     subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(
-                      fontSize: 10,
-                      color: AppColors.muted,
-                    ),
+                    style: AppText.caption.copyWith(color: AppColors.muted),
                   ),
                 ],
               ),

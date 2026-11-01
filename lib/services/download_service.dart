@@ -9,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/manga_models.dart';
 import '../widgets/common.dart';
 import 'api_service.dart';
+import 'extension_bridge.dart';
 
 enum DownloadStatus {
   notDownloaded,
@@ -309,6 +310,57 @@ class DownloadService extends ChangeNotifier {
     _isProcessing = false;
   }
 
+  Future<(Uint8List?, int?)> _downloadImageBytes(
+    String candidate, {
+    String? extPkg,
+    String? chapterPageUrl,
+  }) async {
+    int? lastStatus;
+
+    Future<Uint8List?> tryNative() async {
+      final viaReferers = await ImageReferers.fetchNativeBytes(candidate);
+      if (viaReferers != null && viaReferers.isNotEmpty) return viaReferers;
+      if (extPkg != null && extPkg.isNotEmpty) {
+        return ExtensionBridge.instance.fetchImageBytes(
+          pkg: extPkg,
+          url: candidate,
+          pageUrl: chapterPageUrl,
+        );
+      }
+      return null;
+    }
+
+    final preferNative = ImageReferers.prefersNative(candidate);
+    if (preferNative) {
+      final nativeBytes = await tryNative();
+      if (nativeBytes != null && nativeBytes.isNotEmpty) {
+        return (nativeBytes, 200);
+      }
+    }
+
+    final variants = imageHeaderVariants(candidate);
+    for (final headers in variants) {
+      try {
+        final response = await http
+            .get(Uri.parse(candidate), headers: headers)
+            .timeout(const Duration(seconds: 20));
+        lastStatus = response.statusCode;
+        if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+          return (response.bodyBytes, 200);
+        }
+      } catch (_) {}
+    }
+
+    if (!preferNative && (ImageReferers.hasNativeLoader(candidate) || (extPkg != null && extPkg.isNotEmpty))) {
+      final nativeBytes = await tryNative();
+      if (nativeBytes != null && nativeBytes.isNotEmpty) {
+        return (nativeBytes, 200);
+      }
+    }
+
+    return (null, lastStatus);
+  }
+
   Future<void> _executeDownloadTask(DownloadTask task) async {
     if (_baseDownloadDir == null) {
       final docDir = await getApplicationDocumentsDirectory();
@@ -317,13 +369,52 @@ class DownloadService extends ChangeNotifier {
 
     final safeMangaId = _sanitize(task.manga.id);
     final safeChapterId = _sanitize(task.chapter.id);
-    final chapterDir = Directory('${_baseDownloadDir!.path}/$safeMangaId/$safeChapterId');
+    final mangaDir = Directory('${_baseDownloadDir!.path}/$safeMangaId');
+    final chapterDir = Directory('${mangaDir.path}/$safeChapterId');
     if (!await chapterDir.exists()) {
       await chapterDir.create(recursive: true);
     }
 
+    String? extPkg;
+    String? rawChapterUrl;
+    if (task.chapter.id.startsWith('ext:')) {
+      final parts = task.chapter.id.split(':');
+      if (parts.length >= 3) {
+        extPkg = parts[1];
+        rawChapterUrl = Uri.decodeComponent(parts.sublist(2).join(':'));
+      }
+    } else if (task.manga.id.startsWith('ext:')) {
+      final parts = task.manga.id.split(':');
+      if (parts.length >= 2) {
+        extPkg = parts[1];
+      }
+    }
+
+    // Ensure offline cover is resolved and persisted locally into `cover.jpg`
+    String effectiveCover = task.manga.cover.trim();
+    if (effectiveCover.isEmpty) {
+      try {
+        final details = await ApiService.instance.getManga(task.manga.id);
+        if (details.cover.trim().isNotEmpty) {
+          effectiveCover = details.cover.trim();
+        }
+      } catch (_) {}
+    }
+    final localCoverFile = File('${mangaDir.path}/cover.jpg');
+    if (await localCoverFile.exists() && await localCoverFile.length() > 0) {
+      effectiveCover = 'file://${localCoverFile.path}';
+    } else if (effectiveCover.startsWith('http')) {
+      try {
+        final (coverBytes, _) = await _downloadImageBytes(effectiveCover, extPkg: extPkg);
+        if (coverBytes != null && coverBytes.isNotEmpty) {
+          await localCoverFile.writeAsBytes(coverBytes);
+          effectiveCover = 'file://${localCoverFile.path}';
+        }
+      } catch (_) {}
+    }
+
     // 1. Fetch pages list
-    final pagesRes = await ApiService.instance.getChapterPages(task.chapter.id);
+    final pagesRes = await ApiService.instance.getChapterPages(task.chapter.id, forceRefresh: true);
     final pageUrls = pagesRes.pages;
     if (pageUrls.isEmpty) {
       throw Exception('No pages available for download');
@@ -336,7 +427,7 @@ class DownloadService extends ChangeNotifier {
 
     var totalBytes = 0;
 
-    // 2. Download each page sequentially with header & fallback-URL retries
+    // 2. Download each page sequentially with header, native OkHttp & fallback-URL retries
     for (var i = 0; i < pageUrls.length; i++) {
       final url = pageUrls[i];
       final fallbackUrl = (i < pagesRes.dataSaver.length && pagesRes.dataSaver[i] != url)
@@ -356,20 +447,16 @@ class DownloadService extends ChangeNotifier {
         int? lastStatus;
 
         for (final candidate in candidateUrls) {
-          final variants = imageHeaderVariants(candidate);
-          for (final headers in variants) {
-            try {
-              final response = await http
-                  .get(Uri.parse(candidate), headers: headers)
-                  .timeout(const Duration(seconds: 25));
-              lastStatus = response.statusCode;
-              if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
-                downloadedBytes = response.bodyBytes;
-                break;
-              }
-            } catch (_) {}
+          final (bytes, status) = await _downloadImageBytes(
+            candidate,
+            extPkg: extPkg,
+            chapterPageUrl: rawChapterUrl,
+          );
+          if (status != null) lastStatus = status;
+          if (bytes != null && bytes.isNotEmpty) {
+            downloadedBytes = bytes;
+            break;
           }
-          if (downloadedBytes != null) break;
         }
 
         if (downloadedBytes == null) {
@@ -394,7 +481,7 @@ class DownloadService extends ChangeNotifier {
       chapterId: task.chapter.id,
       mangaId: task.manga.id,
       mangaTitle: task.manga.title,
-      mangaCover: task.manga.cover,
+      mangaCover: effectiveCover,
       chapterTitle: task.chapter.displayTitle,
       chapterNumber: task.chapter.number,
       pageCount: pageUrls.length,

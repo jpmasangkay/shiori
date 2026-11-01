@@ -1,6 +1,5 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
@@ -42,14 +41,28 @@ class _DetailScreenState extends State<DetailScreen> {
   void initState() {
     super.initState();
     _manga = widget.manga;
+    _inLibrary = ApiService.instance.isInLibrary(_manga.id);
+    ApiService.instance.cacheKnownManga(_manga);
+    ApiService.instance.addListener(_onApiChanged);
     DownloadService.instance.addListener(_onDownloadsChanged);
     _loadMangaData();
   }
 
   @override
   void dispose() {
+    ApiService.instance.removeListener(_onApiChanged);
     DownloadService.instance.removeListener(_onDownloadsChanged);
     super.dispose();
+  }
+
+  void _onApiChanged() {
+    if (!mounted) return;
+    final inLib = ApiService.instance.isInLibrary(_manga.id);
+    if (inLib != _inLibrary) {
+      setState(() => _inLibrary = inLib);
+    } else {
+      setState(() {});
+    }
   }
 
   void _onDownloadsChanged() {
@@ -302,11 +315,12 @@ class _DetailScreenState extends State<DetailScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (_) => SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(vertical: 12),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -316,7 +330,9 @@ class _DetailScreenState extends State<DetailScreen> {
                 padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
                 child: Text(
                   chapter.displayTitle,
-                  style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w700),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.cardTitle,
                 ),
               ),
               ListTile(
@@ -324,7 +340,7 @@ class _DetailScreenState extends State<DetailScreen> {
                   isRead ? Icons.radio_button_unchecked_rounded : Icons.check_circle_rounded,
                   color: AppColors.primary,
                 ),
-                title: Text(isRead ? 'Mark as Unread' : 'Mark as Read'),
+                title: Text(isRead ? 'Mark as Unread' : 'Mark as Read', style: AppText.bodyMedium),
                 onTap: () async {
                   Navigator.pop(context);
                   await ApiService.instance.markChapterRead(_manga.id, chapter.id, read: !isRead);
@@ -342,7 +358,7 @@ class _DetailScreenState extends State<DetailScreen> {
                   isBookmarked ? Icons.bookmark_remove_rounded : Icons.bookmark_add_rounded,
                   color: AppColors.primary,
                 ),
-                title: Text(isBookmarked ? 'Remove Bookmark' : 'Bookmark Chapter'),
+                title: Text(isBookmarked ? 'Remove Bookmark' : 'Bookmark Chapter', style: AppText.bodyMedium),
                 onTap: () async {
                   Navigator.pop(context);
                   await ApiService.instance.toggleChapterBookmark(chapter.id);
@@ -351,8 +367,8 @@ class _DetailScreenState extends State<DetailScreen> {
               ),
               ListTile(
                 leading: const Icon(Icons.done_all_rounded, color: AppColors.primary),
-                title: const Text('Mark Previous Chapters as Read'),
-                subtitle: const Text('Marks all older chapters up to this one as read'),
+                title: Text('Mark Previous Chapters as Read', style: AppText.bodyMedium),
+                subtitle: Text('Marks all older chapters up to this one as read', style: AppText.caption),
                 onTap: () async {
                   Navigator.pop(context);
                   final readingChapters = [..._apiChapters];
@@ -381,6 +397,7 @@ class _DetailScreenState extends State<DetailScreen> {
                   DownloadService.instance.isChapterDownloaded(chapter.id)
                       ? 'Delete Download'
                       : 'Download Chapter',
+                  style: AppText.bodyMedium,
                 ),
                 onTap: () {
                   Navigator.pop(context);
@@ -398,6 +415,7 @@ class _DetailScreenState extends State<DetailScreen> {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
+      isScrollControlled: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
@@ -405,60 +423,103 @@ class _DetailScreenState extends State<DetailScreen> {
         builder: (ctx, setSheetState) {
           final categories = ApiService.instance.getCategories();
           final assigned = ApiService.instance.getMangaCategoryIds(_manga.id).toSet();
+          final media = MediaQuery.of(ctx);
+          final availHeight = (media.size.height -
+                  media.viewInsets.bottom -
+                  media.padding.top -
+                  media.padding.bottom -
+                  24)
+              .clamp(140.0, 520.0);
 
-          return SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          'ASSIGN CATEGORIES',
-                          style: GoogleFonts.inter(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 1,
-                            color: AppColors.muted,
+          return AnimatedPadding(
+            duration: const Duration(milliseconds: 150),
+            padding: EdgeInsets.only(bottom: media.viewInsets.bottom),
+            child: SafeArea(
+              top: false,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: availHeight),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                'ASSIGN CATEGORIES',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.sectionHeader,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton.icon(
+                              onPressed: () => _promptCreateCategory(onCreated: () => setSheetState(() {})),
+                              icon: const Icon(Icons.add_rounded, size: 16),
+                              label: Text('New', style: AppText.chip.copyWith(color: AppColors.primary)),
+                              style: TextButton.styleFrom(
+                                foregroundColor: AppColors.primary,
+                                minimumSize: const Size(44, 44),
+                                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(color: AppColors.outline, height: 1),
+                      if (categories.isEmpty)
+                        Flexible(
+                          child: SingleChildScrollView(
+                            padding: const EdgeInsets.all(24),
+                            child: Center(
+                              child: Text(
+                                'No categories yet. Create one!',
+                                style: AppText.body.copyWith(color: AppColors.muted),
+                              ),
+                            ),
+                          ),
+                        )
+                      else
+                        Flexible(
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            itemCount: categories.length,
+                            itemBuilder: (ctx, i) {
+                              final cat = categories[i];
+                              final isSelected = assigned.contains(cat.id);
+                              return CheckboxListTile(
+                                value: isSelected,
+                                activeColor: AppColors.primary,
+                                title: Text(
+                                  cat.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: AppText.bodyMedium,
+                                ),
+                                onChanged: (val) async {
+                                  await ApiService.instance.toggleMangaCategory(
+                                    _manga.id,
+                                    cat.id,
+                                    manga: _manga,
+                                  );
+                                  setSheetState(() {});
+                                  if (mounted) {
+                                    setState(() {
+                                      _inLibrary = ApiService.instance.isInLibrary(_manga.id);
+                                    });
+                                  }
+                                },
+                              );
+                            },
                           ),
                         ),
-                        TextButton.icon(
-                          onPressed: () => _promptCreateCategory(onCreated: () => setSheetState(() {})),
-                          icon: const Icon(Icons.add_rounded, size: 16),
-                          label: const Text('New'),
-                          style: TextButton.styleFrom(
-                            foregroundColor: AppColors.primary,
-                            visualDensity: VisualDensity.compact,
-                          ),
-                        ),
-                      ],
-                    ),
+                    ],
                   ),
-                  if (categories.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(24),
-                      child: Center(child: Text('No categories yet. Create one!')),
-                    )
-                  else
-                    ...categories.map((cat) {
-                      final isSelected = assigned.contains(cat.id);
-                      return CheckboxListTile(
-                        value: isSelected,
-                        activeColor: AppColors.primary,
-                        title: Text(cat.name, style: GoogleFonts.inter(fontSize: 14)),
-                        onChanged: (val) async {
-                          await ApiService.instance.toggleMangaCategory(_manga.id, cat.id);
-                          setSheetState(() {});
-                          if (mounted) setState(() {});
-                        },
-                      );
-                    }),
-                ],
+                ),
               ),
             ),
           );
@@ -472,20 +533,29 @@ class _DetailScreenState extends State<DetailScreen> {
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
+        scrollable: true,
         backgroundColor: AppColors.surface,
-        title: Text('New Category', style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600)),
+        title: Text(
+          'New Category',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: AppText.sheetTitle,
+        ),
         content: TextField(
           controller: textController,
           autofocus: true,
-          decoration: const InputDecoration(
+          style: AppText.body,
+          decoration: InputDecoration(
             hintText: 'e.g. Favorites, Reading, Shonen',
-            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primary)),
+            hintStyle: AppText.caption,
+            focusedBorder: const UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primary)),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(color: AppColors.muted)),
+            style: TextButton.styleFrom(minimumSize: const Size(44, 44)),
+            child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
           ),
           FilledButton(
             onPressed: () async {
@@ -497,8 +567,11 @@ class _DetailScreenState extends State<DetailScreen> {
                 if (mounted) setState(() {});
               }
             },
-            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-            child: const Text('Create'),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              minimumSize: const Size(64, 44),
+            ),
+            child: Text('Create', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
           ),
         ],
       ),
@@ -542,7 +615,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       Text(
                         'Failed to load chapters: $_chaptersError',
                         textAlign: TextAlign.center,
-                        style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                        style: AppText.caption,
                       ),
                       const SizedBox(height: 12),
                       Builder(builder: (context) {
@@ -561,10 +634,14 @@ class _DetailScreenState extends State<DetailScreen> {
                             child: FilledButton.icon(
                               onPressed: _openWebView,
                               icon: const Icon(Icons.shield_rounded, size: 16),
-                              label: const Text('Solve Cloudflare in WebView'),
+                              label: Text(
+                                'Solve Cloudflare in WebView',
+                                style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary),
+                              ),
                               style: FilledButton.styleFrom(
                                 backgroundColor: AppColors.primary,
                                 foregroundColor: AppColors.onPrimary,
+                                minimumSize: const Size(0, 44),
                               ),
                             ),
                           );
@@ -574,8 +651,11 @@ class _DetailScreenState extends State<DetailScreen> {
                       FilledButton.icon(
                         onPressed: _loadMangaData,
                         icon: const Icon(Icons.refresh_rounded, size: 16),
-                        label: const Text('Retry'),
-                        style: FilledButton.styleFrom(backgroundColor: AppColors.surfaceHigh),
+                        label: Text('Retry', style: AppText.bodySemiBold),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.surfaceHigh,
+                          minimumSize: const Size(0, 44),
+                        ),
                       ),
                     ],
                   ),
@@ -589,7 +669,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 child: Center(
                   child: Text(
                     'No chapters available for this title.',
-                    style: GoogleFonts.inter(fontSize: 13, color: AppColors.muted),
+                    style: AppText.body.copyWith(color: AppColors.muted),
                   ),
                 ),
               ),
@@ -735,10 +815,22 @@ class _DetailScreenState extends State<DetailScreen> {
       sourceName = 'MANGAREAD';
       sourceColor = const Color(0xFFEC4899);
     } else if (id.startsWith('ext:') || s.startsWith('ext:')) {
-      final parts = (id.startsWith('ext:') ? id : s).split(':');
+      final rawSpec = id.startsWith('ext:') ? m.id : m.source;
+      final parts = rawSpec.split(':');
       final pkgId = parts.length > 1 ? parts[1] : 'extension';
-      final ext = ExtensionService.instance.installedExtensions.where((e) => e.pkg == pkgId).firstOrNull;
-      sourceName = (ext?.name ?? pkgId).toUpperCase();
+      final ext = ExtensionService.instance.getExtensionByPkg(pkgId);
+      String resolvedName = ext?.name ?? pkgId;
+      if (pkgId.contains('@') && ext != null && ext.subSources.isNotEmpty) {
+        final sel = pkgId.split('@').sublist(1).join('@').toUpperCase();
+        final matchSub = ext.subSources.where((sub) =>
+            (sub['id'] ?? '').toUpperCase() == sel ||
+            (sub['lang'] ?? '').toUpperCase() == sel ||
+            (sub['name'] ?? '').toUpperCase() == sel).firstOrNull;
+        if (matchSub != null && (matchSub['name'] ?? '').isNotEmpty) {
+          resolvedName = matchSub['name']!;
+        }
+      }
+      sourceName = resolvedName.toUpperCase();
       sourceColor = const Color(0xFF8B5CF6);
     } else if (s.isEmpty || s == 'mangadex') {
       sourceName = 'MANGADEX';
@@ -757,9 +849,9 @@ class _DetailScreenState extends State<DetailScreen> {
             // Background cover with blur
             ImageFiltered(
               imageFilter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
-              child: CoverImage(imageUrl: m.cover, saturation: .5),
+              child: CoverImage(imageUrl: m.cover, mangaId: m.id, saturation: .5),
             ),
-            const ColoredBox(color: Color.fromRGBO(5, 6, 9, .78)),
+            const ColoredBox(color: Color.fromRGBO(0, 0, 0, .82)),
             DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -794,7 +886,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     ),
                     child: ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: CoverImage(imageUrl: m.cover),
+                      child: CoverImage(imageUrl: m.cover, mangaId: m.id),
                     ),
                   ),
                 ),
@@ -813,12 +905,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         ),
                         child: Text(
                           sourceName,
-                          style: GoogleFonts.inter(
-                            fontSize: 9,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: .8,
-                            color: sourceColor,
-                          ),
+                          style: AppText.badge.copyWith(color: sourceColor),
                         ),
                       ),
                       const SizedBox(height: 6),
@@ -826,18 +913,14 @@ class _DetailScreenState extends State<DetailScreen> {
                         m.title,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                          height: 1.2,
-                        ),
+                        style: AppText.title.copyWith(fontSize: 18, height: 1.2),
                       ),
                       const SizedBox(height: 5),
                       Text(
                         m.authors.isNotEmpty ? m.authors.join(', ') : 'Unknown Author',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                        style: AppText.caption,
                       ),
                       const SizedBox(height: 4),
                       Row(
@@ -854,15 +937,19 @@ class _DetailScreenState extends State<DetailScreen> {
                               ),
                             ),
                             const SizedBox(width: 6),
-                            Text(
-                              m.status.toUpperCase(),
-                              style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                            Flexible(
+                              child: Text(
+                                m.status.toUpperCase(),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.badge.copyWith(color: AppColors.muted),
+                              ),
                             ),
                             const SizedBox(width: 10),
                           ],
                           Text(
                             m.type.toUpperCase(),
-                            style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                            style: AppText.badge.copyWith(color: AppColors.muted),
                           ),
                         ],
                       ),
@@ -896,9 +983,10 @@ class _DetailScreenState extends State<DetailScreen> {
     final assignedCategories = ApiService.instance.getMangaCategoryIds(_manga.id);
 
     return Container(
-      height: 76,
+      constraints: const BoxConstraints(minHeight: 74),
+      padding: const EdgeInsets.symmetric(vertical: 8),
       decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppColors.surface)),
+        border: Border(bottom: BorderSide(color: AppColors.outline)),
       ),
       child: Row(
         children: [
@@ -982,7 +1070,7 @@ class _DetailScreenState extends State<DetailScreen> {
         ? _manga.description
         : 'No synopsis available.';
 
-    final style = GoogleFonts.inter(fontSize: 12, height: 17 / 12, color: AppColors.muted);
+    final style = AppText.body.copyWith(color: AppColors.muted, height: 1.45);
     return InkWell(
       onTap: () => setState(() => _expanded = !_expanded),
       child: Padding(
@@ -1027,15 +1115,15 @@ class _DetailScreenState extends State<DetailScreen> {
         children: [
           for (final t in chips)
             Container(
-              height: 28,
+              constraints: const BoxConstraints(minHeight: 30),
               margin: const EdgeInsets.only(right: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 10),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 border: Border.all(color: AppColors.outline),
                 borderRadius: BorderRadius.circular(8),
               ),
-              child: Text(t, style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted)),
+              child: Text(t, style: AppText.chip.copyWith(color: AppColors.muted)),
             ),
         ],
       ),
@@ -1047,10 +1135,10 @@ class _DetailScreenState extends State<DetailScreen> {
     final readCount = _apiChapters.where((c) => _readChapterIds.contains(c.id)).length;
 
     return Container(
-      height: 48,
-      padding: const EdgeInsets.only(left: 16, right: 8),
+      constraints: const BoxConstraints(minHeight: 48),
+      padding: const EdgeInsets.only(left: 16, right: 8, top: 4, bottom: 4),
       decoration: const BoxDecoration(
-        border: Border(top: BorderSide(color: AppColors.surface)),
+        border: Border(top: BorderSide(color: AppColors.outline)),
       ),
       child: Row(
         children: [
@@ -1072,9 +1160,13 @@ class _DetailScreenState extends State<DetailScreen> {
                   )
                 : Row(
                     children: [
-                      Text(
-                        '$count Chapters',
-                        style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+                      Flexible(
+                        child: Text(
+                          '$count Chapters',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.cardTitle,
+                        ),
                       ),
                       if (readCount > 0) ...[
                         const SizedBox(width: 8),
@@ -1086,7 +1178,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           ),
                           child: Text(
                             '$readCount read',
-                            style: GoogleFonts.inter(fontSize: 10, color: AppColors.primary),
+                            style: AppText.badge.copyWith(color: AppColors.primary),
                           ),
                         ),
                       ],
@@ -1114,10 +1206,10 @@ class _DetailScreenState extends State<DetailScreen> {
               }
             },
             itemBuilder: (_) => [
-              const PopupMenuItem(value: 'next_5', child: Text('Download next 5')),
-              const PopupMenuItem(value: 'next_10', child: Text('Download next 10')),
-              const PopupMenuItem(value: 'unread', child: Text('Download unread')),
-              const PopupMenuItem(value: 'all', child: Text('Download all')),
+              PopupMenuItem(value: 'next_5', child: Text('Download next 5', style: AppText.body)),
+              PopupMenuItem(value: 'next_10', child: Text('Download next 10', style: AppText.body)),
+              PopupMenuItem(value: 'unread', child: Text('Download unread', style: AppText.body)),
+              PopupMenuItem(value: 'all', child: Text('Download all', style: AppText.body)),
             ],
           ),
           PopupMenuButton<String>(
@@ -1135,13 +1227,13 @@ class _DetailScreenState extends State<DetailScreen> {
               }
             },
             itemBuilder: (_) => [
-              const PopupMenuItem(
+              PopupMenuItem(
                 value: 'mark_all_read',
-                child: Text('Mark all as read'),
+                child: Text('Mark all as read', style: AppText.body),
               ),
-              const PopupMenuItem(
+              PopupMenuItem(
                 value: 'mark_all_unread',
-                child: Text('Mark all as unread'),
+                child: Text('Mark all as unread', style: AppText.body),
               ),
             ],
           ),
@@ -1163,18 +1255,28 @@ class _Action extends StatelessWidget {
     return Expanded(
       child: InkWell(
         onTap: onTap ?? () {},
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 20, color: active ? AppColors.primary : AppColors.muted),
-            const SizedBox(height: 5),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.inter(fontSize: 10, color: active ? AppColors.primary : AppColors.muted),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 48),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(icon, size: 20, color: active ? AppColors.primary : AppColors.muted),
+                const SizedBox(height: 5),
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.caption.copyWith(
+                    color: active ? AppColors.primary : AppColors.muted,
+                    fontWeight: active ? FontWeight.w600 : FontWeight.w500,
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );
@@ -1210,37 +1312,43 @@ class _ApiChapterTile extends StatelessWidget {
     switch (downloadStatus) {
       case DownloadStatus.downloaded:
         return IconButton(
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           icon: const Icon(Icons.check_circle_rounded, size: 20, color: AppColors.primary),
           tooltip: 'Downloaded (tap to delete)',
           onPressed: onToggleDownload,
         );
       case DownloadStatus.downloading:
-        return Padding(
-          padding: const EdgeInsets.all(12),
-          child: SizedBox(
-            width: 16,
-            height: 16,
-            child: CircularProgressIndicator(
-              value: downloadProgress > 0 ? downloadProgress : null,
-              strokeWidth: 2,
-              color: AppColors.primary,
+        return const SizedBox(
+          width: 44,
+          height: 44,
+          child: Center(
+            child: SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: AppColors.primary,
+              ),
             ),
           ),
         );
       case DownloadStatus.queued:
         return IconButton(
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           icon: const Icon(Icons.schedule_rounded, size: 20, color: AppColors.muted),
           tooltip: 'Queued for download',
           onPressed: onToggleDownload,
         );
       case DownloadStatus.failed:
         return IconButton(
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           icon: const Icon(Icons.error_outline_rounded, size: 20, color: Colors.redAccent),
           tooltip: 'Download failed (tap to retry)',
           onPressed: onToggleDownload,
         );
       case DownloadStatus.notDownloaded:
         return IconButton(
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           icon: Icon(Icons.download_rounded, size: 20, color: AppColors.muted.withValues(alpha: .5)),
           tooltip: 'Download chapter',
           onPressed: onToggleDownload,
@@ -1260,11 +1368,11 @@ class _ApiChapterTile extends StatelessWidget {
       onTap: onTap,
       onLongPress: onLongPress,
       child: Container(
-        height: 58,
+        constraints: const BoxConstraints(minHeight: 58),
         margin: const EdgeInsets.only(left: 16),
-        padding: const EdgeInsets.only(right: 6),
+        padding: const EdgeInsets.only(right: 4, top: 6, bottom: 6),
         decoration: const BoxDecoration(
-          border: Border(bottom: BorderSide(color: AppColors.surface)),
+          border: Border(bottom: BorderSide(color: AppColors.outline)),
         ),
         child: Row(
           children: [
@@ -1281,8 +1389,7 @@ class _ApiChapterTile extends StatelessWidget {
                     chapter.displayTitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(
-                      fontSize: 13,
+                    style: AppText.body.copyWith(
                       fontWeight: isBookmarked ? FontWeight.w600 : FontWeight.w400,
                       color: isBookmarked && !isRead ? AppColors.primary : color,
                     ),
@@ -1291,7 +1398,9 @@ class _ApiChapterTile extends StatelessWidget {
                     const SizedBox(height: 3),
                     Text(
                       metaParts.join(' · '),
-                      style: GoogleFonts.inter(fontSize: 10, color: metaColor),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.caption.copyWith(color: metaColor),
                     ),
                   ],
                 ],
@@ -1299,6 +1408,7 @@ class _ApiChapterTile extends StatelessWidget {
             ),
             _buildDownloadIcon(),
             IconButton(
+              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
               icon: Icon(
                 isBookmarked ? Icons.bookmark_rounded : Icons.bookmark_border_rounded,
                 size: 20,
@@ -1308,6 +1418,7 @@ class _ApiChapterTile extends StatelessWidget {
               onPressed: onToggleBookmark,
             ),
             IconButton(
+              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
               icon: Icon(
                 isRead ? Icons.check_circle_rounded : Icons.radio_button_unchecked_rounded,
                 size: 20,
@@ -1338,8 +1449,8 @@ class _ResumeFab extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(16),
         child: Container(
-          height: 52,
-          padding: const EdgeInsets.symmetric(horizontal: 18),
+          constraints: const BoxConstraints(minHeight: 52),
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1347,11 +1458,7 @@ class _ResumeFab extends StatelessWidget {
               const SizedBox(width: 9),
               Text(
                 label,
-                style: GoogleFonts.inter(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.onPrimary,
-                ),
+                style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary),
               ),
             ],
           ),

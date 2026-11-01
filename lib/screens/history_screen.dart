@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
@@ -130,8 +129,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
         ).then((_) => _fetch(silent: true));
       },
       child: Container(
-        height: 64,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        constraints: const BoxConstraints(minHeight: 66),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         child: Row(
           children: [
             GestureDetector(
@@ -157,7 +156,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 height: 56,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(4),
-                  child: CoverImage(imageUrl: cover, saturation: .7),
+                  child: CoverImage(imageUrl: cover, mangaId: mangaId, saturation: .7),
                 ),
               ),
             ),
@@ -171,17 +170,25 @@ class _HistoryScreenState extends State<HistoryScreen> {
                     title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
+                    style: AppText.bodyMedium,
                   ),
                   const SizedBox(height: 4),
                   Text(
                     subtitle,
-                    style: GoogleFonts.inter(fontSize: 11, color: AppColors.primary),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.caption.copyWith(color: AppColors.primary),
                   ),
                 ],
               ),
             ),
-            const Icon(Icons.play_circle_outline_rounded, color: AppColors.primary, size: 28),
+            const SizedBox(
+              width: 44,
+              height: 44,
+              child: Center(
+                child: Icon(Icons.play_circle_outline_rounded, color: AppColors.primary, size: 26),
+              ),
+            ),
           ],
         ),
       ),

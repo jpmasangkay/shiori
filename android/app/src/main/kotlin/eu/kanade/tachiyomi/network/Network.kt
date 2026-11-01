@@ -18,7 +18,10 @@ import java.util.concurrent.TimeUnit
 class HttpException(val code: Int) : IllegalStateException("HTTP error $code")
 
 open class NetworkHelper(val context: Context) {
-    open val cookieJar: okhttp3.CookieJar by lazy { AndroidCookieJar() }
+    open val cookieJar: AndroidCookieJar by lazy { AndroidCookieJar() }
+
+    open val cookieManager: AndroidCookieJar
+        get() = cookieJar
 
     open val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -29,8 +32,6 @@ open class NetworkHelper(val context: Context) {
             .addInterceptor(eu.kanade.tachiyomi.network.interceptor.UncaughtExceptionInterceptor())
             .addInterceptor(eu.kanade.tachiyomi.network.interceptor.UserAgentInterceptor(defaultUserAgentProvider()))
             .addInterceptor(eu.kanade.tachiyomi.network.interceptor.CloudflareInterceptor(context))
-            .addInterceptor(okhttp3.CompressionInterceptor())
-            .addInterceptor(okhttp3.brotli.BrotliInterceptor)
             .build()
     }
 
@@ -62,16 +63,3 @@ open class RateLimitInterceptor(
         return chain.proceed(chain.request())
     }
 }
-
-fun OkHttpClient.Builder.rateLimit(
-    permits: Int,
-    period: Long = 1,
-    unit: TimeUnit = TimeUnit.SECONDS
-): OkHttpClient.Builder = addInterceptor(RateLimitInterceptor(permits, period, unit))
-
-fun OkHttpClient.Builder.rateLimitHost(
-    url: okhttp3.HttpUrl,
-    permits: Int,
-    period: Long = 1,
-    unit: TimeUnit = TimeUnit.SECONDS
-): OkHttpClient.Builder = addInterceptor(RateLimitInterceptor(permits, period, unit))

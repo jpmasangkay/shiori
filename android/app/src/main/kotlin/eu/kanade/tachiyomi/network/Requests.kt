@@ -6,10 +6,11 @@ import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.Request
 import okhttp3.RequestBody
+import java.util.concurrent.TimeUnit
 
-private val DEFAULT_HEADERS = Headers.Builder().build()
-private val DEFAULT_CACHE_CONTROL = CacheControl.FORCE_NETWORK
-private val DEFAULT_BODY = RequestBody.create(null, ByteArray(0))
+val DEFAULT_HEADERS: Headers = Headers.Builder().build()
+val DEFAULT_CACHE_CONTROL: CacheControl = CacheControl.Builder().maxAge(10, TimeUnit.MINUTES).build()
+val DEFAULT_BODY: RequestBody = RequestBody.create(null, ByteArray(0))
 
 private fun sanitizeUrl(url: String): String {
     return if (url.contains(" ")) {

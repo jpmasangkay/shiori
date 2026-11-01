@@ -5,6 +5,7 @@ import eu.kanade.tachiyomi.network.HttpException
 import eu.kanade.tachiyomi.network.asObservableSuccess
 import eu.kanade.tachiyomi.network.awaitSingle
 import eu.kanade.tachiyomi.network.awaitSuccess
+import eu.kanade.tachiyomi.network.newCallWithProgress
 import eu.kanade.tachiyomi.source.CatalogueSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
@@ -84,6 +85,10 @@ abstract class HttpSource : CatalogueSource {
         val path = if (u.startsWith('/')) u else "/$u"
         return base + path
     }
+
+    open fun getPageUrl(page: Page): String = page.url
+
+    open fun prepareNewChapter(chapter: SChapter, manga: SManga) {}
 
     open fun setUrlWithoutDomain(manga: SManga, url: String) {
         manga.url = getUrlWithoutDomain(url)
@@ -284,9 +289,25 @@ abstract class HttpSource : CatalogueSource {
 
     open fun imageRequest(page: Page): Request = GET(resolveFullUrl(page.imageUrl ?: page.url), headers)
 
+    open fun fetchImage(page: Page): Observable<Response> {
+        return client.newCallWithProgress(imageRequest(page), page).asObservableSuccess()
+    }
+
+    open suspend fun getImage(page: Page): Response {
+        return client.newCallWithProgress(imageRequest(page), page).awaitSuccess()
+    }
+
     open val supportsRelatedMangas: Boolean get() = false
     open val disableRelatedMangas: Boolean get() = false
     open val disableRelatedMangasBySearch: Boolean get() = false
+
+    open fun relatedMangaListRequest(manga: SManga): Request = popularMangaRequest(1)
+    open fun relatedMangaListParse(response: Response): List<SManga> = emptyList()
+
+    override suspend fun fetchRelatedMangaList(manga: SManga): List<SManga> {
+        val response = client.newCall(relatedMangaListRequest(manga)).awaitSuccess()
+        return relatedMangaListParse(response)
+    }
 
     override suspend fun getImageUrl(page: Page): String {
         return fetchImageUrl(page).awaitSingle()
@@ -384,4 +405,16 @@ abstract class ParsedHttpSource : HttpSource() {
     }
 
     abstract fun imageUrlParse(document: Document): String
+}
+
+interface ResolvableSource : eu.kanade.tachiyomi.source.Source {
+    fun getUriType(uri: String): UriType = UriType.Unknown
+    suspend fun urlToManga(uri: String): SManga? = null
+    suspend fun urlToChapter(uri: String): SChapter? = null
+}
+
+enum class UriType {
+    Manga,
+    Chapter,
+    Unknown,
 }

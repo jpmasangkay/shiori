@@ -30,8 +30,24 @@ class SourceManager extends ChangeNotifier {
   static const String _pinnedKey = 'shiori_pinned_sources_v1';
   static const String _disabledDirectKey = 'shiori_disabled_direct_sources_v1';
 
-  /// Built-in direct web scrapers available across all platforms (Android, iOS, Web).
-  static List<DirectSourceInfo> get directSources => allDirectSources;
+  /// Optional override for unit/widget tests to simulate Android vs iOS.
+  @visibleForTesting
+  static TargetPlatform? debugPlatformOverride;
+
+  static TargetPlatform get effectivePlatform =>
+      debugPlatformOverride ?? defaultTargetPlatform;
+
+  static bool get isAndroidPlatform =>
+      effectivePlatform == TargetPlatform.android;
+
+  static bool get isIOSPlatform => effectivePlatform == TargetPlatform.iOS;
+
+  /// Android uses Tachiyomi/Keiyoushi extensions; iOS uses built-in direct sources only.
+  static bool get supportsExtensions => isAndroidPlatform;
+
+  /// Built-in direct web scrapers available on iOS only (Android uses Tachiyomi/Keiyoushi extensions).
+  static List<DirectSourceInfo> get directSources =>
+      isIOSPlatform ? allDirectSources : const [];
 
   static const List<DirectSourceInfo> allDirectSources = [
     DirectSourceInfo(

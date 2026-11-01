@@ -1,7 +1,6 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
@@ -37,6 +36,33 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   Map<String, List<MangaItem>> _searchResults = {};
   final Map<String, ({Map<String, List<MangaItem>> results, DateTime expiresAt})> _queryCache = {};
 
+  static const Map<String, String> _langNames = {
+    'EN': 'ENGLISH',
+    'ALL': 'MULTI-LANGUAGE',
+    'JA': 'JAPANESE',
+    'KO': 'KOREAN',
+    'ZH': 'CHINESE',
+    'ES': 'SPANISH',
+    'FR': 'FRENCH',
+    'ID': 'INDONESIAN',
+    'PT': 'PORTUGUESE',
+    'PT-BR': 'PORTUGUESE (BR)',
+    'RU': 'RUSSIAN',
+    'DE': 'GERMAN',
+    'IT': 'ITALIAN',
+    'AR': 'ARABIC',
+    'TR': 'TURKISH',
+    'VI': 'VIETNAMESE',
+    'TH': 'THAI',
+    'PL': 'POLISH',
+  };
+
+  String _languageGroupTitle(String langCode) {
+    final upper = langCode.toUpperCase();
+    final name = _langNames[upper];
+    return name != null ? '$name ($upper)' : upper;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -67,18 +93,21 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   }
 
   int _matchingSourcesCount() {
-    final directSources = SourceManager.directSources;
-    final installedExts = Platform.isIOS
-        ? <MangaExtension>[]
-        : _extService.installedExtensions.toList();
-    int count = 0;
-    for (final ds in directSources) {
-      if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) count++;
+    if (SourceManager.isIOSPlatform) {
+      int count = 0;
+      for (final ds in SourceManager.directSources) {
+        if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) count++;
+      }
+      return count;
+    } else {
+      final installedExts = _extService.installedExtensions.toList();
+      int count = 0;
+      for (final ext in installedExts) {
+        if (!ext.isCompatible) continue;
+        if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) count++;
+      }
+      return count;
     }
-    for (final ext in installedExts) {
-      if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) count++;
-    }
-    return count;
   }
 
   void _onSearchChanged(String val) {
@@ -95,7 +124,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       return;
     }
 
-    final cacheKey = '$_selectedSourceFilter|${q.toLowerCase()}';
+    final cacheKey = '${SourceManager.isIOSPlatform ? "ios" : "android"}|$_selectedSourceFilter|${q.toLowerCase()}';
     final cached = _queryCache[cacheKey];
     if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
       _searchToken++;
@@ -108,7 +137,6 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       return;
     }
 
-    // Immediately show skeleton rows on the very first keystroke frame
     setState(() {
       _searchQuery = q;
       _searching = true;
@@ -116,7 +144,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       _searchResults = {};
     });
 
-    _searchDebounce = Timer(const Duration(milliseconds: 240), () {
+    _searchDebounce = Timer(const Duration(milliseconds: 120), () {
       if (mounted) {
         _runGlobalSearch(q, bypassCache: false);
       }
@@ -127,7 +155,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     final q = query.trim();
     if (q.isEmpty) return;
 
-    final cacheKey = '$_selectedSourceFilter|${q.toLowerCase()}';
+    final cacheKey = '${SourceManager.isIOSPlatform ? "ios" : "android"}|$_selectedSourceFilter|${q.toLowerCase()}';
     if (!bypassCache) {
       final cached = _queryCache[cacheKey];
       if (cached != null && cached.expiresAt.isAfter(DateTime.now())) {
@@ -145,17 +173,16 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     }
 
     final token = ++_searchToken;
-    final directSources = SourceManager.directSources;
-    final installedExts = Platform.isIOS
-        ? <MangaExtension>[]
-        : _extService.installedExtensions.toList();
-
-    final List<String> targetIds = [
-      for (final ds in directSources)
-        if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) ds.id,
-      for (final ext in installedExts)
-        if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) ext.pkg,
-    ];
+    final List<String> targetIds = SourceManager.isIOSPlatform
+        ? [
+            for (final ds in SourceManager.directSources)
+              if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) ds.id,
+          ]
+        : [
+            for (final ext in _extService.installedExtensions)
+              if (ext.isCompatible && (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg))
+                ext.pkg,
+          ];
 
     if (mounted) {
       setState(() {
@@ -206,7 +233,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
 
   @override
   Widget build(BuildContext context) {
-    if (Platform.isIOS) {
+    if (SourceManager.isIOSPlatform) {
       return Column(
         children: [
           const AppTopBar(
@@ -214,11 +241,13 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             branded: true,
           ),
           Expanded(
-            child: _buildSourcesTab(),
+            child: _buildIOSSourcesView(),
           ),
         ],
       );
     }
+
+    final updatesCount = _extService.updatesAvailableExtensions.length;
 
     return Column(
       children: [
@@ -231,11 +260,38 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             indicatorWeight: 3,
             labelColor: AppColors.primary,
             unselectedLabelColor: AppColors.muted,
-            labelStyle: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 0.5),
-            unselectedLabelStyle: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w500),
-            tabs: const [
-              Tab(text: 'SOURCES'),
-              Tab(text: 'EXTENSIONS'),
+            labelStyle: AppText.bodySemiBold.copyWith(fontWeight: FontWeight.w700, letterSpacing: 0.5),
+            unselectedLabelStyle: AppText.bodyMedium,
+            tabs: [
+              const Tab(text: 'SOURCES'),
+              Tab(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Flexible(
+                      child: Text(
+                        'EXTENSIONS',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    if (updatesCount > 0) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: AppColors.primary,
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Text(
+                          '$updatesCount',
+                          style: AppText.badge.copyWith(color: AppColors.onPrimary),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
             ],
           ),
         ),
@@ -243,7 +299,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           child: TabBarView(
             controller: _tabController,
             children: [
-              _buildSourcesTab(),
+              _buildAndroidSourcesTab(),
               const ExtensionsScreen(isEmbedded: true),
             ],
           ),
@@ -252,67 +308,16 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     );
   }
 
-  Widget _buildSourcesTab() {
+  /// iOS Browse view: ONLY built-in direct sources (SourceManager.directSources).
+  /// No extension UI on iOS.
+  Widget _buildIOSSourcesView() {
     final directSources = SourceManager.directSources;
-    final installedExts = Platform.isIOS
-        ? <MangaExtension>[]
-        : _extService.installedExtensions.toList();
-
-    // Collect all source IDs that are currently pinned
     final pinnedDirect = directSources.where((s) => _sourceManager.isPinned(s.id)).toList();
-    final pinnedExts = installedExts.where((e) => _sourceManager.isPinned(e.pkg)).toList();
-    final hasPinned = pinnedDirect.isNotEmpty || pinnedExts.isNotEmpty;
 
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
-        // Global Multi-Source Search Bar
-        Container(
-          height: 44,
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.surfaceHigh),
-          ),
-          child: Row(
-            children: [
-              const Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
-              const SizedBox(width: 8),
-              Expanded(
-                child: TextField(
-                  controller: _searchController,
-                  onChanged: _onSearchChanged,
-                  style: GoogleFonts.inter(fontSize: 13, color: AppColors.text),
-                  decoration: InputDecoration(
-                    hintText: () {
-                      if (_selectedSourceFilter != 'ALL') {
-                        final ds = _sourceManager.getDirectSource(_selectedSourceFilter);
-                        if (ds != null) return 'Search ${ds.name}...';
-                        final ext = _extService.getExtensionByPkg(_selectedSourceFilter);
-                        return 'Search ${ext?.name ?? _selectedSourceFilter}...';
-                      }
-                      return 'Search across all sources...';
-                    }(),
-                    hintStyle: const TextStyle(color: AppColors.muted, fontSize: 13),
-                    border: InputBorder.none,
-                    isDense: true,
-                  ),
-                ),
-              ),
-              if (_searchController.text.isNotEmpty)
-                GestureDetector(
-                  onTap: () {
-                    _searchController.clear();
-                    _onSearchChanged('');
-                  },
-                  child: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
-                ),
-            ],
-          ),
-        ),
-
-        // Source Filter Chips
+        _buildGlobalSearchBar(),
         const SizedBox(height: 8),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -323,21 +328,14 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 const SizedBox(width: 6),
                 _buildSourceFilterChip(ds.id, ds.name),
               ],
-              for (final ext in installedExts) ...[
-                const SizedBox(width: 6),
-                _buildSourceFilterChip(ext.pkg, ext.name),
-              ],
             ],
           ),
         ),
         const SizedBox(height: 12),
-
-        // If currently in search mode, display multi-source results
         if (_searchQuery.isNotEmpty) ...[
           _buildSearchResults(),
         ] else ...[
-          // SECTION 1: PINNED / FAVORITE SOURCES
-          if (hasPinned) ...[
+          if (pinnedDirect.isNotEmpty) ...[
             _sectionHeaderWithBadge(
               title: 'PINNED SOURCES',
               badgeColor: Colors.amber,
@@ -354,165 +352,245 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 iconColor: Color(ds.colorValue),
                 isPinned: true,
               ),
-            for (final ext in pinnedExts)
-              _buildSourceCard(
-                id: ext.pkg,
-                name: ext.name,
-                lang: ext.lang,
-                badge: ext.lang,
-                description: ext.sourceNames.isNotEmpty
-                    ? ext.sourceNames.join(', ')
-                    : ext.name,
-                iconLetter: ext.name.isNotEmpty ? ext.name[0].toUpperCase() : 'E',
-                iconColor: const Color(0xFF10B981),
-                iconUrl: ext.iconUrl,
-                isCommunity: true,
-                isPinned: true,
-              ),
             const SizedBox(height: 14),
           ],
-
-          // SECTION 2: DIRECT SOURCES (iOS only)
-          if (directSources.isNotEmpty) ...[
-            _sectionHeaderWithBadge(
-              title: 'DIRECT SOURCES',
-              badgeText: 'iOS',
-              badgeColor: AppColors.primary,
-              icon: Icons.bolt_rounded,
+          _sectionHeaderWithBadge(
+            title: 'DIRECT SOURCES',
+            badgeText: 'iOS',
+            badgeColor: AppColors.primary,
+            icon: Icons.bolt_rounded,
+          ),
+          for (final ds in directSources)
+            _buildSourceCard(
+              id: ds.id,
+              name: ds.name,
+              lang: ds.lang,
+              badge: ds.badge,
+              description: ds.description,
+              iconLetter: ds.iconLetter,
+              iconColor: Color(ds.colorValue),
+              isPinned: _sourceManager.isPinned(ds.id),
             ),
-            for (final ds in directSources)
-              _buildSourceCard(
-                id: ds.id,
-                name: ds.name,
-                lang: ds.lang,
-                badge: ds.badge,
-                description: ds.description,
-                iconLetter: ds.iconLetter,
-                iconColor: Color(ds.colorValue),
-                isPinned: _sourceManager.isPinned(ds.id),
-              ),
-          ],
-
-          if (Platform.isIOS) ...[
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(14),
-              margin: const EdgeInsets.only(bottom: 12),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.surfaceHigh),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary.withValues(alpha: .15),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(Icons.apple_rounded, color: AppColors.primary, size: 24),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Direct Built-in Sources',
-                          style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'MangaDex, MangaPill, Asura Scans, Flame Comics, Weeb Central, MangaKatana, MangaRead and more run natively on iOS with offline reading, continuous scroll, and categories.',
-                          style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.35),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ] else ...[
-            const SizedBox(height: 14),
-
-            // SECTION 3: COMMUNITY EXTENSIONS
-            _sectionHeaderWithBadge(
-              title: 'COMMUNITY EXTENSIONS',
-              badgeColor: const Color(0xFF10B981),
-              icon: Icons.extension_rounded,
-            ),
-
-            if (installedExts.isNotEmpty)
-              for (final ext in installedExts)
-                _buildSourceCard(
-                  id: ext.pkg,
-                  name: ext.name,
-                  lang: ext.lang,
-                  badge: ext.lang,
-                  description: ext.sourceNames.isNotEmpty
-                      ? ext.sourceNames.join(', ')
-                      : ext.name,
-                  iconLetter: ext.name.isNotEmpty ? ext.name[0].toUpperCase() : 'E',
-                  iconColor: const Color(0xFF10B981),
-                  iconUrl: ext.iconUrl,
-                  isCommunity: true,
-                  isPinned: _sourceManager.isPinned(ext.pkg),
-                )
-            else
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Text(
-                  'No community extensions installed. Explore extensions below.',
-                  style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
-                ),
-              ),
-
-            // Explore More Banner
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(14),
-              decoration: BoxDecoration(
-                color: AppColors.surface,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.surfaceHigh),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.explore_outlined, color: AppColors.primary, size: 24),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text('Explore Community Catalog', style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600)),
-                        const SizedBox(height: 2),
-                        Text(
-                          'Browse 1,400+ online extensions across 40+ languages.',
-                          style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  FilledButton(
-                    onPressed: () => _tabController.animateTo(1),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.surfaceHigh,
-                      foregroundColor: AppColors.primary,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      minimumSize: const Size(0, 32),
-                    ),
-                    child: Text('Explore', style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600)),
-                  ),
-                ],
-              ),
-            ),
-          ],
           const SizedBox(height: 24),
         ],
       ],
+    );
+  }
+
+  /// Android "Sources" tab: ONLY installed Tachiyomi/Keiyoushi extension sources,
+  /// grouped by language, with pinned sources on top and Popular/Latest/Search per source.
+  Widget _buildAndroidSourcesTab() {
+    final installedExts = _extService.installedExtensions.toList();
+    final pinnedExts = installedExts.where((e) => _sourceManager.isPinned(e.pkg)).toList();
+
+    // Group installed extensions by language (Mihon-style)
+    final Map<String, List<MangaExtension>> groupedByLang = {};
+    for (final ext in installedExts) {
+      final langKey = ext.lang.toUpperCase();
+      groupedByLang.putIfAbsent(langKey, () => []).add(ext);
+    }
+    final sortedLangKeys = groupedByLang.keys.toList()
+      ..sort((a, b) {
+        if (a == 'EN' && b != 'EN') return -1;
+        if (b == 'EN' && a != 'EN') return 1;
+        if (a == 'ALL' && b != 'ALL') return -1;
+        if (b == 'ALL' && a != 'ALL') return 1;
+        return a.compareTo(b);
+      });
+
+    return RefreshIndicator(
+      color: AppColors.primary,
+      backgroundColor: AppColors.surface,
+      onRefresh: () async {
+        await _extService.refreshDeviceExtensions();
+        await _extService.fetchExtensions(force: true);
+      },
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        children: [
+        _buildGlobalSearchBar(),
+        if (installedExts.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                _buildSourceFilterChip('ALL', 'All Sources'),
+                for (final ext in installedExts) ...[
+                  const SizedBox(width: 6),
+                  _buildSourceFilterChip(ext.pkg, ext.name),
+                ],
+              ],
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        if (_searchQuery.isNotEmpty) ...[
+          _buildSearchResults(),
+        ] else ...[
+          if (pinnedExts.isNotEmpty) ...[
+            _sectionHeaderWithBadge(
+              title: 'PINNED',
+              badgeText: '${pinnedExts.length}',
+              badgeColor: Colors.amber,
+              icon: Icons.push_pin_rounded,
+            ),
+            for (final ext in pinnedExts)
+              _buildExtensionSourceCard(ext, isPinned: true),
+            const SizedBox(height: 14),
+          ],
+          if (installedExts.isEmpty)
+            Container(
+              padding: const EdgeInsets.all(24),
+              margin: const EdgeInsets.only(top: 12),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.outline),
+              ),
+              child: Column(
+                children: [
+                  const Icon(Icons.extension_off_rounded, color: AppColors.muted, size: 40),
+                  const SizedBox(height: 10),
+                  Text(
+                    'No installed extension sources',
+                    style: AppText.cardTitle,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Install Tachiyomi / Keiyoushi extensions from the Extensions tab to browse sources.',
+                    textAlign: TextAlign.center,
+                    style: AppText.caption,
+                  ),
+                  const SizedBox(height: 14),
+                  FilledButton.icon(
+                    onPressed: () => _tabController.animateTo(1),
+                    icon: const Icon(Icons.extension_rounded, size: 16),
+                    label: Text('Browse Extensions', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.onPrimary,
+                      minimumSize: const Size(0, 44),
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            for (final langKey in sortedLangKeys) ...[
+              _sectionHeaderWithBadge(
+                title: _languageGroupTitle(langKey),
+                badgeText: '${groupedByLang[langKey]!.length}',
+                badgeColor: const Color(0xFF10B981),
+                icon: Icons.language_rounded,
+              ),
+              for (final ext in groupedByLang[langKey]!)
+                _buildExtensionSourceCard(
+                  ext,
+                  isPinned: _sourceManager.isPinned(ext.pkg),
+                ),
+              const SizedBox(height: 10),
+            ],
+          const SizedBox(height: 24),
+        ],
+      ],
+      ),
+    );
+  }
+
+  Widget _buildGlobalSearchBar() {
+    return Container(
+      constraints: const BoxConstraints(minHeight: 44),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.outline),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
+          const SizedBox(width: 8),
+          Expanded(
+            child: TextField(
+              controller: _searchController,
+              onChanged: _onSearchChanged,
+              style: AppText.body,
+              decoration: InputDecoration(
+                hintText: () {
+                  if (_selectedSourceFilter != 'ALL') {
+                    if (SourceManager.isIOSPlatform) {
+                      final ds = _sourceManager.getDirectSource(_selectedSourceFilter);
+                      if (ds != null) return 'Search ${ds.name}...';
+                    }
+                    final ext = _extService.getExtensionByPkg(_selectedSourceFilter);
+                    return 'Search ${ext?.name ?? _selectedSourceFilter}...';
+                  }
+                  return 'Search across all sources...';
+                }(),
+                hintStyle: AppText.body.copyWith(color: AppColors.muted),
+                border: InputBorder.none,
+                isDense: true,
+              ),
+            ),
+          ),
+          if (_searchController.text.isNotEmpty)
+            IconButton(
+              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+              padding: EdgeInsets.zero,
+              onPressed: () {
+                _searchController.clear();
+                _onSearchChanged('');
+              },
+              icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildExtensionSourceCard(MangaExtension ext, {required bool isPinned}) {
+    final versionLabel = ext.hasUpdate && ext.repoVersion != null
+        ? 'v${ext.version} → v${ext.repoVersion}'
+        : 'v${ext.version}';
+    final descParts = <String>[
+      if (ext.sourceNames.isNotEmpty) ext.sourceNames.join(', ') else ext.name,
+      versionLabel,
+    ];
+    return _buildSourceCard(
+      id: ext.pkg,
+      name: ext.name,
+      lang: ext.lang,
+      badge: ext.lang,
+      description: descParts.join(' • '),
+      iconLetter: ext.name.isNotEmpty ? ext.name[0].toUpperCase() : 'E',
+      iconColor: const Color(0xFF10B981),
+      iconUrl: ext.iconUrl,
+      iconBytes: ext.iconBytes,
+      isCommunity: true,
+      isPinned: isPinned,
+      isCompatible: ext.isCompatible,
+      isNsfw: ext.isNsfw,
+      hasUpdate: ext.hasUpdate,
+      isUpdating: _extService.isDownloading(ext.pkg),
+      updateProgress: _extService.getProgress(ext.pkg),
+      onUpdate: ext.hasUpdate
+          ? () async {
+              final ok = await _extService.downloadAndInstallExtension(ext);
+              if (mounted) {
+                final updatedVer = _extService.getExtensionByPkg(ext.pkg)?.version ?? ext.repoVersion ?? ext.version;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(ok
+                        ? 'Updated ${ext.name} to v$updatedVer'
+                        : (_extService.lastInstallError ?? 'Failed to update ${ext.name}.')),
+                    duration: const Duration(seconds: 3),
+                  ),
+                );
+              }
+            }
+          : null,
     );
   }
 
@@ -533,14 +611,13 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       },
       selectedColor: AppColors.primary,
       backgroundColor: AppColors.surface,
-      labelStyle: GoogleFonts.inter(
-        fontSize: 11,
+      labelStyle: AppText.chip.copyWith(
         fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
         color: isSelected ? AppColors.onPrimary : AppColors.muted,
       ),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(8),
-        side: BorderSide(color: isSelected ? AppColors.primary : AppColors.surfaceHigh),
+        side: BorderSide(color: isSelected ? AppColors.primary : AppColors.outline),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       showCheckmark: false,
@@ -568,11 +645,13 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                     child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
                   ),
                   const SizedBox(width: 8),
-                  Text(
-                    _selectedSourceFilter == 'ALL'
-                        ? 'Searching across sources...'
-                        : 'Searching source...',
-                    style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w500),
+                  Expanded(
+                    child: Text(
+                      _selectedSourceFilter == 'ALL'
+                          ? 'Searching across sources...'
+                          : 'Searching source...',
+                      style: AppText.caption.copyWith(fontWeight: FontWeight.w500),
+                    ),
                   ),
                 ],
               ),
@@ -587,7 +666,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     if (entriesWithResults.isEmpty) {
       final filterLabel = _selectedSourceFilter == 'ALL'
           ? ''
-          : ' on ${_sourceManager.getDirectSource(_selectedSourceFilter)?.name ?? _extService.getExtensionByPkg(_selectedSourceFilter)?.name ?? _selectedSourceFilter}';
+          : ' on ${(SourceManager.isIOSPlatform ? _sourceManager.getDirectSource(_selectedSourceFilter)?.name : null) ?? _extService.getExtensionByPkg(_selectedSourceFilter)?.name ?? _selectedSourceFilter}';
 
       return FadeSlideIn(
         key: ValueKey('search_empty_${_searchQuery}_$_selectedSourceFilter'),
@@ -602,16 +681,17 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 Text(
                   'No titles found for "$_searchQuery"$filterLabel',
                   textAlign: TextAlign.center,
-                  style: GoogleFonts.inter(fontSize: 14, color: AppColors.muted),
+                  style: AppText.cardTitle.copyWith(color: AppColors.muted, fontWeight: FontWeight.w500),
                 ),
                 const SizedBox(height: 14),
                 FilledButton.icon(
                   onPressed: () => _runGlobalSearch(_searchQuery, bypassCache: true),
                   icon: const Icon(Icons.refresh_rounded, size: 16),
-                  label: const Text('Retry Search'),
+                  label: Text('Retry Search', style: AppText.bodySemiBold),
                   style: FilledButton.styleFrom(
                     backgroundColor: AppColors.surfaceHigh,
                     foregroundColor: AppColors.text,
+                    minimumSize: const Size(0, 44),
                   ),
                 ),
               ],
@@ -645,9 +725,11 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
                 ),
                 const SizedBox(width: 8),
-                Text(
-                  'Searching $_pendingSourcesCount more source${_pendingSourcesCount == 1 ? '' : 's'}...',
-                  style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, fontWeight: FontWeight.w500),
+                Expanded(
+                  child: Text(
+                    'Searching $_pendingSourcesCount more source${_pendingSourcesCount == 1 ? '' : 's'}...',
+                    style: AppText.caption.copyWith(fontWeight: FontWeight.w500),
+                  ),
                 ),
               ],
             ),
@@ -662,7 +744,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     required String sourceId,
     required List<MangaItem> items,
   }) {
-    final ds = _sourceManager.getDirectSource(sourceId);
+    final ds = SourceManager.isIOSPlatform ? _sourceManager.getDirectSource(sourceId) : null;
     final ext = _extService.getExtensionByPkg(sourceId);
     final sourceName = ds?.name ?? ext?.name ?? sourceId;
     final badgeColor = ds != null ? Color(ds.colorValue) : const Color(0xFF10B981);
@@ -672,27 +754,31 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       children: [
         Row(
           children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: badgeColor.withValues(alpha: .2),
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: Text(
-                sourceName.toUpperCase(),
-                style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: badgeColor),
+            Flexible(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: badgeColor.withValues(alpha: .2),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  sourceName.toUpperCase(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.badge.copyWith(color: badgeColor),
+                ),
               ),
             ),
             const SizedBox(width: 8),
             Text(
               '${items.length} titles found',
-              style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+              style: AppText.caption,
             ),
           ],
         ),
         const SizedBox(height: 8),
         SizedBox(
-          height: 180,
+          height: 194,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
             itemCount: items.length,
@@ -707,7 +793,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   );
                 },
                 child: SizedBox(
-                  width: 105,
+                  width: 108,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -717,7 +803,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                           child: Stack(
                             fit: StackFit.expand,
                             children: [
-                              CoverImage(imageUrl: manga.cover, saturation: .75),
+                              CoverImage(imageUrl: manga.cover, mangaId: manga.id, saturation: .75),
                               if (manga.lastChapter != null && manga.lastChapter!.isNotEmpty)
                                 Positioned(
                                   bottom: 4,
@@ -730,7 +816,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                                     ),
                                     child: Text(
                                       'Ch. ${manga.lastChapter}',
-                                      style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w600, color: Colors.white),
+                                      style: AppText.badge.copyWith(color: Colors.white),
                                     ),
                                   ),
                                 ),
@@ -743,7 +829,10 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                         manga.title,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600),
+                        style: AppText.caption.copyWith(
+                          color: AppColors.text,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ],
                   ),
@@ -773,12 +862,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.inter(
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.1,
-                color: AppColors.muted,
-              ),
+              style: AppText.sectionHeader,
             ),
           ),
           if (badgeText != null && badgeText.isNotEmpty) ...[
@@ -793,11 +877,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 badgeText,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.inter(
-                  fontSize: 10,
-                  fontWeight: FontWeight.w600,
-                  color: badgeColor,
-                ),
+                style: AppText.badge.copyWith(color: badgeColor),
               ),
             ),
           ],
@@ -815,8 +895,15 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     required String iconLetter,
     required Color iconColor,
     String? iconUrl,
+    Uint8List? iconBytes,
     bool isCommunity = false,
     bool isPinned = false,
+    bool isCompatible = true,
+    bool isNsfw = false,
+    bool hasUpdate = false,
+    bool isUpdating = false,
+    double updateProgress = 0.0,
+    VoidCallback? onUpdate,
   }) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
@@ -825,12 +912,13 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
         decoration: BoxDecoration(
           color: AppColors.surface,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: AppColors.surfaceHigh),
+          border: Border.all(color: AppColors.outline),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // Source Icon
                 Container(
@@ -843,23 +931,34 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(9),
-                    child: iconUrl != null && iconUrl.isNotEmpty
-                        ? RetryingNetworkImage(
-                            url: iconUrl,
+                    child: iconBytes != null && iconBytes.isNotEmpty
+                        ? Image.memory(
+                            iconBytes,
                             fit: BoxFit.cover,
-                            errorBuilder: (context, retry) => Center(
+                            errorBuilder: (context, error, stackTrace) => Center(
                               child: Text(
                                 iconLetter,
-                                style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: iconColor),
+                                style: AppText.title.copyWith(color: iconColor),
                               ),
                             ),
                           )
-                        : Center(
-                            child: Text(
-                              iconLetter,
-                              style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: iconColor),
-                            ),
-                          ),
+                        : iconUrl != null && iconUrl.isNotEmpty
+                            ? RetryingNetworkImage(
+                                url: iconUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (context, retry) => Center(
+                                  child: Text(
+                                    iconLetter,
+                                    style: AppText.title.copyWith(color: iconColor),
+                                  ),
+                                ),
+                              )
+                            : Center(
+                                child: Text(
+                                  iconLetter,
+                                  style: AppText.title.copyWith(color: iconColor),
+                                ),
+                              ),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -867,17 +966,17 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Row(
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          Flexible(
-                            child: Text(
-                              name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
-                            ),
+                          Text(
+                            name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppText.cardTitle,
                           ),
-                          const SizedBox(width: 6),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
                             decoration: BoxDecoration(
@@ -886,42 +985,84 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                             ),
                             child: Text(
                               badge,
-                              style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w600, color: AppColors.primary),
+                              style: AppText.badge.copyWith(color: AppColors.primary),
                             ),
                           ),
-                          const Spacer(),
-                          // Pin / Favorite Button
-                          IconButton(
-                            icon: Icon(
-                              isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
-                              color: isPinned ? Colors.amber : AppColors.muted,
-                              size: 18,
+                          if (isNsfw)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.redAccent.withValues(alpha: .2),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                '18+',
+                                style: AppText.badge.copyWith(color: Colors.redAccent),
+                              ),
                             ),
-                            tooltip: isPinned ? 'Unpin source' : 'Pin to top',
-                            visualDensity: VisualDensity.compact,
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints(),
-                            onPressed: () => _sourceManager.togglePin(id),
-                          ),
-                          if (isCommunity) ...[
-                            const SizedBox(width: 8),
-                            IconButton(
-                              icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18),
-                              tooltip: 'Uninstall $name',
-                              visualDensity: VisualDensity.compact,
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(),
-                              onPressed: () {
-                                _extService.uninstallPackage(id);
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text('Uninstalled $name'),
-                                    duration: const Duration(seconds: 1),
+                          if (!isCompatible)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: Colors.orangeAccent.withValues(alpha: .2),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                'Incompatible lib version',
+                                style: AppText.badge.copyWith(color: Colors.orangeAccent),
+                              ),
+                            ),
+                          if (isUpdating)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: AppColors.primary.withValues(alpha: .2),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  SizedBox(
+                                    width: 10,
+                                    height: 10,
+                                    child: CircularProgressIndicator(
+                                      value: updateProgress > 0.05 ? updateProgress : null,
+                                      strokeWidth: 1.8,
+                                      color: AppColors.primary,
+                                    ),
                                   ),
-                                );
-                              },
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    updateProgress > 0 ? '${(updateProgress * 100).toInt()}%' : 'Updating...',
+                                    style: AppText.badge.copyWith(color: AppColors.primary),
+                                  ),
+                                ],
+                              ),
+                            )
+                          else if (hasUpdate)
+                            InkWell(
+                              borderRadius: BorderRadius.circular(4),
+                              onTap: onUpdate,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                decoration: BoxDecoration(
+                                  color: AppColors.primary.withValues(alpha: .2),
+                                  borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: AppColors.primary.withValues(alpha: .5)),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.system_update_rounded, size: 11, color: AppColors.primary),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      'Update',
+                                      style: AppText.badge.copyWith(color: AppColors.primary),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ),
-                          ],
                         ],
                       ),
                       const SizedBox(height: 3),
@@ -929,10 +1070,22 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                         description,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted, height: 1.3),
+                        style: AppText.caption.copyWith(height: 1.3),
                       ),
                     ],
                   ),
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                  padding: EdgeInsets.zero,
+                  icon: Icon(
+                    isPinned ? Icons.push_pin_rounded : Icons.push_pin_outlined,
+                    color: isPinned ? Colors.amber : AppColors.muted,
+                    size: 18,
+                  ),
+                  tooltip: isPinned ? 'Unpin source' : 'Pin to top',
+                  onPressed: () => _sourceManager.togglePin(id),
                 ),
               ],
             ),
@@ -940,52 +1093,113 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             Row(
               children: [
                 Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () {
-                      Navigator.of(context).push(
-                        smoothRoute(
-                          SourceCatalogScreen(
-                            sourceId: id,
-                            sourceName: name,
-                            sourceLang: lang,
-                            initialOrder: 'latest',
-                          ),
-                        ),
-                      );
-                    },
-                    icon: const Icon(Icons.grid_view_rounded, size: 16),
-                    label: const Text('Browse Catalog'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.primary,
-                      side: const BorderSide(color: AppColors.surfaceHigh),
-                      padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: FilledButton.icon(
+                    onPressed: !isCompatible
+                        ? null
+                        : () {
+                            Navigator.of(context).push(
+                              smoothRoute(
+                                SourceCatalogScreen(
+                                  sourceId: id,
+                                  sourceName: name,
+                                  sourceLang: lang,
+                                  initialOrder: 'popular',
+                                ),
+                              ),
+                            );
+                          },
+                    icon: const Icon(Icons.local_fire_department_rounded, size: 15),
+                    label: Text(
+                      'Popular',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.chip.copyWith(
+                        color: AppColors.onPrimary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.onPrimary,
+                      minimumSize: const Size(0, 44),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
                   ),
                 ),
                 const SizedBox(width: 8),
-                FilledButton.icon(
-                  onPressed: () {
-                    Navigator.of(context).push(
-                      smoothRoute(
-                        SourceCatalogScreen(
-                          sourceId: id,
-                          sourceName: name,
-                          sourceLang: lang,
-                          initialOrder: 'popular',
-                        ),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: !isCompatible
+                        ? null
+                        : () {
+                            Navigator.of(context).push(
+                              smoothRoute(
+                                SourceCatalogScreen(
+                                  sourceId: id,
+                                  sourceName: name,
+                                  sourceLang: lang,
+                                  initialOrder: 'latest',
+                                ),
+                              ),
+                            );
+                          },
+                    icon: const Icon(Icons.schedule_rounded, size: 15),
+                    label: Text(
+                      'Latest',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.chip.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w600,
                       ),
-                    );
-                  },
-                  icon: const Icon(Icons.trending_up_rounded, size: 16),
-                  label: const Text('Popular'),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.primary,
-                    foregroundColor: AppColors.onPrimary,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.primary,
+                      side: const BorderSide(color: AppColors.outline),
+                      minimumSize: const Size(0, 44),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
                   ),
                 ),
+                if (hasUpdate || isUpdating) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: OutlinedButton.icon(
+                      onPressed: isUpdating ? null : onUpdate,
+                      icon: isUpdating
+                          ? SizedBox(
+                              width: 14,
+                              height: 14,
+                              child: CircularProgressIndicator(
+                                value: updateProgress > 0.05 ? updateProgress : null,
+                                strokeWidth: 2,
+                                color: AppColors.primary,
+                              ),
+                            )
+                          : const Icon(Icons.system_update_rounded, size: 15),
+                      label: Text(
+                        isUpdating
+                            ? (updateProgress > 0 ? '${(updateProgress * 100).toInt()}%' : 'Updating')
+                            : 'Update',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.chip.copyWith(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.primary,
+                        side: const BorderSide(color: AppColors.primary),
+                        minimumSize: const Size(0, 44),
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
           ],

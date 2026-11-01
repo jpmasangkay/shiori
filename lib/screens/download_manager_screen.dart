@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../models/manga_models.dart';
 import '../services/download_service.dart';
@@ -51,7 +50,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
         elevation: 0,
         title: Text(
           'Downloads',
-          style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w600),
+          style: AppText.title,
         ),
         actions: [
           if (downloaded.isNotEmpty)
@@ -71,14 +70,14 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
             decoration: BoxDecoration(
               color: AppColors.surface,
               borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: AppColors.surfaceHigh),
+              border: Border.all(color: AppColors.outline),
             ),
             child: Row(
               children: [
                 Container(
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: AppColors.active.withValues(alpha: .4),
+                    color: AppColors.active.withValues(alpha: .5),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: const Icon(Icons.offline_pin_rounded, color: AppColors.primary, size: 26),
@@ -90,21 +89,17 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                     children: [
                       Text(
                         'Total Offline Storage',
-                        style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                        style: AppText.caption.copyWith(color: AppColors.muted),
                       ),
                       const SizedBox(height: 3),
                       Text(
                         ds.formatBytes(totalBytes),
-                        style: GoogleFonts.inter(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.text,
-                        ),
+                        style: AppText.title,
                       ),
                       const SizedBox(height: 2),
                       Text(
                         '${downloaded.length} chapters across ${grouped.length} titles',
-                        style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                        style: AppText.caption.copyWith(color: AppColors.muted),
                       ),
                     ],
                   ),
@@ -134,13 +129,13 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                     const SizedBox(height: 14),
                     Text(
                       'No offline chapters',
-                      style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600),
+                      style: AppText.cardTitle,
                     ),
                     const SizedBox(height: 6),
                     Text(
                       'Download chapters from any title to read them completely offline.',
                       textAlign: TextAlign.center,
-                      style: GoogleFonts.inter(fontSize: 12, color: AppColors.muted),
+                      style: AppText.caption.copyWith(color: AppColors.muted),
                     ),
                   ],
                 ),
@@ -159,12 +154,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       padding: const EdgeInsets.only(left: 4, bottom: 8),
       child: Text(
         text,
-        style: GoogleFonts.inter(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 1.2,
-          color: AppColors.muted,
-        ),
+        style: AppText.sectionHeader,
       ),
     );
   }
@@ -177,13 +167,26 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.surfaceHigh),
+        border: Border.all(color: AppColors.outline),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
+              SizedBox(
+                width: 34,
+                height: 46,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(5),
+                  child: CoverImage(
+                    imageUrl: task.manga.cover,
+                    mangaId: task.manga.id,
+                    saturation: .7,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -192,19 +195,20 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                       task.manga.title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600),
+                      style: AppText.bodySemiBold,
                     ),
                     const SizedBox(height: 2),
                     Text(
                       task.chapter.displayTitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+                      style: AppText.caption.copyWith(color: AppColors.muted),
                     ),
                   ],
                 ),
               ),
               IconButton(
+                constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                 icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
                 onPressed: () => ds.cancelDownload(task.chapter.id),
               ),
@@ -225,11 +229,11 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                 task.status == DownloadStatus.queued
                     ? 'Queued...'
                     : 'Page ${task.downloadedPages} of ${task.totalPages}',
-                style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                style: AppText.badge.copyWith(color: AppColors.muted),
               ),
               Text(
                 '${(task.progress * 100).toInt()}%',
-                style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.primary),
+                style: AppText.badge.copyWith(color: AppColors.primary),
               ),
             ],
           ),
@@ -248,7 +252,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.surfaceHigh),
+        border: Border.all(color: AppColors.outline),
       ),
       child: ExpansionTile(
         tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
@@ -257,49 +261,55 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
           height: 60,
           child: ClipRRect(
             borderRadius: BorderRadius.circular(6),
-            child: CoverImage(imageUrl: first.mangaCover, saturation: .7),
+            child: CoverImage(
+              imageUrl: first.mangaCover,
+              mangaId: mangaId,
+              saturation: .7,
+            ),
           ),
         ),
         title: Text(
           first.mangaTitle,
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600),
+          style: AppText.cardTitle,
         ),
         subtitle: Text(
           '${chapters.length} chapters • ${ds.formatBytes(totalMangaBytes)}',
-          style: GoogleFonts.inter(fontSize: 11, color: AppColors.muted),
+          style: AppText.caption.copyWith(color: AppColors.muted),
         ),
         trailing: IconButton(
+          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
           icon: const Icon(Icons.delete_outline_rounded, size: 20, color: AppColors.muted),
           tooltip: 'Delete all chapters for this title',
           onPressed: () => _confirmDeleteManga(mangaId, first.mangaTitle),
         ),
         children: [
-          const Divider(color: AppColors.surfaceHigh, height: 1),
+          const Divider(color: AppColors.outline, height: 1),
           for (final ch in chapters)
             ListTile(
-              dense: true,
               contentPadding: const EdgeInsets.symmetric(horizontal: 16),
               title: Text(
                 ch.chapterTitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w500),
+                style: AppText.bodyMedium,
               ),
               subtitle: Text(
                 '${ch.pageCount} pages • ${ds.formatBytes(ch.totalBytes)}',
-                style: GoogleFonts.inter(fontSize: 10, color: AppColors.muted),
+                style: AppText.caption.copyWith(color: AppColors.muted),
               ),
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
+                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                     icon: const Icon(Icons.play_circle_outline_rounded, size: 20, color: AppColors.primary),
                     tooltip: 'Read offline',
                     onPressed: () => _openReader(ch, chapters),
                   ),
                   IconButton(
+                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                     icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.muted),
                     tooltip: 'Delete chapter',
                     onPressed: () => ds.deleteDownloadedChapter(ch.chapterId),
