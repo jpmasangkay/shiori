@@ -142,5 +142,48 @@ router.get('/me', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/auth/refresh - Refresh active or recently expired JWT (within 7d grace window)
+router.post('/refresh', authLimiter, async (req, res) => {
+  try {
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    const rawToken = header.slice(7).trim();
+    let decoded;
+    try {
+      decoded = jwt.verify(rawToken, config.jwtSecret || 'dev-fallback-secret', {
+        ignoreExpiration: true,
+      });
+    } catch {
+      return res.status(401).json({ error: 'Invalid token signature' });
+    }
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const graceWindowSec = 7 * 24 * 60 * 60;
+    if (decoded.exp && nowSec - decoded.exp > graceWindowSec) {
+      return res.status(401).json({ error: 'Session expired. Please sign in again.' });
+    }
+
+    const user = await User.findById(decoded.id).select('-passwordHash');
+    if (!user) {
+      return res.status(401).json({ error: 'User account not found' });
+    }
+
+    const token = issueToken(user);
+    res.json({
+      token,
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        displayName: user.displayName,
+      },
+    });
+  } catch (err) {
+    console.error('[Auth Refresh Error]', err.message);
+    res.status(500).json({ error: 'Unable to refresh session' });
+  }
+});
+
 export default router;
 

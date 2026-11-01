@@ -1,23 +1,4 @@
-String _resolveSource(String id, String? explicit) {
-  if (explicit != null && explicit.isNotEmpty) return explicit;
-  if (id.startsWith('asura:')) return 'asura';
-  if (id.startsWith('flame:')) return 'flamecomics';
-  if (id.startsWith('weeb:')) return 'weebcentral';
-  if (id.startsWith('pill:')) return 'mangapill';
-  if (id.startsWith('katana:')) return 'mangakatana';
-  if (id.startsWith('mread:')) return 'mangaread';
-  if (id.startsWith('ext:')) {
-    final parts = id.split(':');
-    if (parts.length > 1 && parts[1].isNotEmpty) return parts[1];
-  }
-  if (id.contains(':')) {
-    final prefix = id.substring(0, id.indexOf(':'));
-    if (prefix.isNotEmpty) return prefix;
-  }
-  final isUuid = RegExp(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$').hasMatch(id);
-  if (isUuid) return 'mangadex';
-  return id.isNotEmpty ? id : 'unknown';
-}
+import 'package:manga_reader/services/source_resolver.dart';
 
 class MangaItem {
   final String id;
@@ -59,7 +40,7 @@ class MangaItem {
       tags: (json['tags'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? const [],
       year: json['year']?.toString(),
       lastChapter: json['lastChapter']?.toString(),
-      source: _resolveSource(id, json['source'] as String?),
+      source: SourceResolver.resolve(id, json['source'] as String?),
     );
   }
 
@@ -76,6 +57,34 @@ class MangaItem {
         'lastChapter': lastChapter,
         'source': source,
       };
+
+  MangaItem copyWith({
+    String? id,
+    String? title,
+    String? description,
+    String? cover,
+    List<String>? authors,
+    String? status,
+    String? type,
+    List<String>? tags,
+    String? year,
+    String? lastChapter,
+    String? source,
+  }) {
+    return MangaItem(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      description: description ?? this.description,
+      cover: cover ?? this.cover,
+      authors: authors ?? this.authors,
+      status: status ?? this.status,
+      type: type ?? this.type,
+      tags: tags ?? this.tags,
+      year: year ?? this.year,
+      lastChapter: lastChapter ?? this.lastChapter,
+      source: source ?? this.source,
+    );
+  }
 }
 
 class ChapterItem {
@@ -109,7 +118,7 @@ class ChapterItem {
       pages: (json['pages'] as num?)?.toInt() ?? 0,
       group: json['group'] as String? ?? '',
       publishAt: json['publishAt'] as String?,
-      source: _resolveSource(id, json['source'] as String?),
+      source: SourceResolver.resolve(id, json['source'] as String?),
     );
   }
 
@@ -119,6 +128,28 @@ class ChapterItem {
       return '$numStr - $title';
     }
     return numStr;
+  }
+
+  ChapterItem copyWith({
+    String? id,
+    String? number,
+    String? volume,
+    String? title,
+    int? pages,
+    String? group,
+    String? publishAt,
+    String? source,
+  }) {
+    return ChapterItem(
+      id: id ?? this.id,
+      number: number ?? this.number,
+      volume: volume ?? this.volume,
+      title: title ?? this.title,
+      pages: pages ?? this.pages,
+      group: group ?? this.group,
+      publishAt: publishAt ?? this.publishAt,
+      source: source ?? this.source,
+    );
   }
 }
 
@@ -140,6 +171,18 @@ class ChapterPages {
       dataSaver: (json['dataSaver'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? const [],
     );
   }
+
+  ChapterPages copyWith({
+    String? chapterId,
+    List<String>? pages,
+    List<String>? dataSaver,
+  }) {
+    return ChapterPages(
+      chapterId: chapterId ?? this.chapterId,
+      pages: pages ?? this.pages,
+      dataSaver: dataSaver ?? this.dataSaver,
+    );
+  }
 }
 
 class UserAccount {
@@ -158,6 +201,24 @@ class UserAccount {
       id: json['id'] as String? ?? '',
       email: json['email'] as String? ?? '',
       displayName: json['displayName'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'email': email,
+        'displayName': displayName,
+      };
+
+  UserAccount copyWith({
+    String? id,
+    String? email,
+    String? displayName,
+  }) {
+    return UserAccount(
+      id: id ?? this.id,
+      email: email ?? this.email,
+      displayName: displayName ?? this.displayName,
     );
   }
 }
@@ -186,5 +247,221 @@ class CategoryItem {
         'name': name,
         'order': order,
       };
+
+  CategoryItem copyWith({
+    String? id,
+    String? name,
+    int? order,
+  }) {
+    return CategoryItem(
+      id: id ?? this.id,
+      name: name ?? this.name,
+      order: order ?? this.order,
+    );
+  }
 }
 
+/// Typed model representing reading position and completion status in a chapter (#6)
+class ReadProgress {
+  final String mangaId;
+  final String chapterId;
+  final String mangaTitle;
+  final String cover;
+  final String source;
+  final String chapterNumber;
+  final String chapterTitle;
+  final int page;
+  final int totalPages;
+  final bool completed;
+  final DateTime? updatedAt;
+
+  const ReadProgress({
+    required this.mangaId,
+    required this.chapterId,
+    this.mangaTitle = '',
+    this.cover = '',
+    this.source = 'mangadex',
+    this.chapterNumber = '',
+    this.chapterTitle = '',
+    this.page = 1,
+    this.totalPages = 0,
+    this.completed = false,
+    this.updatedAt,
+  });
+
+  factory ReadProgress.fromMap(Map<String, dynamic> map) {
+    final mangaId = map['mangaId']?.toString() ?? '';
+    final chapterId = map['chapterId']?.toString() ?? '';
+    DateTime? dt;
+    final rawDate = map['updatedAt'] ?? map['date'] ?? map['timestamp'];
+    if (rawDate is DateTime) {
+      dt = rawDate;
+    } else if (rawDate != null) {
+      dt = DateTime.tryParse(rawDate.toString());
+    }
+
+    return ReadProgress(
+      mangaId: mangaId,
+      chapterId: chapterId,
+      mangaTitle: map['mangaTitle']?.toString() ?? map['title']?.toString() ?? '',
+      cover: map['cover']?.toString() ?? '',
+      source: SourceResolver.resolve(mangaId, map['source']?.toString()),
+      chapterNumber: map['chapterNumber']?.toString() ?? map['chapter']?.toString() ?? '',
+      chapterTitle: map['chapterTitle']?.toString() ?? '',
+      page: (map['page'] as num?)?.toInt() ?? 1,
+      totalPages: (map['totalPages'] as num?)?.toInt() ?? 0,
+      completed: map['completed'] == true,
+      updatedAt: dt,
+    );
+  }
+
+  factory ReadProgress.fromJson(Map<String, dynamic> json) => ReadProgress.fromMap(json);
+
+  Map<String, dynamic> toMap() => {
+        'mangaId': mangaId,
+        'chapterId': chapterId,
+        'mangaTitle': mangaTitle,
+        'cover': cover,
+        'source': source,
+        'chapterNumber': chapterNumber,
+        'chapterTitle': chapterTitle,
+        'page': page,
+        'totalPages': totalPages,
+        'completed': completed,
+        'updatedAt': (updatedAt ?? DateTime.now()).toIso8601String(),
+      };
+
+  Map<String, dynamic> toJson() => toMap();
+
+  ReadProgress copyWith({
+    String? mangaId,
+    String? chapterId,
+    String? mangaTitle,
+    String? cover,
+    String? source,
+    String? chapterNumber,
+    String? chapterTitle,
+    int? page,
+    int? totalPages,
+    bool? completed,
+    DateTime? updatedAt,
+  }) {
+    return ReadProgress(
+      mangaId: mangaId ?? this.mangaId,
+      chapterId: chapterId ?? this.chapterId,
+      mangaTitle: mangaTitle ?? this.mangaTitle,
+      cover: cover ?? this.cover,
+      source: source ?? this.source,
+      chapterNumber: chapterNumber ?? this.chapterNumber,
+      chapterTitle: chapterTitle ?? this.chapterTitle,
+      page: page ?? this.page,
+      totalPages: totalPages ?? this.totalPages,
+      completed: completed ?? this.completed,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+}
+
+/// Typed model for an entry in the reading history screen (#6)
+class ReadHistoryEntry {
+  final String mangaId;
+  final String chapterId;
+  final String mangaTitle;
+  final String cover;
+  final String source;
+  final String chapterNumber;
+  final String chapterTitle;
+  final int page;
+  final int totalPages;
+  final bool completed;
+  final DateTime? updatedAt;
+
+  const ReadHistoryEntry({
+    required this.mangaId,
+    required this.chapterId,
+    this.mangaTitle = '',
+    this.cover = '',
+    this.source = 'mangadex',
+    this.chapterNumber = '',
+    this.chapterTitle = '',
+    this.page = 1,
+    this.totalPages = 0,
+    this.completed = false,
+    this.updatedAt,
+  });
+
+  DateTime get date => updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+
+  factory ReadHistoryEntry.fromMap(Map<String, dynamic> map) {
+    final mangaId = map['mangaId']?.toString() ?? '';
+    final chapterId = map['chapterId']?.toString() ?? '';
+    DateTime? dt;
+    final rawDate = map['updatedAt'] ?? map['date'] ?? map['timestamp'];
+    if (rawDate is DateTime) {
+      dt = rawDate;
+    } else if (rawDate != null) {
+      dt = DateTime.tryParse(rawDate.toString());
+    }
+
+    return ReadHistoryEntry(
+      mangaId: mangaId,
+      chapterId: chapterId,
+      mangaTitle: map['mangaTitle']?.toString() ?? map['title']?.toString() ?? '',
+      cover: map['cover']?.toString() ?? '',
+      source: SourceResolver.resolve(mangaId, map['source']?.toString()),
+      chapterNumber: map['chapterNumber']?.toString() ?? map['chapter']?.toString() ?? '',
+      chapterTitle: map['chapterTitle']?.toString() ?? '',
+      page: (map['page'] as num?)?.toInt() ?? 1,
+      totalPages: (map['totalPages'] as num?)?.toInt() ?? 0,
+      completed: map['completed'] == true,
+      updatedAt: dt,
+    );
+  }
+
+  factory ReadHistoryEntry.fromJson(Map<String, dynamic> json) => ReadHistoryEntry.fromMap(json);
+
+  Map<String, dynamic> toMap() => {
+        'mangaId': mangaId,
+        'chapterId': chapterId,
+        'mangaTitle': mangaTitle,
+        'cover': cover,
+        'source': source,
+        'chapterNumber': chapterNumber,
+        'chapterTitle': chapterTitle,
+        'page': page,
+        'totalPages': totalPages,
+        'completed': completed,
+        'updatedAt': (updatedAt ?? DateTime.now()).toIso8601String(),
+        'date': (updatedAt ?? DateTime.now()).toIso8601String(),
+      };
+
+  Map<String, dynamic> toJson() => toMap();
+
+  ReadHistoryEntry copyWith({
+    String? mangaId,
+    String? chapterId,
+    String? mangaTitle,
+    String? cover,
+    String? source,
+    String? chapterNumber,
+    String? chapterTitle,
+    int? page,
+    int? totalPages,
+    bool? completed,
+    DateTime? updatedAt,
+  }) {
+    return ReadHistoryEntry(
+      mangaId: mangaId ?? this.mangaId,
+      chapterId: chapterId ?? this.chapterId,
+      mangaTitle: mangaTitle ?? this.mangaTitle,
+      cover: cover ?? this.cover,
+      source: source ?? this.source,
+      chapterNumber: chapterNumber ?? this.chapterNumber,
+      chapterTitle: chapterTitle ?? this.chapterTitle,
+      page: page ?? this.page,
+      totalPages: totalPages ?? this.totalPages,
+      completed: completed ?? this.completed,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+}

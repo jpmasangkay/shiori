@@ -1,5 +1,5 @@
 name: manga_reader
-description: "A new Flutter project."
+description: "Shiori — Multi-source manga, manhwa, and webtoon reader with offline downloads, AniList tracking, and cloud sync."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -40,6 +40,12 @@ dependencies:
   cached_network_image: ^4.0.3
   url_launcher: ^6.3.3
   path_provider: ^2.1.5
+  flutter_secure_storage: ^11.2.0
+  connectivity_plus: ^7.3.2
+  dio: ^5.11.1
+  app_links: ^7.2.2
+  flutter_cache_manager: ^3.4.6
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:
@@ -51,10 +57,6 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
-
-dependency_overrides:
-  path_provider_foundation: 2.4.1
-  shared_preferences_foundation: 2.4.0
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

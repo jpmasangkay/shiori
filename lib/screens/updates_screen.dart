@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/source_resolver.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/skeleton.dart';
@@ -21,6 +22,9 @@ class _UpdatesScreenState extends State<UpdatesScreen>
   Map<String, dynamic> _groups = {};
   bool _loading = false;
   Timer? _realtimeTimer;
+
+  String? _selectedSource;
+  String? _selectedCategory;
 
   @override
   void initState() {
@@ -80,11 +84,83 @@ class _UpdatesScreenState extends State<UpdatesScreen>
     }
   }
 
+  String _itemSource(Map<String, dynamic> item) {
+    final rawSource = item['source']?.toString();
+    if (rawSource != null && rawSource.isNotEmpty) {
+      return SourceResolver.displayName(rawSource);
+    }
+    final group = item['group']?.toString();
+    if (group != null && group.isNotEmpty && group != 'Update') {
+      return SourceResolver.displayName(group);
+    }
+    final mangaId = item['mangaId']?.toString() ?? '';
+    return SourceResolver.displayName(SourceResolver.resolveSource(mangaId));
+  }
+
+  Map<String, Set<String>> _buildMangaCategoryMap() {
+    final library = ApiService.instance.libraryRepo.localLibrary;
+    final map = <String, Set<String>>{};
+    for (final manga in library.values) {
+      final catIds = ApiService.instance.libraryRepo.getMangaCategoryIds(manga.id);
+      final set = <String>{};
+      if (catIds.isNotEmpty) set.addAll(catIds);
+      if (set.isEmpty) set.add('Default');
+      map[manga.id] = set;
+    }
+    return map;
+  }
+
+  Map<String, List<Map<String, dynamic>>> _filteredGroups() {
+    final categoryMap = _buildMangaCategoryMap();
+    final result = <String, List<Map<String, dynamic>>>{};
+
+    for (final entry in _groups.entries) {
+      final list = entry.value as List? ?? const [];
+      final filteredList = <Map<String, dynamic>>[];
+
+      for (final raw in list) {
+        if (raw is! Map<String, dynamic>) continue;
+        final src = _itemSource(raw);
+        if (_selectedSource != null && src != _selectedSource) continue;
+
+        if (_selectedCategory != null) {
+          final mangaId = raw['mangaId']?.toString() ?? '';
+          final cats = categoryMap[mangaId] ?? {'Default'};
+          if (!cats.contains(_selectedCategory)) continue;
+        }
+
+        filteredList.add(raw);
+      }
+
+      if (filteredList.isNotEmpty) {
+        result[entry.key] = filteredList;
+      }
+    }
+
+    return result;
+  }
+
+  Set<String> _extractAvailableSources() {
+    final sources = <String>{};
+    for (final list in _groups.values) {
+      if (list is List) {
+        for (final raw in list) {
+          if (raw is Map<String, dynamic>) {
+            sources.add(_itemSource(raw));
+          }
+        }
+      }
+    }
+    return sources;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final hasRealUpdates = _groups.values.any(
-      (list) => (list as List).isNotEmpty,
-    );
+    final hasRawUpdates = _groups.values.any((list) => (list as List).isNotEmpty);
+    final filtered = _filteredGroups();
+    final hasFilteredUpdates = filtered.values.any((list) => list.isNotEmpty);
+    final availableSources = _extractAvailableSources().toList()..sort();
+    final userCategories = ApiService.instance.getCategories();
 
     return Column(
       children: [
@@ -98,6 +174,8 @@ class _UpdatesScreenState extends State<UpdatesScreen>
             ),
           ],
         ),
+        if (hasRawUpdates && (availableSources.length > 1 || userCategories.length > 1))
+          _buildFilterBar(availableSources, userCategories),
         Expanded(
           child: RefreshIndicator(
             color: AppColors.primary,
@@ -105,7 +183,7 @@ class _UpdatesScreenState extends State<UpdatesScreen>
             onRefresh: _onRefresh,
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 250),
-              child: _loading && !hasRealUpdates
+              child: _loading && !hasRawUpdates
                   ? ListView(
                       key: const ValueKey('updates_loading'),
                       padding: const EdgeInsets.only(top: 8, bottom: 16),
@@ -122,52 +200,66 @@ class _UpdatesScreenState extends State<UpdatesScreen>
                       key: const ValueKey('updates_content'),
                       padding: const EdgeInsets.only(bottom: 16),
                       children: [
-                        if (hasRealUpdates) ...[
-                          for (final entry in _groups.entries) ...[
-                            if ((entry.value as List).isNotEmpty) ...[
-                              _DateHeader(entry.key),
-                              for (final item in entry.value as List)
-                                _ApiUpdateRow(
-                                  item: item as Map<String, dynamic>,
-                                  onTap: () {
-                                    Navigator.of(context).push(
-                                      smoothRoute(
-                                        ReaderScreen(
-                                          chapterId:
-                                              item['id']?.toString() ?? '',
-                                          mangaId:
-                                              item['mangaId']?.toString() ?? '',
-                                          mangaTitle:
-                                              item['mangaTitle'] ?? 'Untitled',
-                                          chapterTitle: item['chapterTitle'],
-                                          coverUrl: item['cover'],
-                                          chapterNumber: item['chapterNumber']
-                                              ?.toString(),
+                        if (hasFilteredUpdates) ...[
+                          for (final entry in filtered.entries) ...[
+                            _DateHeader(entry.key),
+                            for (final item in entry.value)
+                              _ApiUpdateRow(
+                                item: item,
+                                onTap: () {
+                                  Navigator.of(context).push(
+                                    smoothRoute(
+                                      ReaderScreen(
+                                        chapterId: item['id']?.toString() ?? '',
+                                        mangaId: item['mangaId']?.toString() ?? '',
+                                        mangaTitle: item['mangaTitle'] ?? 'Untitled',
+                                        chapterTitle: item['chapterTitle'],
+                                        coverUrl: item['cover'],
+                                        chapterNumber: item['chapterNumber']?.toString(),
+                                      ),
+                                    ),
+                                  );
+                                },
+                                onCoverTap: () {
+                                  Navigator.of(context).push(
+                                    smoothRoute(
+                                      DetailScreen(
+                                        manga: MangaItem(
+                                          id: item['mangaId'] ?? '',
+                                          title: item['mangaTitle'] ?? '',
+                                          cover: item['cover'] ?? '',
                                         ),
                                       ),
-                                    );
-                                  },
-                                  onCoverTap: () {
-                                    Navigator.of(context).push(
-                                      smoothRoute(
-                                        DetailScreen(
-                                          manga: MangaItem(
-                                            id: item['mangaId'] ?? '',
-                                            title: item['mangaTitle'] ?? '',
-                                            cover: item['cover'] ?? '',
-                                          ),
-                                        ),
-                                      ),
-                                    );
-                                  },
-                                ),
-                            ],
+                                    ),
+                                  );
+                                },
+                              ),
                           ],
+                        ] else if (hasRawUpdates) ...[
+                          LayoutBuilder(
+                            builder: (_, _) => SizedBox(
+                              height: 360,
+                              child: EmptyState(
+                                icon: Icons.filter_list_off_rounded,
+                                title: 'No matching updates',
+                                message: 'No chapters match the selected source or category filters.',
+                                action: OutlinedButton(
+                                  onPressed: () {
+                                    setState(() {
+                                      _selectedSource = null;
+                                      _selectedCategory = null;
+                                    });
+                                  },
+                                  child: const Text('Clear Filters'),
+                                ),
+                              ),
+                            ),
+                          ),
                         ] else ...[
                           LayoutBuilder(
-                            builder: (_, c) => SizedBox(
+                            builder: (_, _) => const SizedBox(
                               height: 400,
-                              child: const EmptyState(
+                              child: EmptyState(
                                 icon: Icons.new_releases_outlined,
                                 title: 'No recent updates',
                                 message:
@@ -182,6 +274,94 @@ class _UpdatesScreenState extends State<UpdatesScreen>
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildFilterBar(List<String> sources, List<CategoryItem> categories) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.bg,
+        border: Border(bottom: BorderSide(color: AppColors.outline)),
+      ),
+      padding: const EdgeInsets.only(top: 6, bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Source filter chips
+          if (sources.length > 1)
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  _filterChip(
+                    label: 'All Sources',
+                    isSelected: _selectedSource == null,
+                    onSelected: () => setState(() => _selectedSource = null),
+                  ),
+                  for (final src in sources) ...[
+                    const SizedBox(width: 6),
+                    _filterChip(
+                      label: src,
+                      isSelected: _selectedSource == src,
+                      onSelected: () => setState(() => _selectedSource = src),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          // Category filter chips
+          if (categories.length > 1) ...[
+            const SizedBox(height: 6),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  _filterChip(
+                    label: 'All Categories',
+                    isSelected: _selectedCategory == null,
+                    onSelected: () => setState(() => _selectedCategory = null),
+                  ),
+                  for (final cat in categories) ...[
+                    const SizedBox(width: 6),
+                    _filterChip(
+                      label: cat.name,
+                      isSelected: _selectedCategory == cat.name,
+                      onSelected: () => setState(() => _selectedCategory = cat.name),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _filterChip({
+    required String label,
+    required bool isSelected,
+    required VoidCallback onSelected,
+  }) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: isSelected,
+      onSelected: (_) => onSelected(),
+      backgroundColor: AppColors.surface,
+      selectedColor: AppColors.active,
+      labelStyle: TextStyle(
+        color: isSelected ? AppColors.primary : AppColors.muted,
+        fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+        fontSize: 11.5,
+      ),
+      visualDensity: VisualDensity.compact,
+      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(color: isSelected ? AppColors.primary : AppColors.outline),
+      ),
     );
   }
 }

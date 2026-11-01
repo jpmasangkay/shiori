@@ -106,7 +106,81 @@ class _MoreScreenState extends State<MoreScreen> {
                       ],
                     ),
                     const SizedBox(height: 14),
-                    if (loggedIn)
+                    if (loggedIn) ...[
+                      ValueListenableBuilder<SyncState>(
+                        valueListenable: ApiService.instance.syncState,
+                        builder: (context, state, _) {
+                          final Widget icon;
+                          final String label;
+                          final Color color;
+                          switch (state.status) {
+                            case SyncStatus.syncing:
+                              icon = const SizedBox(
+                                width: 12,
+                                height: 12,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: AppColors.primary,
+                                ),
+                              );
+                              label = 'Syncing...';
+                              color = AppColors.primary;
+                            case SyncStatus.error:
+                              icon = const Icon(
+                                Icons.error_outline_rounded,
+                                size: 14,
+                                color: Colors.orangeAccent,
+                              );
+                              label = 'Sync Error';
+                              color = Colors.orangeAccent;
+                            case SyncStatus.success:
+                            case SyncStatus.idle:
+                              icon = const Icon(
+                                Icons.cloud_done_rounded,
+                                size: 14,
+                                color: Colors.greenAccent,
+                              );
+                              label = 'Synced';
+                              color = Colors.greenAccent;
+                          }
+
+                          return Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            margin: const EdgeInsets.only(bottom: 12),
+                            decoration: BoxDecoration(
+                              color: AppColors.surfaceHigh,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              children: [
+                                icon,
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    label,
+                                    style: AppText.caption.copyWith(color: color, fontWeight: FontWeight.w500),
+                                  ),
+                                ),
+                                InkWell(
+                                  onTap: () => ApiService.instance.syncNow(),
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.sync_rounded, size: 14, color: AppColors.primary),
+                                        const SizedBox(width: 4),
+                                        Text('Sync Now', style: AppText.caption.copyWith(color: AppColors.primary)),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
                       OutlinedButton(
                         onPressed: _confirmLogout,
                         style: OutlinedButton.styleFrom(
@@ -119,8 +193,8 @@ class _MoreScreenState extends State<MoreScreen> {
                           'Sign Out',
                           style: AppText.bodyMedium.copyWith(color: AppColors.muted),
                         ),
-                      )
-                    else
+                      ),
+                    ] else
                       FilledButton(
                         onPressed: () => showAuthModal(context),
                         style: FilledButton.styleFrom(
@@ -278,10 +352,13 @@ class _MoreScreenState extends State<MoreScreen> {
                 icon: Icons.cleaning_services_outlined,
                 title: 'Clear Cache',
                 subtitle: 'Free up local cover and reader cache',
-                onTap: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Cache cleared.')),
-                  );
+                onTap: () async {
+                  await ApiService.instance.clearAllCaches();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Cache cleared successfully.')),
+                    );
+                  }
                 },
               ),
 
@@ -421,8 +498,47 @@ class _MoreScreenState extends State<MoreScreen> {
                       },
                     ),
                   ] else ...[
+                    FilledButton.icon(
+                      onPressed: isSubmitting
+                          ? null
+                          : () async {
+                              setSheetState(() => isSubmitting = true);
+                              final ok = await tracker.startOAuthFlow();
+                              setSheetState(() => isSubmitting = false);
+                              if (ok) {
+                                if (ctx.mounted) Navigator.pop(ctx);
+                                if (mounted) {
+                                  setState(() {});
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('Connected to AniList successfully!')),
+                                  );
+                                }
+                              }
+                            },
+                      icon: const Icon(Icons.open_in_browser_rounded, size: 18),
+                      label: Text('Sign in with AniList (OAuth)', style: AppText.bodySemiBold),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF02A9FF),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size.fromHeight(44),
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        const Expanded(child: Divider(color: AppColors.outline)),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          child: Text('OR USE TOKEN', style: AppText.badge.copyWith(color: AppColors.muted)),
+                        ),
+                        const Expanded(child: Divider(color: AppColors.outline)),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
                     Text(
-                      'Enter your AniList Personal Access Token to connect:',
+                      'Enter your AniList Personal Access Token:',
                       style: AppText.caption,
                     ),
                     const SizedBox(height: 10),
@@ -450,7 +566,7 @@ class _MoreScreenState extends State<MoreScreen> {
                     const SizedBox(height: 16),
                     SizedBox(
                       width: double.infinity,
-                      child: FilledButton(
+                      child: OutlinedButton(
                         onPressed: isSubmitting
                             ? null
                             : () async {
@@ -477,8 +593,8 @@ class _MoreScreenState extends State<MoreScreen> {
                                   }
                                 }
                               },
-                        style: FilledButton.styleFrom(
-                          backgroundColor: const Color(0xFF02A9FF),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Color(0xFF02A9FF)),
                           minimumSize: const Size.fromHeight(44),
                           padding: const EdgeInsets.symmetric(vertical: 12),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
@@ -487,9 +603,9 @@ class _MoreScreenState extends State<MoreScreen> {
                             ? const SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                                child: CircularProgressIndicator(color: Color(0xFF02A9FF), strokeWidth: 2),
                               )
-                            : Text('Connect AniList', style: AppText.bodySemiBold),
+                            : Text('Connect with Token', style: AppText.bodySemiBold.copyWith(color: const Color(0xFF02A9FF))),
                       ),
                     ),
                   ],
@@ -573,34 +689,54 @@ class _MoreScreenState extends State<MoreScreen> {
   }
 
   void _confirmLogout() {
+    var clearLocalData = false;
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
-        scrollable: true,
-        backgroundColor: AppColors.surface,
-        title: Text('Sign Out', style: AppText.sheetTitle),
-        content: Text(
-          'Are you sure you want to sign out? Your library remains saved to your account.',
-          style: AppText.body,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            style: TextButton.styleFrom(minimumSize: const Size(44, 44)),
-            child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          scrollable: true,
+          backgroundColor: AppColors.surface,
+          title: Text('Sign Out', style: AppText.sheetTitle),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Are you sure you want to sign out? Your library remains saved to your account.',
+                style: AppText.body,
+              ),
+              const SizedBox(height: 14),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: clearLocalData,
+                activeColor: AppColors.primary,
+                title: Text('Clear local library & history from this device', style: AppText.bodyMedium),
+                subtitle: Text('Removes cached local data from this device for privacy. Cloud backup remains intact.', style: AppText.caption),
+                onChanged: (val) {
+                  setDialogState(() => clearLocalData = val ?? false);
+                },
+              ),
+            ],
           ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx);
-              ApiService.instance.logout();
-            },
-            style: FilledButton.styleFrom(
-              backgroundColor: AppColors.primary,
-              minimumSize: const Size(64, 44),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              style: TextButton.styleFrom(minimumSize: const Size(44, 44)),
+              child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
             ),
-            child: Text('Sign Out', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
-          ),
-        ],
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                ApiService.instance.logout(clearLocalData: clearLocalData);
+              },
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                minimumSize: const Size(64, 44),
+              ),
+              child: Text('Sign Out', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
+            ),
+          ],
+        ),
       ),
     );
   }

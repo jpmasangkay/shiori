@@ -1,7 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
+import 'package:app_links/app_links.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:manga_reader/services/app_logger.dart';
+import 'package:manga_reader/services/secure_token_store.dart';
 
 class AniListUser {
   final int id;
@@ -15,6 +20,7 @@ class AniListUser {
   });
 }
 
+/// AniList tracking service with SecureTokenStore (#7) and OAuth2 PKCE/Implicit flow (#24)
 class TrackerService extends ChangeNotifier {
   TrackerService._();
   static final TrackerService instance = TrackerService._();
@@ -24,6 +30,14 @@ class TrackerService extends ChangeNotifier {
   static const String _keyUserAvatar = 'anilist_user_avatar';
   static const String _keyAutoUpdate = 'tracker_auto_update_enabled';
 
+  // Default Shiori AniList Client ID (can be overridden by user or developer)
+  static const String defaultClientId = '17865';
+
+  final SecureTokenStore _tokenStore = SecureTokenStore.instance;
+  final AppLinks _appLinks = AppLinks();
+  StreamSubscription<Uri>? _linkSubscription;
+
+  SharedPreferences? _cachedPrefs;
   String? _token;
   AniListUser? _currentUser;
   bool _autoUpdateEnabled = true;
@@ -35,7 +49,12 @@ class TrackerService extends ChangeNotifier {
   Future<void> init() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _token = prefs.getString(_keyToken);
+      _cachedPrefs = prefs;
+
+      // Migrate legacy prefs if present
+      await _tokenStore.migrateLegacyPrefs(prefs);
+
+      _token = await _tokenStore.read(_keyToken);
       _autoUpdateEnabled = prefs.getBool(_keyAutoUpdate) ?? true;
 
       final name = prefs.getString(_keyUserName);
@@ -45,18 +64,69 @@ class TrackerService extends ChangeNotifier {
       }
       notifyListeners();
 
+      _initDeepLinks();
+
       // Silent verify in background
       if (_token != null) {
         _verifyToken(_token!);
       }
     } catch (e) {
-      debugPrint('TrackerService init error: $e');
+      AppLogger.warn('TrackerService init error', e);
+    }
+  }
+
+  void _initDeepLinks() {
+    try {
+      _linkSubscription = _appLinks.uriLinkStream.listen(
+        (uri) {
+          handleAuthRedirect(uri);
+        },
+        onError: (err) {
+          AppLogger.warn('AppLinks stream error: $err');
+        },
+      );
+    } catch (_) {}
+  }
+
+  /// Handles incoming `shiori://auth/anilist#access_token=...` callback (#24)
+  Future<bool> handleAuthRedirect(Uri uri) async {
+    if (uri.scheme == 'shiori' && uri.host == 'auth') {
+      String? token;
+
+      // 1. Check fragment (e.g. #access_token=XYZ&token_type=Bearer)
+      if (uri.fragment.isNotEmpty) {
+        final fragParams = Uri.splitQueryString(uri.fragment);
+        token = fragParams['access_token'];
+      }
+
+      // 2. Check query parameter (e.g. ?access_token=XYZ)
+      token ??= uri.queryParameters['access_token'];
+
+      if (token != null && token.isNotEmpty) {
+        AppLogger.info('Received AniList OAuth token from redirect');
+        return await loginWithToken(token);
+      }
+    }
+    return false;
+  }
+
+  /// Opens browser to initiate AniList OAuth login (#24)
+  Future<bool> startOAuthFlow({String? clientId}) async {
+    final cid = (clientId != null && clientId.isNotEmpty) ? clientId : defaultClientId;
+    final authUrl = Uri.parse(
+      'https://anilist.co/api/v2/oauth/authorize?client_id=$cid&response_type=token',
+    );
+    try {
+      return await launchUrl(authUrl, mode: LaunchMode.externalApplication);
+    } catch (e) {
+      AppLogger.warn('Failed to launch AniList OAuth URL', e);
+      return false;
     }
   }
 
   Future<void> setAutoUpdate(bool enabled) async {
     _autoUpdateEnabled = enabled;
-    final prefs = await SharedPreferences.getInstance();
+    final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
     await prefs.setBool(_keyAutoUpdate, enabled);
     notifyListeners();
   }
@@ -69,8 +139,10 @@ class TrackerService extends ChangeNotifier {
     if (user != null) {
       _token = cleanToken;
       _currentUser = user;
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_keyToken, cleanToken);
+
+      await _tokenStore.write(_keyToken, cleanToken);
+
+      final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
       await prefs.setString(_keyUserName, user.name);
       if (user.avatarUrl != null) {
         await prefs.setString(_keyUserAvatar, user.avatarUrl!);
@@ -84,8 +156,9 @@ class TrackerService extends ChangeNotifier {
   Future<void> logout() async {
     _token = null;
     _currentUser = null;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove(_keyToken);
+    await _tokenStore.delete(_keyToken);
+
+    final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
     await prefs.remove(_keyUserName);
     await prefs.remove(_keyUserAvatar);
     notifyListeners();
@@ -127,7 +200,7 @@ class TrackerService extends ChangeNotifier {
         }
       }
     } catch (e) {
-      debugPrint('AniList verifyToken error: $e');
+      AppLogger.warn('AniList verifyToken error', e);
     }
     return null;
   }
@@ -166,7 +239,7 @@ class TrackerService extends ChangeNotifier {
         return mediaId;
       }
     } catch (e) {
-      debugPrint('AniList searchMangaId error: $e');
+      AppLogger.warn('AniList searchMangaId error', e);
     }
     return null;
   }
@@ -210,7 +283,7 @@ class TrackerService extends ChangeNotifier {
 
       return res.statusCode == 200;
     } catch (e) {
-      debugPrint('AniList updateProgress error: $e');
+      AppLogger.warn('AniList updateProgress error', e);
       return false;
     }
   }
@@ -233,10 +306,16 @@ class TrackerService extends ChangeNotifier {
           mediaId: mediaId,
           chapterProgress: numVal,
         );
-        debugPrint('TrackerService: Updated AniList for $mangaTitle to Ch. $numVal');
+        AppLogger.info('TrackerService: Updated AniList for $mangaTitle to Ch. $numVal');
       }
     } catch (e) {
-      debugPrint('TrackerService onChapterFinished error: $e');
+      AppLogger.warn('TrackerService onChapterFinished error', e);
     }
+  }
+
+  @override
+  void dispose() {
+    _linkSubscription?.cancel();
+    super.dispose();
   }
 }

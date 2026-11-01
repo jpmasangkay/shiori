@@ -19,8 +19,10 @@ const librarySchema = new mongoose.Schema(
     cover: { type: String, default: '' },
     type: { type: String, enum: ['manga', 'manhwa', 'manhua'], default: 'manga' },
     status: { type: String, default: '' },
+    source: { type: String, default: '' },
     chapterCount: { type: Number, default: 0 },
     latestChapter: { type: String, default: '' },
+    categories: { type: [String], default: [] },
     addedAt: { type: Date, default: Date.now },
   },
   { timestamps: true },
@@ -30,6 +32,20 @@ librarySchema.index({ user: 1, addedAt: -1 });
 
 export const LibraryEntry = mongoose.model('LibraryEntry', librarySchema);
 
+const userCategorySchema = new mongoose.Schema(
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    categoryId: { type: String, required: true },
+    name: { type: String, required: true, trim: true, maxlength: 60 },
+    order: { type: Number, default: 0 },
+  },
+  { timestamps: true },
+);
+userCategorySchema.index({ user: 1, categoryId: 1 }, { unique: true });
+userCategorySchema.index({ user: 1, order: 1 });
+
+export const UserCategory = mongoose.model('UserCategory', userCategorySchema);
+
 /** One document per (user, chapter): powers read marks, resume and History. */
 const progressSchema = new mongoose.Schema(
   {
@@ -38,6 +54,7 @@ const progressSchema = new mongoose.Schema(
     chapterId: { type: String, required: true },
     mangaTitle: { type: String, default: '' },
     cover: { type: String, default: '' },
+    source: { type: String, default: '' },
     chapterNumber: { type: String, default: '' },
     chapterTitle: { type: String, default: '' },
     page: { type: Number, default: 1 },

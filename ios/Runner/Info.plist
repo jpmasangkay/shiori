@@ -8,6 +8,19 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Shiori</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>shiori.auth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>shiori</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

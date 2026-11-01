@@ -88,6 +88,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   BoxFit _fitMode = BoxFit.fitWidth;
   bool _enableTapZones = true;
   bool _invertTapZones = false;
+  double _brightness = 1.0;
+  double _tint = 0.0;
 
   final _scrollController = ScrollController();
   late PageController _pageController;
@@ -133,6 +135,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
         setState(() {
           _enableTapZones = prefs.getBool('reader_enable_tap_zones') ?? true;
           _invertTapZones = prefs.getBool('reader_invert_tap_zones') ?? false;
+          _brightness = prefs.getDouble('reader_brightness') ?? 1.0;
+          _tint = prefs.getDouble('reader_tint') ?? 0.0;
         });
       }
     });
@@ -168,6 +172,106 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _setInvertTapZones(bool val) {
     setState(() => _invertTapZones = val);
     SharedPreferences.getInstance().then((prefs) => prefs.setBool('reader_invert_tap_zones', val));
+  }
+
+  void _setBrightness(double val) {
+    setState(() => _brightness = val.clamp(0.2, 1.0));
+    SharedPreferences.getInstance().then((prefs) => prefs.setDouble('reader_brightness', _brightness));
+  }
+
+  void _setTint(double val) {
+    setState(() => _tint = val.clamp(0.0, 1.0));
+    SharedPreferences.getInstance().then((prefs) => prefs.setDouble('reader_tint', _tint));
+  }
+
+  void _showDisplaySheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('DISPLAY & COMFORT', style: AppText.sectionHeader),
+                    if (_brightness < 0.99 || _tint > 0.01)
+                      TextButton(
+                        onPressed: () {
+                          _setBrightness(1.0);
+                          _setTint(0.0);
+                          setSheetState(() {});
+                        },
+                        child: Text('Reset', style: AppText.caption.copyWith(color: AppColors.primary)),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Icon(Icons.brightness_medium_rounded, size: 20, color: AppColors.muted),
+                    const SizedBox(width: 8),
+                    Text('Brightness', style: AppText.bodyMedium),
+                    const Spacer(),
+                    Text('${(_brightness * 100).round()}%', style: AppText.caption),
+                  ],
+                ),
+                SliderTheme(
+                  data: SliderTheme.of(ctx).copyWith(
+                    activeTrackColor: AppColors.primary,
+                    thumbColor: AppColors.primary,
+                    inactiveTrackColor: AppColors.outline,
+                  ),
+                  child: Slider(
+                    min: 0.2,
+                    max: 1.0,
+                    value: _brightness,
+                    onChanged: (val) {
+                      _setBrightness(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(Icons.wb_sunny_rounded, size: 20, color: Color(0xFFFFA726)),
+                    const SizedBox(width: 8),
+                    Text('Eye-Care Warm Tint', style: AppText.bodyMedium),
+                    const Spacer(),
+                    Text('${(_tint * 100).round()}%', style: AppText.caption),
+                  ],
+                ),
+                SliderTheme(
+                  data: SliderTheme.of(ctx).copyWith(
+                    activeTrackColor: const Color(0xFFFFA726),
+                    thumbColor: const Color(0xFFFFA726),
+                    inactiveTrackColor: AppColors.outline,
+                  ),
+                  child: Slider(
+                    min: 0.0,
+                    max: 1.0,
+                    value: _tint,
+                    onChanged: (val) {
+                      _setTint(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -217,7 +321,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           _page = _page.clamp(1, _totalPages);
         }
       });
-      _precacheRange(res.pages, 0, 3);
+      _precacheSlidingWindow(res.pages, 0);
 
       if (idx == _currentChapterIndex) {
         _syncProgress(_page);
@@ -280,6 +384,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
         );
       }
     }
+  }
+
+  void _precacheSlidingWindow(List<String> pages, int currentIndex, {int window = 2}) {
+    if (!mounted || pages.isEmpty) return;
+    final start = math.max(0, currentIndex - window);
+    final count = (window * 2) + 1;
+    _precacheRange(pages, start, count);
   }
 
   void _syncProgress(int currentPage) {
@@ -404,12 +515,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _page = newPage;
       });
       _syncProgress(newPage);
-      _precacheRange(pages, pageIndex + 1, 3);
+      _precacheSlidingWindow(pages, pageIndex);
       _loadChapter(chapterIndex + 1);
     } else if (newPage != _page) {
       setState(() => _page = newPage);
       _syncProgress(newPage);
-      _precacheRange(pages, pageIndex + 1, 3);
+      _precacheSlidingWindow(pages, pageIndex);
     }
   }
 
@@ -662,6 +773,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
               );
             },
           ),
+          // Brightness dimming overlay
+          if (_brightness < 0.99)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: ColoredBox(
+                  color: Colors.black.withValues(alpha: (1.0 - _brightness).clamp(0.0, 0.8)),
+                ),
+              ),
+            ),
+          // Warm eye-care tint overlay
+          if (_tint > 0.01)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: ColoredBox(
+                  color: const Color(0xFFFFA726).withValues(alpha: (_tint * 0.35).clamp(0.0, 0.45)),
+                ),
+              ),
+            ),
           // Top Bar
           AnimatedPositioned(
             duration: const Duration(milliseconds: 200),
@@ -889,13 +1018,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
         final pageIdx = item.pageIndex ?? 0;
         final chapterId = _chapters[chIdx].id;
         final url = item.url!;
-        return _ReaderPageImage(
-          url: url,
-          fallbackUrls: _fallbackUrlsFor(chapterId, pageIdx, url),
-          pageNumber: pageIdx + 1,
-          fit: BoxFit.fitWidth,
-          expandWidth: true,
-          onReloadChapter: () => _reloadChapterPages(chIdx),
+        return ZoomablePageWrapper(
+          child: _ReaderPageImage(
+            url: url,
+            fallbackUrls: _fallbackUrlsFor(chapterId, pageIdx, url),
+            pageNumber: pageIdx + 1,
+            fit: BoxFit.fitWidth,
+            expandWidth: true,
+            onReloadChapter: () => _reloadChapterPages(chIdx),
+          ),
         );
 
       case _ItemType.divider:
@@ -1017,7 +1148,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           if (_page != idx + 1) {
             setState(() => _page = idx + 1);
             _syncProgress(idx + 1);
-            _precacheRange(pages, idx + 1, 3);
+            _precacheSlidingWindow(pages, idx);
             // Prefetch next chapter when nearing the end
             if (idx >= pages.length - 3 && chapterIdx + 1 < _chapters.length) {
               _loadChapter(chapterIdx + 1);
@@ -1031,7 +1162,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         if (i < pages.length) {
           final pageUrl = pages[i];
           return Center(
-            child: InteractiveViewer(
+            child: ZoomablePageWrapper(
               child: _ReaderPageImage(
                 url: pageUrl,
                 fallbackUrls: _fallbackUrlsFor(curChapter.id, i, pageUrl),
@@ -1151,6 +1282,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 );
               }
             },
+          ),
+          BarIcon(
+            Icons.tune_rounded,
+            label: 'Display & Filter',
+            onTap: _showDisplaySheet,
           ),
           BarIcon(
             Icons.refresh_rounded,
@@ -1438,6 +1574,54 @@ class _FeedItem {
       _FeedItem._(type: _ItemType.nextTrigger, nextChapter: chapter, chapterIndex: chapterIndex);
 
   factory _FeedItem.endOfManga() => const _FeedItem._(type: _ItemType.endOfManga);
+}
+
+class ZoomablePageWrapper extends StatefulWidget {
+  const ZoomablePageWrapper({super.key, required this.child});
+  final Widget child;
+
+  @override
+  State<ZoomablePageWrapper> createState() => _ZoomablePageWrapperState();
+}
+
+class _ZoomablePageWrapperState extends State<ZoomablePageWrapper> {
+  final TransformationController _controller = TransformationController();
+  TapDownDetails? _doubleTapDetails;
+
+  void _handleDoubleTap() {
+    final currentScale = _controller.value.getMaxScaleOnAxis();
+    if (currentScale > 1.08) {
+      _controller.value = Matrix4.identity();
+    } else {
+      final position = _doubleTapDetails?.localPosition ?? Offset.zero;
+      final zoomed = Matrix4.identity()
+        ..translateByDouble(-position.dx * 1.5, -position.dy * 1.5, 0.0, 1.0)
+        ..scaleByDouble(2.5, 2.5, 1.0, 1.0);
+      _controller.value = zoomed;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onDoubleTapDown: (details) => _doubleTapDetails = details,
+      onDoubleTap: _handleDoubleTap,
+      child: InteractiveViewer(
+        transformationController: _controller,
+        minScale: 1.0,
+        maxScale: 4.0,
+        clipBehavior: Clip.none,
+        child: widget.child,
+      ),
+    );
+  }
 }
 
 class _ReaderPageImage extends StatefulWidget {

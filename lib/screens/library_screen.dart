@@ -105,8 +105,123 @@ class _LibraryScreenState extends State<LibraryScreen>
       items.sort(
         (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
       );
+    } else if (s.sort == LibrarySort.lastRead) {
+      items.sort((a, b) {
+        final dtA = ApiService.instance.historyRepo.localProgress[a.id]?.updatedAt ?? DateTime(1970);
+        final dtB = ApiService.instance.historyRepo.localProgress[b.id]?.updatedAt ?? DateTime(1970);
+        return dtB.compareTo(dtA);
+      });
+    } else if (s.sort == LibrarySort.lastUpdated) {
+      items.sort((a, b) {
+        final chA = double.tryParse(a.lastChapter ?? '') ?? 0.0;
+        final chB = double.tryParse(b.lastChapter ?? '') ?? 0.0;
+        return chB.compareTo(chA);
+      });
+    } else if (s.sort == LibrarySort.unreadCount) {
+      items.sort((a, b) {
+        final uA = ApiService.instance.getUnreadCount(a.id);
+        final uB = ApiService.instance.getUnreadCount(b.id);
+        return uB.compareTo(uA);
+      });
     }
     return items;
+  }
+
+  Future<void> _removeMangaWithUndo(MangaItem manga) async {
+    final originalCategories = ApiService.instance.getMangaCategoryIds(manga.id);
+    await ApiService.instance.removeFromLibrary(manga.id);
+    if (!mounted) return;
+    _loadUserLibrary(silent: true);
+
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Removed "${manga.title}" from library'),
+        backgroundColor: AppColors.surfaceHigh,
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: 'Undo',
+          textColor: AppColors.primary,
+          onPressed: () async {
+            await ApiService.instance.addToLibrary(manga);
+            if (originalCategories.isNotEmpty) {
+              await ApiService.instance.setMangaCategories(manga.id, originalCategories, manga: manga);
+            }
+            if (mounted) _loadUserLibrary(silent: true);
+          },
+        ),
+      ),
+    );
+  }
+
+  void _showMangaContextMenu(MangaItem manga) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 32,
+                height: 4,
+                margin: const EdgeInsets.only(top: 4, bottom: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.read,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 36,
+                      height: 48,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: CoverImage(imageUrl: manga.cover, mangaId: manga.id),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        manga.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.cardTitle,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(color: AppColors.outline, height: 16),
+              ListTile(
+                leading: const Icon(Icons.label_outline_rounded, color: AppColors.primary),
+                title: const Text('Set Categories', style: TextStyle(color: AppColors.text)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showMangaCategoryDialog(manga);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                title: const Text('Remove from Library', style: TextStyle(color: Colors.redAccent)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _removeMangaWithUndo(manga);
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _promptCreateCategory({VoidCallback? onCreated}) async {
@@ -622,6 +737,29 @@ class _LibraryScreenState extends State<LibraryScreen>
               title: 'Library',
               branded: true,
               actions: [
+                PopupMenuButton<LibrarySort>(
+                  icon: const Icon(Icons.sort_rounded, size: 22, color: AppColors.muted),
+                  tooltip: 'Sort library',
+                  color: AppColors.surface,
+                  initialValue: s.sort,
+                  onSelected: (val) => s.update(() => s.sort = val),
+                  itemBuilder: (ctx) => [
+                    for (final sortOpt in LibrarySort.values)
+                      PopupMenuItem(
+                        value: sortOpt,
+                        child: Row(
+                          children: [
+                            if (s.sort == sortOpt)
+                              const Icon(Icons.check_rounded, size: 16, color: AppColors.primary)
+                            else
+                              const SizedBox(width: 16),
+                            const SizedBox(width: 8),
+                            Text(sortOpt.label, style: AppText.body),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
                 BarIcon(
                   Icons.playlist_add_rounded,
                   label: 'Manage categories',
@@ -699,11 +837,26 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   Widget _emptyState() {
     if (_userLibrary.isEmpty) {
-      return const EmptyState(
-        icon: Icons.collections_bookmark_outlined,
-        title: 'Your library is empty',
-        message:
-            'Open any title in Browse and tap "In Library" to bookmark it.',
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const EmptyState(
+            icon: Icons.collections_bookmark_outlined,
+            title: 'Your library is empty',
+            message:
+                'Open any title in Browse and tap "In Library" to bookmark it.',
+          ),
+          const SizedBox(height: 12),
+          TextButton.icon(
+            onPressed: _showOnboardingSheet,
+            icon: const Icon(Icons.help_outline_rounded, size: 18, color: AppColors.primary),
+            label: Text(
+              'How it works (3-step guide)',
+              style: AppText.bodyMedium.copyWith(color: AppColors.primary),
+            ),
+          ),
+        ],
       );
     }
     if (_category == null) {
@@ -717,6 +870,114 @@ class _LibraryScreenState extends State<LibraryScreen>
       icon: Icons.filter_alt_off_outlined,
       title: 'Nothing in this category',
       message: 'Long-press any manga cover to assign it to this category.',
+    );
+  }
+
+  void _showOnboardingSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 32,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: AppColors.read,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Text('Welcome to Shiori', style: AppText.sheetTitle),
+              const SizedBox(height: 6),
+              Text(
+                'Read manga, manhwa & webtoons seamlessly across all your sources.',
+                style: AppText.caption,
+              ),
+              const SizedBox(height: 18),
+              _buildOnboardingStep(
+                step: '1',
+                title: 'Browse Sources & Extensions',
+                description: 'Discover popular titles or search across MangaDex, Asura Scans, WeebCentral, and extensions.',
+                icon: Icons.explore_rounded,
+              ),
+              const SizedBox(height: 12),
+              _buildOnboardingStep(
+                step: '2',
+                title: 'Bookmark & Organize',
+                description: 'Add favorites to your Library and sort them into custom categories like Reading or Favorites.',
+                icon: Icons.collections_bookmark_rounded,
+              ),
+              const SizedBox(height: 12),
+              _buildOnboardingStep(
+                step: '3',
+                title: 'Read & Auto-Sync',
+                description: 'Enjoy offline downloads, AniList tracking, and cross-device sync powered by cloud backup.',
+                icon: Icons.sync_rounded,
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    minimumSize: const Size(double.infinity, 48),
+                  ),
+                  child: Text('Get Started', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildOnboardingStep({
+    required String step,
+    required String title,
+    required String description,
+    required IconData icon,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: AppColors.surfaceHigh,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppColors.outline),
+          ),
+          child: Center(
+            child: Icon(icon, size: 18, color: AppColors.primary),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: AppText.bodyMedium.copyWith(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 2),
+              Text(description, style: AppText.caption),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -746,7 +1007,7 @@ class _LibraryScreenState extends State<LibraryScreen>
           mode: s.mode,
           unreadCount: unread,
           onTap: () => _openManga(manga),
-          onLongPress: () => _showMangaCategoryDialog(manga),
+          onLongPress: () => _showMangaContextMenu(manga),
         );
       },
     );
@@ -760,75 +1021,86 @@ class _LibraryScreenState extends State<LibraryScreen>
       itemBuilder: (_, i) {
         final manga = items[i];
         final unread = ApiService.instance.getUnreadCount(manga.id);
-        return InkWell(
-          onTap: () => _openManga(manga),
-          onLongPress: () => _showMangaCategoryDialog(manga),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 44,
-                  height: 58,
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: CoverImage(
-                      imageUrl: manga.cover,
-                      mangaId: manga.id,
-                      saturation: .6,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        manga.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppText.bodyMedium,
+        return Dismissible(
+          key: ValueKey('lib_dismiss_${manga.id}'),
+          direction: DismissDirection.endToStart,
+          background: Container(
+            alignment: Alignment.centerRight,
+            padding: const EdgeInsets.only(right: 20),
+            color: Colors.red.shade900,
+            child: const Icon(Icons.delete_outline_rounded, color: Colors.white),
+          ),
+          onDismissed: (_) => _removeMangaWithUndo(manga),
+          child: InkWell(
+            onTap: () => _openManga(manga),
+            onLongPress: () => _showMangaContextMenu(manga),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 44,
+                    height: 58,
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(4),
+                      child: CoverImage(
+                        imageUrl: manga.cover,
+                        mangaId: manga.id,
+                        saturation: .6,
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        manga.authors.isNotEmpty
-                            ? manga.authors.first
-                            : manga.type.toUpperCase(),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: AppText.caption,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          manga.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.bodyMedium,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          manga.authors.isNotEmpty
+                              ? manga.authors.first
+                              : manga.type.toUpperCase(),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption,
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (unread > 0)
+                    Container(
+                      margin: const EdgeInsets.only(right: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 2,
                       ),
-                    ],
-                  ),
-                ),
-                if (unread > 0)
-                  Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 7,
-                      vertical: 2,
+                      decoration: BoxDecoration(
+                        color: AppColors.primary,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        unread > 99 ? '99+' : '$unread',
+                        style: AppText.badge.copyWith(color: AppColors.onPrimary),
+                      ),
                     ),
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      borderRadius: BorderRadius.circular(10),
+                  IconButton(
+                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                    icon: const Icon(
+                      Icons.label_outline_rounded,
+                      size: 18,
+                      color: AppColors.muted,
                     ),
-                    child: Text(
-                      unread > 99 ? '99+' : '$unread',
-                      style: AppText.badge.copyWith(color: AppColors.onPrimary),
-                    ),
+                    tooltip: 'Set categories',
+                    onPressed: () => _showMangaCategoryDialog(manga),
                   ),
-                IconButton(
-                  constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                  icon: const Icon(
-                    Icons.label_outline_rounded,
-                    size: 18,
-                    color: AppColors.muted,
-                  ),
-                  tooltip: 'Set categories',
-                  onPressed: () => _showMangaCategoryDialog(manga),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         );
