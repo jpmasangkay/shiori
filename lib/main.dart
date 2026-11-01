@@ -43,9 +43,33 @@ class RootShell extends StatefulWidget {
   State<RootShell> createState() => _RootShellState();
 }
 
-class _RootShellState extends State<RootShell> {
+class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   int _index = 0;
   final Set<int> _loadedTabs = {0};
+  DateTime? _lastResumeSync;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && ApiService.instance.isLoggedIn) {
+      final now = DateTime.now();
+      if (_lastResumeSync == null || now.difference(_lastResumeSync!) > const Duration(seconds: 15)) {
+        _lastResumeSync = now;
+        ApiService.instance.syncAllCloudData();
+      }
+    }
+  }
 
   static const _destinations = [
     (Icons.collections_bookmark_outlined, Icons.collections_bookmark_rounded, 'Library'),
