@@ -84,8 +84,17 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   List<MangaItem> _visibleItems(DisplaySettings s) {
     List<MangaItem> items;
-    if (_category == null) {
+    if (!s.categoryTabs) {
       items = [..._userLibrary];
+    } else if (_category == null) {
+      final validCatIds = ApiService.instance
+          .getCategories()
+          .map((c) => c.id)
+          .toSet();
+      items = _userLibrary.where((m) {
+        final catIds = ApiService.instance.getMangaCategoryIds(m.id);
+        return !catIds.any(validCatIds.contains);
+      }).toList();
     } else {
       items = _userLibrary.where((m) {
         final catIds = ApiService.instance.getMangaCategoryIds(m.id);
@@ -595,8 +604,12 @@ class _LibraryScreenState extends State<LibraryScreen>
       listenable: displaySettings,
       builder: (context, _) {
         final s = displaySettings;
-        final items = _visibleItems(s);
         final userCats = ApiService.instance.getCategories();
+        if (_category != null && !userCats.any((c) => c.id == _category)) {
+          _category = null;
+        }
+        final items = _visibleItems(s);
+        final validCatIds = userCats.map((c) => c.id).toSet();
 
         final tabCategories = <(String?, String)>[
           (null, 'All'),
@@ -626,7 +639,13 @@ class _LibraryScreenState extends State<LibraryScreen>
                 categories: tabCategories,
                 selected: _category,
                 counts: {
-                  null: _userLibrary.length,
+                  null: _userLibrary
+                      .where(
+                        (m) => !ApiService.instance
+                            .getMangaCategoryIds(m.id)
+                            .any(validCatIds.contains),
+                      )
+                      .length,
                   for (final c in userCats)
                     c.id: _userLibrary
                         .where(
@@ -685,6 +704,13 @@ class _LibraryScreenState extends State<LibraryScreen>
         title: 'Your library is empty',
         message:
             'Open any title in Browse and tap "In Library" to bookmark it.',
+      );
+    }
+    if (_category == null) {
+      return const EmptyState(
+        icon: Icons.filter_alt_off_outlined,
+        title: 'No uncategorized titles',
+        message: 'All titles in your library are organized into categories.',
       );
     }
     return const EmptyState(

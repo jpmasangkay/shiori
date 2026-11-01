@@ -207,6 +207,82 @@ void main() {
     expect(find.text('In Library', skipOffstage: false), findsOneWidget);
   });
 
+  testWidgets('Titles put in a category are removed from All tab and restored when uncategorized', (tester) async {
+    tester.view.physicalSize = const Size(390 * 3, 844 * 3);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.reset);
+
+    const mangaA = MangaItem(
+      id: 'ext:test::manga_a',
+      title: 'Chainsaw Man',
+      cover: 'https://example.com/csm.jpg',
+      type: 'manga',
+    );
+    const mangaB = MangaItem(
+      id: 'ext:test::manhwa_b',
+      title: 'Solo Leveling',
+      cover: 'https://example.com/solo.jpg',
+      type: 'manhwa',
+    );
+
+    await ApiService.instance.addToLibrary(mangaA);
+    await ApiService.instance.addToLibrary(mangaB);
+    await ApiService.instance.setMangaCategories(mangaA.id, []);
+    await ApiService.instance.setMangaCategories(mangaB.id, []);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildTheme(),
+        home: const Scaffold(body: LibraryScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Initially both are uncategorized, so both appear in All (2)
+    expect(find.text('All 2'), findsOneWidget);
+    expect(find.text('Chainsaw Man'), findsOneWidget);
+    expect(find.text('Solo Leveling'), findsOneWidget);
+
+    // Put mangaA into 'Reading' category
+    await ApiService.instance.toggleMangaCategory(mangaA.id, 'reading', manga: mangaA);
+    await tester.pumpAndSettle();
+
+    // mangaA should now be REMOVED from All, leaving only mangaB in All (1)
+    expect(find.text('All 1'), findsOneWidget);
+    expect(find.text('Solo Leveling'), findsOneWidget);
+    expect(find.text('Chainsaw Man'), findsNothing);
+
+    // Switch to Reading tab
+    await tester.tap(find.text('Reading 1'));
+    await tester.pumpAndSettle();
+
+    // mangaA is in Reading, mangaB is not
+    expect(find.text('Chainsaw Man'), findsOneWidget);
+    expect(find.text('Solo Leveling'), findsNothing);
+
+    // Put mangaB into 'Completed' category
+    await ApiService.instance.toggleMangaCategory(mangaB.id, 'completed', manga: mangaB);
+    await tester.pumpAndSettle();
+
+    // Switch back to All tab
+    await tester.tap(find.text('All 0'));
+    await tester.pumpAndSettle();
+
+    // Both are categorized, so All has no titles and shows empty state
+    expect(find.text('Chainsaw Man'), findsNothing);
+    expect(find.text('Solo Leveling'), findsNothing);
+    expect(find.text('No uncategorized titles'), findsOneWidget);
+
+    // Remove mangaA from 'Reading' (clearing its category)
+    await ApiService.instance.toggleMangaCategory(mangaA.id, 'reading');
+    await tester.pumpAndSettle();
+
+    // mangaA returns to All
+    expect(find.text('All 1'), findsOneWidget);
+    expect(find.text('Chainsaw Man'), findsOneWidget);
+    expect(find.text('Solo Leveling'), findsNothing);
+  });
+
   testWidgets('Screens render without overflow at text scale 1.3', (tester) async {
     await boot(tester, textScale: 1.3);
     expect(tester.takeException(), isNull);
