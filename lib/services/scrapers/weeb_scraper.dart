@@ -7,10 +7,7 @@ class WeebScraper {
   final http.Client Function() _clientProvider;
   final LruHttpCache? _cache;
 
-  WeebScraper({
-    required this._clientProvider,
-    this._cache,
-  });
+  WeebScraper({required this._clientProvider, this._cache});
 
   http.Client get _client => _clientProvider();
 
@@ -77,14 +74,18 @@ class WeebScraper {
       final seen = <String>{};
 
       for (final art in articles) {
-        final seriesMatch = RegExp(r'href="(?:https://weebcentral\.com)?/series/([A-Z0-9]+)/([^"#?]+)"').firstMatch(art);
+        final seriesMatch = RegExp(
+          r'href="(?:https://weebcentral\.com)?/series/([A-Z0-9]+)/([^"#?]+)"',
+        ).firstMatch(art);
         if (seriesMatch == null) continue;
         final sId = seriesMatch.group(1)!;
         final slug = seriesMatch.group(2)!;
         final itemId = 'weeb:$sId:$slug';
         if (!seen.add(itemId)) continue;
 
-        final sourceMatch = RegExp(r'<source[^>]+srcset="([^"]+)"').firstMatch(art);
+        final sourceMatch = RegExp(
+          r'<source[^>]+srcset="([^"]+)"',
+        ).firstMatch(art);
         final imgTagMatch = RegExp(r'<img\b[^>]*>').firstMatch(art);
         var coverUrl = HtmlScraperUtils.normalizeImgUrl(
           sourceMatch?.group(1),
@@ -106,18 +107,29 @@ class WeebScraper {
           );
         }
 
-        final titleMatch = RegExp(r'<a[^>]+class="[^"]*link-hover[^"]*"[^>]*>([\s\S]*?)</a>').firstMatch(art) ??
-            RegExp(r'href="(?:https://weebcentral\.com)?/series/[^/]+/[^"]+">([^<]+)</a>').firstMatch(art);
-        final rawTitle = titleMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
-        final title = HtmlScraperUtils.unescapeHtml(rawTitle.isNotEmpty ? rawTitle : slug.replaceAll('-', ' '));
+        final titleMatch =
+            RegExp(
+              r'<a[^>]+class="[^"]*link-hover[^"]*"[^>]*>([\s\S]*?)</a>',
+            ).firstMatch(art) ??
+            RegExp(
+              r'href="(?:https://weebcentral\.com)?/series/[^/]+/[^"]+">([^<]+)</a>',
+            ).firstMatch(art);
+        final rawTitle =
+            titleMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ??
+            '';
+        final title = HtmlScraperUtils.unescapeHtml(
+          rawTitle.isNotEmpty ? rawTitle : slug.replaceAll('-', ' '),
+        );
 
-        items.add(MangaItem(
-          id: itemId,
-          title: title,
-          cover: coverUrl,
-          type: type ?? 'manga',
-          source: 'weebcentral',
-        ));
+        items.add(
+          MangaItem(
+            id: itemId,
+            title: title,
+            cover: coverUrl,
+            type: type ?? 'manga',
+            source: 'weebcentral',
+          ),
+        );
       }
       return items;
     }
@@ -145,13 +157,24 @@ class WeebScraper {
     if (res.statusCode == 200) {
       final html = res.body;
       final titleMatch = RegExp(r'<h1[^>]*>([^<]+)</h1>').firstMatch(html);
-      final title = HtmlScraperUtils.unescapeHtml(titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' '));
+      final title = HtmlScraperUtils.unescapeHtml(
+        titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' '),
+      );
 
-      final descMatch = RegExp(r'<p class="whitespace-pre-line[^"]*">([\s\S]*?)</p>').firstMatch(html);
-      final desc = HtmlScraperUtils.unescapeHtml(descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '');
+      final descMatch = RegExp(
+        r'<p class="whitespace-pre-line[^"]*">([\s\S]*?)</p>',
+      ).firstMatch(html);
+      final desc = HtmlScraperUtils.unescapeHtml(
+        descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '',
+      );
 
-      final picMatch = RegExp(r'<picture[^>]*>[\s\S]*?<source[^>]+srcset="([^"]+)"').firstMatch(html) ??
-          RegExp(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"').firstMatch(html);
+      final picMatch =
+          RegExp(
+            r'<picture[^>]*>[\s\S]*?<source[^>]+srcset="([^"]+)"',
+          ).firstMatch(html) ??
+          RegExp(
+            r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"',
+          ).firstMatch(html);
       var coverUrl = HtmlScraperUtils.normalizeImgUrl(
         picMatch?.group(1),
         baseUrl: 'https://weebcentral.com',
@@ -223,22 +246,30 @@ class WeebScraper {
         final chId = m.group(1)!;
         if (!seen.add(chId)) continue;
         final block = m.group(2)!;
-        final spanMatch = RegExp(r'<span class="">([^<]+)</span>').firstMatch(block);
+        final spanMatch = RegExp(
+          r'<span class="">([^<]+)</span>',
+        ).firstMatch(block);
         final chText = HtmlScraperUtils.unescapeHtml(
-          (spanMatch?.group(1) ?? block.replaceAll(RegExp(r'<[^>]*>'), '')).trim(),
+          (spanMatch?.group(1) ?? block.replaceAll(RegExp(r'<[^>]*>'), ''))
+              .trim(),
         );
-        final numMatch = RegExp(r'(?:Chapter|Episode|Ch\.?)\s*([\d\.]+)', caseSensitive: false).firstMatch(chText);
+        final numMatch = RegExp(
+          r'(?:Chapter|Episode|Ch\.?)\s*([\d\.]+)',
+          caseSensitive: false,
+        ).firstMatch(chText);
         final chNum = numMatch?.group(1);
         final timeMatch = RegExp(r'datetime="([^"]+)"').firstMatch(block);
 
-        list.add(ChapterItem(
-          id: 'weeb:$chId',
-          number: chNum,
-          title: chText.isNotEmpty ? chText : 'Chapter',
-          publishAt: timeMatch?.group(1),
-          group: 'Weeb Central',
-          source: 'weebcentral',
-        ));
+        list.add(
+          ChapterItem(
+            id: 'weeb:$chId',
+            number: chNum,
+            title: chText.isNotEmpty ? chText : 'Chapter',
+            publishAt: timeMatch?.group(1),
+            group: 'Weeb Central',
+            source: 'weebcentral',
+          ),
+        );
       }
       return list;
     }
@@ -250,22 +281,27 @@ class WeebScraper {
     final url =
         'https://weebcentral.com/chapters/$cleanId/images?is_prev=False&current_page=1&reading_style=long_strip';
 
-    final res = await _client.get(
-      Uri.parse(url),
-      headers: {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
-        'HX-Request': 'true',
-        'Referer': 'https://weebcentral.com/chapters/$cleanId',
-      },
-    ).timeout(const Duration(seconds: 12));
+    final res = await _client
+        .get(
+          Uri.parse(url),
+          headers: {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html',
+            'HX-Request': 'true',
+            'Referer': 'https://weebcentral.com/chapters/$cleanId',
+          },
+        )
+        .timeout(const Duration(seconds: 12));
 
     HtmlScraperUtils.checkResponseHealth(res, 'Weeb Central');
 
     if (res.statusCode == 200) {
       final html = res.body;
-      final imgTags = RegExp(r'<img\b[^>]*>', caseSensitive: false).allMatches(html);
+      final imgTags = RegExp(
+        r'<img\b[^>]*>',
+        caseSensitive: false,
+      ).allMatches(html);
       final pagesList = <String>[];
       final seen = <String>{};
       for (final m in imgTags) {
@@ -274,7 +310,10 @@ class WeebScraper {
           baseUrl: 'https://weebcentral.com',
           referer: 'https://weebcentral.com/',
         );
-        if (u.isEmpty || u.contains('/static/') || u.contains('logo') || u.contains('avatar')) {
+        if (u.isEmpty ||
+            u.contains('/static/') ||
+            u.contains('logo') ||
+            u.contains('avatar')) {
           continue;
         }
         if (seen.add(u)) {
@@ -283,7 +322,11 @@ class WeebScraper {
       }
 
       if (pagesList.isNotEmpty) {
-        return ChapterPages(chapterId: chapterId, pages: pagesList, dataSaver: pagesList);
+        return ChapterPages(
+          chapterId: chapterId,
+          pages: pagesList,
+          dataSaver: pagesList,
+        );
       }
     }
     throw Exception('Failed to load Weeb Central chapter pages');

@@ -344,6 +344,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
       onDismissed: (_) => _removeEntry(item),
       child: InkWell(
         onTap: () {
+          final known = ApiService.instance.libraryRepo.knownManga[mangaId] ??
+              ApiService.instance.libraryRepo.localLibrary[mangaId];
           Navigator.of(context).push(
             smoothRoute(
               ReaderScreen(
@@ -352,6 +354,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 mangaTitle: title,
                 coverUrl: cover,
                 chapterNumber: chNum,
+                mangaType: known?.type,
+                tags: known?.tags,
               ),
             ),
           ).then((_) => _fetch(silent: true));

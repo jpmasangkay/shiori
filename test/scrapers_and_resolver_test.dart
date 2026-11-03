@@ -10,21 +10,33 @@ import 'package:manga_reader/services/source_resolver.dart';
 
 void main() {
   group('SourceResolver Tests', () {
-    test('resolveSource identifies all standard sources by ID prefix or format', () {
-      expect(SourceResolver.resolveSource('mangadex:12345'), 'mangadex');
-      expect(SourceResolver.resolveSource('asura:solo-leveling'), 'asura');
-      expect(SourceResolver.resolveSource('flame:omniscient-reader'), 'flamecomics');
-      expect(SourceResolver.resolveSource('weeb:01JJX'), 'weebcentral');
-      expect(SourceResolver.resolveSource('pill:456'), 'mangapill');
-      expect(SourceResolver.resolveSource('katana:789'), 'mangakatana');
-      expect(SourceResolver.resolveSource('mread:888'), 'mangaread');
-      expect(SourceResolver.resolveSource('ext:keiyoushi:abc'), 'keiyoushi');
+    test(
+      'resolveSource identifies all standard sources by ID prefix or format',
+      () {
+        expect(SourceResolver.resolveSource('mangadex:12345'), 'mangadex');
+        expect(SourceResolver.resolveSource('asura:solo-leveling'), 'asura');
+        expect(
+          SourceResolver.resolveSource('flame:omniscient-reader'),
+          'flamecomics',
+        );
+        expect(SourceResolver.resolveSource('weeb:01JJX'), 'weebcentral');
+        expect(SourceResolver.resolveSource('pill:456'), 'mangapill');
+        expect(SourceResolver.resolveSource('katana:789'), 'mangakatana');
+        expect(SourceResolver.resolveSource('mread:888'), 'mangaread');
+        expect(SourceResolver.resolveSource('ext:keiyoushi:abc'), 'keiyoushi');
 
-      // UUID format without prefix resolves to mangadex
-      expect(SourceResolver.resolveSource('a1b2c3d4-e5f6-7890-abcd-ef1234567890'), 'mangadex');
-      // Unknown prefix
-      expect(SourceResolver.resolveSource('unknown_id_no_prefix'), 'unknown_id_no_prefix');
-    });
+        // UUID format without prefix resolves to mangadex
+        expect(
+          SourceResolver.resolveSource('a1b2c3d4-e5f6-7890-abcd-ef1234567890'),
+          'mangadex',
+        );
+        // Unknown prefix
+        expect(
+          SourceResolver.resolveSource('unknown_id_no_prefix'),
+          'unknown_id_no_prefix',
+        );
+      },
+    );
 
     test('displayName returns user-friendly source labels', () {
       expect(SourceResolver.displayName('mangadex'), 'MangaDex');
@@ -76,26 +88,33 @@ void main() {
       expect(cache.get('temp'), isNull);
     });
 
-    test('In-flight deduplication runs fetcher only once for concurrent requests', () async {
-      final cache = LruHttpCache(capacity: 10);
-      var computeCount = 0;
+    test(
+      'In-flight deduplication runs fetcher only once for concurrent requests',
+      () async {
+        final cache = LruHttpCache(capacity: 10);
+        var computeCount = 0;
 
-      Future<String> slowCompute() async {
-        computeCount++;
-        await Future<void>.delayed(const Duration(milliseconds: 30));
-        return 'computed_result';
-      }
+        Future<String> slowCompute() async {
+          computeCount++;
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+          return 'computed_result';
+        }
 
-      final futures = <Future<String>>[
-        cache.deduplicate('key1', slowCompute),
-        cache.deduplicate('key1', slowCompute),
-        cache.deduplicate('key1', slowCompute),
-      ];
+        final futures = <Future<String>>[
+          cache.deduplicate('key1', slowCompute),
+          cache.deduplicate('key1', slowCompute),
+          cache.deduplicate('key1', slowCompute),
+        ];
 
-      final results = await Future.wait(futures);
-      expect(results, ['computed_result', 'computed_result', 'computed_result']);
-      expect(computeCount, 1);
-    });
+        final results = await Future.wait(futures);
+        expect(results, [
+          'computed_result',
+          'computed_result',
+          'computed_result',
+        ]);
+        expect(computeCount, 1);
+      },
+    );
   });
 
   group('Scrapers HTML Parsing Tests', () {
@@ -105,7 +124,10 @@ void main() {
         'https://cdn.example.com/img.jpg',
       );
       expect(
-        HtmlScraperUtils.normalizeImgUrl('/covers/1.jpg', baseUrl: 'https://example.com/manga'),
+        HtmlScraperUtils.normalizeImgUrl(
+          '/covers/1.jpg',
+          baseUrl: 'https://example.com/manga',
+        ),
         'https://example.com/covers/1.jpg',
       );
       expect(
@@ -193,8 +215,10 @@ void main() {
       expect(chapters[1].number, '2');
     });
 
-    test('AsuraScraper parses chapter page image URLs from API response', () async {
-      const sampleJsonResponse = '''
+    test(
+      'AsuraScraper parses chapter page image URLs from API response',
+      () async {
+        const sampleJsonResponse = '''
         {
           "data": {
             "chapter": {
@@ -208,17 +232,20 @@ void main() {
         }
       ''';
 
-      final mockClient = MockClient((request) async {
-        return http.Response(sampleJsonResponse, 200);
-      });
+        final mockClient = MockClient((request) async {
+          return http.Response(sampleJsonResponse, 200);
+        });
 
-      final scraper = AsuraScraper(clientProvider: () => mockClient);
-      final res = await scraper.getChapterPages('asura:solo-leveling:chapter-1');
+        final scraper = AsuraScraper(clientProvider: () => mockClient);
+        final res = await scraper.getChapterPages(
+          'asura:solo-leveling:chapter-1',
+        );
 
-      expect(res.pages.length, 3);
-      expect(res.pages[0], 'https://img.asurascans.com/page1.jpg');
-      expect(res.pages[1], 'https://img.asurascans.com/page2.jpg');
-      expect(res.pages[2], 'https://img.asurascans.com/page3.jpg');
-    });
+        expect(res.pages.length, 3);
+        expect(res.pages[0], 'https://img.asurascans.com/page1.jpg');
+        expect(res.pages[1], 'https://img.asurascans.com/page2.jpg');
+        expect(res.pages[2], 'https://img.asurascans.com/page3.jpg');
+      },
+    );
   });
 }

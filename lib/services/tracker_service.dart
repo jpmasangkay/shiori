@@ -13,11 +13,7 @@ class AniListUser {
   final String name;
   final String? avatarUrl;
 
-  const AniListUser({
-    required this.id,
-    required this.name,
-    this.avatarUrl,
-  });
+  const AniListUser({required this.id, required this.name, this.avatarUrl});
 }
 
 /// AniList tracking service with SecureTokenStore (#7) and OAuth2 PKCE/Implicit flow (#24)
@@ -112,7 +108,9 @@ class TrackerService extends ChangeNotifier {
 
   /// Opens browser to initiate AniList OAuth login (#24)
   Future<bool> startOAuthFlow({String? clientId}) async {
-    final cid = (clientId != null && clientId.isNotEmpty) ? clientId : defaultClientId;
+    final cid = (clientId != null && clientId.isNotEmpty)
+        ? clientId
+        : defaultClientId;
     final authUrl = Uri.parse(
       'https://anilist.co/api/v2/oauth/authorize?client_id=$cid&response_type=token',
     );
@@ -178,15 +176,17 @@ class TrackerService extends ChangeNotifier {
     ''';
 
     try {
-      final res = await http.post(
-        Uri.parse('https://graphql.anilist.co'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $token',
-        },
-        body: jsonEncode({'query': query}),
-      ).timeout(const Duration(seconds: 10));
+      final res = await http
+          .post(
+            Uri.parse('https://graphql.anilist.co'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode({'query': query}),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -220,18 +220,20 @@ class TrackerService extends ChangeNotifier {
     ''';
 
     try {
-      final res = await http.post(
-        Uri.parse('https://graphql.anilist.co'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          if (_token != null) 'Authorization': 'Bearer $_token',
-        },
-        body: jsonEncode({
-          'query': query,
-          'variables': {'search': title},
-        }),
-      ).timeout(const Duration(seconds: 10));
+      final res = await http
+          .post(
+            Uri.parse('https://graphql.anilist.co'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              if (_token != null) 'Authorization': 'Bearer $_token',
+            },
+            body: jsonEncode({
+              'query': query,
+              'variables': {'search': title},
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
@@ -264,22 +266,24 @@ class TrackerService extends ChangeNotifier {
 
     try {
       final status = isCompleted ? 'COMPLETED' : 'CURRENT';
-      final res = await http.post(
-        Uri.parse('https://graphql.anilist.co'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Authorization': 'Bearer $_token',
-        },
-        body: jsonEncode({
-          'query': mutation,
-          'variables': {
-            'mediaId': mediaId,
-            'progress': chapterProgress,
-            'status': status,
-          },
-        }),
-      ).timeout(const Duration(seconds: 10));
+      final res = await http
+          .post(
+            Uri.parse('https://graphql.anilist.co'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+              'Authorization': 'Bearer $_token',
+            },
+            body: jsonEncode({
+              'query': mutation,
+              'variables': {
+                'mediaId': mediaId,
+                'progress': chapterProgress,
+                'status': status,
+              },
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
 
       return res.statusCode == 200;
     } catch (e) {
@@ -302,11 +306,10 @@ class TrackerService extends ChangeNotifier {
     try {
       final mediaId = await searchMangaId(mangaTitle);
       if (mediaId != null) {
-        await updateProgress(
-          mediaId: mediaId,
-          chapterProgress: numVal,
+        await updateProgress(mediaId: mediaId, chapterProgress: numVal);
+        AppLogger.info(
+          'TrackerService: Updated AniList for $mangaTitle to Ch. $numVal',
         );
-        AppLogger.info('TrackerService: Updated AniList for $mangaTitle to Ch. $numVal');
       }
     } catch (e) {
       AppLogger.warn('TrackerService onChapterFinished error', e);

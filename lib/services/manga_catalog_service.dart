@@ -61,19 +61,48 @@ class MangaCatalogService {
 
     // 1. Built-in direct web scrapers
     if (s == 'flamecomics' || s == 'flame') {
-      return flame.search(query: query, type: type, order: order, page: page, limit: limit);
+      return flame.search(
+        query: query,
+        type: type,
+        order: order,
+        page: page,
+        limit: limit,
+      );
     }
     if (s == 'weebcentral' || s == 'weeb') {
-      return weeb.search(query: query, type: type, order: order, page: page, limit: limit);
+      return weeb.search(
+        query: query,
+        type: type,
+        order: order,
+        page: page,
+        limit: limit,
+      );
     }
     if (s == 'mangapill' || s == 'pill') {
-      return mangapill.search(query: query, type: type, page: page, limit: limit);
+      return mangapill.search(
+        query: query,
+        type: type,
+        page: page,
+        limit: limit,
+      );
     }
     if (s == 'mangakatana' || s == 'katana') {
-      return mangakatana.search(query: query, type: type, order: order, page: page, limit: limit);
+      return mangakatana.search(
+        query: query,
+        type: type,
+        order: order,
+        page: page,
+        limit: limit,
+      );
     }
     if (s == 'mangaread' || s == 'mread') {
-      return mangaread.search(query: query, type: type, order: order, page: page, limit: limit);
+      return mangaread.search(
+        query: query,
+        type: type,
+        order: order,
+        page: page,
+        limit: limit,
+      );
     }
     if (s == 'asura') {
       return asura.search(query: query, type: type, page: page);
@@ -114,20 +143,22 @@ class MangaCatalogService {
               type: type,
             )
           : (order == 'latest'
-              ? await ExtensionBridge.instance.fetchLatestUpdates(
-                  pkg: effectivePkg,
-                  page: page,
-                  type: type,
-                )
-              : await ExtensionBridge.instance.fetchPopularManga(
-                  pkg: effectivePkg,
-                  page: page,
-                  type: type,
-                ));
+                ? await ExtensionBridge.instance.fetchLatestUpdates(
+                    pkg: effectivePkg,
+                    page: page,
+                    type: type,
+                  )
+                : await ExtensionBridge.instance.fetchPopularManga(
+                    pkg: effectivePkg,
+                    page: page,
+                    type: type,
+                  ));
 
       if (results.isNotEmpty) return results;
     } catch (e) {
-      debugPrint('ExtensionBridge native execution for $effectivePkg encountered: $e');
+      debugPrint(
+        'ExtensionBridge native execution for $effectivePkg encountered: $e',
+      );
       if (ext != null && ext.homeUrl.isNotEmpty) {
         try {
           final webResults = await webExtension.search(
@@ -169,14 +200,21 @@ class MangaCatalogService {
     if (id.startsWith('ext:')) {
       final firstColon = id.indexOf(':');
       final secondColon = id.indexOf(':', firstColon + 1);
-      final pkg = secondColon != -1 ? id.substring(firstColon + 1, secondColon) : id.substring(firstColon + 1);
+      final pkg = secondColon != -1
+          ? id.substring(firstColon + 1, secondColon)
+          : id.substring(firstColon + 1);
       final actualId = secondColon != -1 ? id.substring(secondColon + 1) : id;
       final rawUrl = Uri.decodeComponent(actualId);
 
       try {
-        return await ExtensionBridge.instance.fetchMangaDetails(pkg: pkg, url: rawUrl);
+        return await ExtensionBridge.instance.fetchMangaDetails(
+          pkg: pkg,
+          url: rawUrl,
+        );
       } catch (e) {
-        debugPrint('ExtensionBridge fetchMangaDetails failed for $pkg ($rawUrl): $e');
+        debugPrint(
+          'ExtensionBridge fetchMangaDetails failed for $pkg ($rawUrl): $e',
+        );
         final ext = ExtensionService.instance.getExtensionByPkg(pkg);
         if (ext != null && ext.homeUrl.isNotEmpty) {
           return webExtension.getManga(pkg, actualId, ext: ext);
@@ -207,7 +245,10 @@ class MangaCatalogService {
     return chapters;
   }
 
-  Future<List<ChapterItem>> _getChaptersInternal(String mangaId, {String lang = 'en'}) async {
+  Future<List<ChapterItem>> _getChaptersInternal(
+    String mangaId, {
+    String lang = 'en',
+  }) async {
     if (mangaId.startsWith('asura:')) return asura.getChapters(mangaId);
     if (mangaId.startsWith('flame:')) return flame.getChapters(mangaId);
     if (mangaId.startsWith('weeb:')) return weeb.getChapters(mangaId);
@@ -218,19 +259,32 @@ class MangaCatalogService {
     if (mangaId.startsWith('ext:')) {
       final firstColon = mangaId.indexOf(':');
       final secondColon = mangaId.indexOf(':', firstColon + 1);
-      final pkg = secondColon != -1 ? mangaId.substring(firstColon + 1, secondColon) : mangaId.substring(firstColon + 1);
-      final actualId = secondColon != -1 ? mangaId.substring(secondColon + 1) : mangaId;
+      final pkg = secondColon != -1
+          ? mangaId.substring(firstColon + 1, secondColon)
+          : mangaId.substring(firstColon + 1);
+      final actualId = secondColon != -1
+          ? mangaId.substring(secondColon + 1)
+          : mangaId;
       final rawUrl = Uri.decodeComponent(actualId);
 
       try {
-        final chapters = await ExtensionBridge.instance.fetchChapterList(pkg: pkg, url: rawUrl);
+        final chapters = await ExtensionBridge.instance.fetchChapterList(
+          pkg: pkg,
+          url: rawUrl,
+        );
         if (chapters.isNotEmpty) return chapters;
       } catch (e) {
-        debugPrint('ExtensionBridge fetchChapterList failed for $pkg ($rawUrl): $e');
+        debugPrint(
+          'ExtensionBridge fetchChapterList failed for $pkg ($rawUrl): $e',
+        );
         final ext = ExtensionService.instance.getExtensionByPkg(pkg);
         if (ext != null && ext.homeUrl.isNotEmpty) {
           try {
-            final webChapters = await webExtension.getChapters(pkg, actualId, ext: ext);
+            final webChapters = await webExtension.getChapters(
+              pkg,
+              actualId,
+              ext: ext,
+            );
             if (webChapters.isNotEmpty) return webChapters;
           } catch (_) {}
         }
@@ -246,7 +300,10 @@ class MangaCatalogService {
     }
 
     if (mangaId.startsWith('mangadex:')) {
-      return mangadex.getChapters(mangaId.substring('mangadex:'.length), lang: lang);
+      return mangadex.getChapters(
+        mangaId.substring('mangadex:'.length),
+        lang: lang,
+      );
     }
     if (_uuidPattern.hasMatch(mangaId)) {
       return mangadex.getChapters(mangaId, lang: lang);
@@ -255,9 +312,15 @@ class MangaCatalogService {
     return [];
   }
 
-  Future<ChapterPages> getChapterPages(String chapterId, {bool forceRefresh = false}) async {
-    if (!forceRefresh && DownloadService.instance.isChapterDownloaded(chapterId)) {
-      final files = await DownloadService.instance.getDownloadedPages(chapterId);
+  Future<ChapterPages> getChapterPages(
+    String chapterId, {
+    bool forceRefresh = false,
+  }) async {
+    if (!forceRefresh &&
+        DownloadService.instance.isChapterDownloaded(chapterId)) {
+      final files = await DownloadService.instance.getDownloadedPages(
+        chapterId,
+      );
       if (files.isNotEmpty) {
         final localUrls = files.map((f) => 'file://${f.path}').toList();
         return ChapterPages(
@@ -271,19 +334,29 @@ class MangaCatalogService {
     if (chapterId.startsWith('asura:')) return asura.getChapterPages(chapterId);
     if (chapterId.startsWith('flame:')) return flame.getChapterPages(chapterId);
     if (chapterId.startsWith('weeb:')) return weeb.getChapterPages(chapterId);
-    if (chapterId.startsWith('pill:')) return mangapill.getChapterPages(chapterId);
-    if (chapterId.startsWith('katana:')) return mangakatana.getChapterPages(chapterId);
-    if (chapterId.startsWith('mread:')) return mangaread.getChapterPages(chapterId);
+    if (chapterId.startsWith('pill:'))
+      return mangapill.getChapterPages(chapterId);
+    if (chapterId.startsWith('katana:'))
+      return mangakatana.getChapterPages(chapterId);
+    if (chapterId.startsWith('mread:'))
+      return mangaread.getChapterPages(chapterId);
 
     if (chapterId.startsWith('ext:')) {
       final firstColon = chapterId.indexOf(':');
       final secondColon = chapterId.indexOf(':', firstColon + 1);
-      final pkg = secondColon != -1 ? chapterId.substring(firstColon + 1, secondColon) : '';
-      final actualChapterId = secondColon != -1 ? chapterId.substring(secondColon + 1) : chapterId;
+      final pkg = secondColon != -1
+          ? chapterId.substring(firstColon + 1, secondColon)
+          : '';
+      final actualChapterId = secondColon != -1
+          ? chapterId.substring(secondColon + 1)
+          : chapterId;
       final rawUrl = Uri.decodeComponent(actualChapterId);
 
       try {
-        final pageUrls = await ExtensionBridge.instance.fetchPageList(pkg: pkg, chapterUrl: rawUrl);
+        final pageUrls = await ExtensionBridge.instance.fetchPageList(
+          pkg: pkg,
+          chapterUrl: rawUrl,
+        );
         if (pageUrls.isNotEmpty) {
           return ChapterPages(
             chapterId: chapterId,
@@ -292,7 +365,9 @@ class MangaCatalogService {
           );
         }
       } catch (e) {
-        debugPrint('ExtensionBridge fetchPageList failed for $pkg ($rawUrl): $e');
+        debugPrint(
+          'ExtensionBridge fetchPageList failed for $pkg ($rawUrl): $e',
+        );
         final ext = ExtensionService.instance.getExtensionByPkg(pkg);
         if (ext != null && ext.homeUrl.isNotEmpty) {
           return webExtension.getChapterPages(pkg, actualChapterId, ext: ext);
@@ -325,11 +400,7 @@ class MangaCatalogService {
     final bookmarkedIds = bookmarked.map((m) => m.id).toSet();
     if (bookmarkedIds.isEmpty) {
       return {
-        'groups': {
-          'Today': [],
-          'Yesterday': [],
-          'Earlier': [],
-        },
+        'groups': {'Today': [], 'Yesterday': [], 'Earlier': []},
         'items': [],
         'total': 0,
       };
@@ -369,7 +440,8 @@ class MangaCatalogService {
     // Direct multi-source fetch for top bookmarked titles
     final List<Map<String, dynamic>> allChapters = [];
     final now = DateTime.now();
-    final todayStr = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final todayStr =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
     final yesterday = now.subtract(const Duration(days: 1));
     final yesterdayStr =
         '${yesterday.year}-${yesterday.month.toString().padLeft(2, '0')}-${yesterday.day.toString().padLeft(2, '0')}';
@@ -389,23 +461,25 @@ class MangaCatalogService {
               'group': ch.group.isNotEmpty
                   ? ch.group
                   : (manga.source.isNotEmpty
-                      ? (ExtensionService.instance.getExtensionByPkg(manga.source)?.name ??
-                          (manga.source == 'asura'
-                              ? 'Asura Scans'
-                              : manga.source == 'flamecomics'
+                        ? (ExtensionService.instance
+                                  .getExtensionByPkg(manga.source)
+                                  ?.name ??
+                              (manga.source == 'asura'
+                                  ? 'Asura Scans'
+                                  : manga.source == 'flamecomics'
                                   ? 'Flame Comics'
                                   : manga.source == 'weebcentral'
-                                      ? 'Weeb Central'
-                                      : manga.source == 'mangapill'
-                                          ? 'MangaPill'
-                                          : manga.source == 'mangakatana'
-                                              ? 'MangaKatana'
-                                              : manga.source == 'mangaread'
-                                                  ? 'MangaRead'
-                                                  : manga.source == 'mangadex'
-                                                      ? 'MangaDex'
-                                                      : manga.source))
-                      : 'Direct Source'),
+                                  ? 'Weeb Central'
+                                  : manga.source == 'mangapill'
+                                  ? 'MangaPill'
+                                  : manga.source == 'mangakatana'
+                                  ? 'MangaKatana'
+                                  : manga.source == 'mangaread'
+                                  ? 'MangaRead'
+                                  : manga.source == 'mangadex'
+                                  ? 'MangaDex'
+                                  : manga.source))
+                        : 'Direct Source'),
               'publishAt': ch.publishAt,
               'pages': ch.pages,
             });
@@ -417,8 +491,10 @@ class MangaCatalogService {
     await Future.wait(tasks);
 
     allChapters.sort((a, b) {
-      final dtA = DateTime.tryParse(a['publishAt']?.toString() ?? '') ?? DateTime(2000);
-      final dtB = DateTime.tryParse(b['publishAt']?.toString() ?? '') ?? DateTime(2000);
+      final dtA =
+          DateTime.tryParse(a['publishAt']?.toString() ?? '') ?? DateTime(2000);
+      final dtB =
+          DateTime.tryParse(b['publishAt']?.toString() ?? '') ?? DateTime(2000);
       return dtB.compareTo(dtA);
     });
 

@@ -18,7 +18,8 @@ class MangaDexService {
   });
 
   http.Client get _client => _clientProvider();
-  String get _baseUrl => _baseUrlProvider?.call() ?? 'https://shiori-n5hd.onrender.com/api';
+  String get _baseUrl =>
+      _baseUrlProvider?.call() ?? 'https://shiori-n5hd.onrender.com/api';
 
   Future<http.Response> _getCached(
     Uri uri, {
@@ -81,14 +82,19 @@ class MangaDexService {
       final uri = Uri.https('api.mangadex.org', '/manga', qParams);
       final res = await _getCached(
         uri,
-        headers: const {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+        headers: const {
+          'User-Agent': 'ShioriApp/1.0',
+          'Accept': 'application/json',
+        },
         timeout: const Duration(seconds: 8),
       );
 
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final list = (data['data'] as List<dynamic>?) ?? [];
-        return list.map((m) => normalizeDirectManga(m as Map<String, dynamic>)).toList();
+        return list
+            .map((m) => normalizeDirectManga(m as Map<String, dynamic>))
+            .toList();
       }
     } catch (e) {
       debugPrint('_searchMangaCatalog direct error: $e');
@@ -102,17 +108,22 @@ class MangaDexService {
         'order': order,
         'page': page.toString(),
         'limit': limit.toString(),
-        if (lang != null && lang.isNotEmpty && lang.toLowerCase() != 'all') 'lang': lang.toLowerCase(),
+        if (lang != null && lang.isNotEmpty && lang.toLowerCase() != 'all')
+          'lang': lang.toLowerCase(),
       };
-      final uri = Uri.parse('$_baseUrl/manga/search').replace(queryParameters: qParams);
-      final res = await _client.get(uri, headers: const {
-        'Accept': 'application/json',
-      }).timeout(const Duration(seconds: 6));
+      final uri = Uri.parse(
+        '$_baseUrl/manga/search',
+      ).replace(queryParameters: qParams);
+      final res = await _client
+          .get(uri, headers: const {'Accept': 'application/json'})
+          .timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final list = (data['items'] as List<dynamic>?) ?? [];
         if (list.isNotEmpty) {
-          return list.map((e) => MangaItem.fromJson(e as Map<String, dynamic>)).toList();
+          return list
+              .map((e) => MangaItem.fromJson(e as Map<String, dynamic>))
+              .toList();
         }
       }
     } catch (_) {}
@@ -128,7 +139,10 @@ class MangaDexService {
       });
       final res = await _getCached(
         uri,
-        headers: const {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+        headers: const {
+          'User-Agent': 'ShioriApp/1.0',
+          'Accept': 'application/json',
+        },
         timeout: const Duration(seconds: 8),
       );
       if (res.statusCode == 200) {
@@ -141,7 +155,10 @@ class MangaDexService {
     // 2. Fallback to Backend
     try {
       final res = await _client
-          .get(Uri.parse('$_baseUrl/manga/$actualId'), headers: const {'Accept': 'application/json'})
+          .get(
+            Uri.parse('$_baseUrl/manga/$actualId'),
+            headers: const {'Accept': 'application/json'},
+          )
           .timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
         return MangaItem.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
@@ -151,7 +168,10 @@ class MangaDexService {
     throw Exception('Failed to load manga details');
   }
 
-  Future<List<ChapterItem>> getChapters(String actualId, {String lang = 'en'}) async {
+  Future<List<ChapterItem>> getChapters(
+    String actualId, {
+    String lang = 'en',
+  }) async {
     // 1. Direct MangaDex API first
     try {
       final qParams = <String, dynamic>{
@@ -163,10 +183,17 @@ class MangaDexService {
       if (lang.isNotEmpty && lang != 'all') {
         qParams['translatedLanguage[]'] = [lang];
       }
-      final uri = Uri.https('api.mangadex.org', '/manga/$actualId/feed', qParams);
+      final uri = Uri.https(
+        'api.mangadex.org',
+        '/manga/$actualId/feed',
+        qParams,
+      );
       final res = await _getCached(
         uri,
-        headers: const {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
+        headers: const {
+          'User-Agent': 'ShioriApp/1.0',
+          'Accept': 'application/json',
+        },
         timeout: const Duration(seconds: 9),
       );
       if (res.statusCode == 200) {
@@ -180,20 +207,26 @@ class MangaDexService {
           if (extUrl.isNotEmpty && pagesCount == 0) continue;
 
           final rels = (c['relationships'] as List<dynamic>?) ?? [];
-          final grpRel = rels.firstWhere((r) => r['type'] == 'scanlation_group', orElse: () => null);
+          final grpRel = rels.firstWhere(
+            (r) => r['type'] == 'scanlation_group',
+            orElse: () => null,
+          );
           final groupName = grpRel != null && grpRel['attributes'] != null
               ? grpRel['attributes']['name']?.toString() ?? ''
               : '';
-          parsed.add(ChapterItem(
-            id: c['id']?.toString() ?? '',
-            number: a['chapter']?.toString(),
-            volume: a['volume']?.toString(),
-            title: a['title']?.toString() ?? '',
-            pages: pagesCount,
-            group: groupName,
-            publishAt: a['publishAt']?.toString() ?? a['readableAt']?.toString(),
-            source: 'mangadex',
-          ));
+          parsed.add(
+            ChapterItem(
+              id: c['id']?.toString() ?? '',
+              number: a['chapter']?.toString(),
+              volume: a['volume']?.toString(),
+              title: a['title']?.toString() ?? '',
+              pages: pagesCount,
+              group: groupName,
+              publishAt:
+                  a['publishAt']?.toString() ?? a['readableAt']?.toString(),
+              source: 'mangadex',
+            ),
+          );
         }
         return parsed;
       }
@@ -201,16 +234,18 @@ class MangaDexService {
 
     // 2. Fallback to Backend
     try {
-      final uri = Uri.parse('$_baseUrl/manga/$actualId/chapters').replace(queryParameters: {
-        if (lang.isNotEmpty) 'lang': lang,
-      });
+      final uri = Uri.parse(
+        '$_baseUrl/manga/$actualId/chapters',
+      ).replace(queryParameters: {if (lang.isNotEmpty) 'lang': lang});
       final res = await _client
           .get(uri, headers: const {'Accept': 'application/json'})
           .timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final list = (data['chapters'] as List<dynamic>?) ?? [];
-        return list.map((e) => ChapterItem.fromJson(e as Map<String, dynamic>)).toList();
+        return list
+            .map((e) => ChapterItem.fromJson(e as Map<String, dynamic>))
+            .toList();
       }
     } catch (_) {}
 
@@ -220,13 +255,21 @@ class MangaDexService {
   Future<ChapterPages> getChapterPages(String actualChapterId) async {
     // 1. Direct MangaDex@Home server resolution first
     try {
-      final res = await _client.get(
-        Uri.parse('https://api.mangadex.org/at-home/server/$actualChapterId'),
-        headers: const {'User-Agent': 'ShioriApp/1.0', 'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 8));
+      final res = await _client
+          .get(
+            Uri.parse(
+              'https://api.mangadex.org/at-home/server/$actualChapterId',
+            ),
+            headers: const {
+              'User-Agent': 'ShioriApp/1.0',
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
-        final baseUrl = data['baseUrl']?.toString() ?? 'https://uploads.mangadex.org';
+        final baseUrl =
+            data['baseUrl']?.toString() ?? 'https://uploads.mangadex.org';
         final chapterObj = data['chapter'] as Map<String, dynamic>? ?? {};
         final hash = chapterObj['hash']?.toString() ?? '';
         final dataList = (chapterObj['data'] as List<dynamic>?) ?? [];
@@ -245,18 +288,26 @@ class MangaDexService {
           ImageReferers.register(u, 'https://mangadex.org/');
           return u;
         }).toList();
-        return ChapterPages(chapterId: actualChapterId, pages: pages, dataSaver: saver);
+        return ChapterPages(
+          chapterId: actualChapterId,
+          pages: pages,
+          dataSaver: saver,
+        );
       }
     } catch (_) {}
 
     // 2. Fallback to Backend
     try {
-      final res = await _client.get(
-        Uri.parse('$_baseUrl/manga/chapter/$actualChapterId/pages'),
-        headers: const {'Accept': 'application/json'},
-      ).timeout(const Duration(seconds: 6));
+      final res = await _client
+          .get(
+            Uri.parse('$_baseUrl/manga/chapter/$actualChapterId/pages'),
+            headers: const {'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 6));
       if (res.statusCode == 200) {
-        return ChapterPages.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+        return ChapterPages.fromJson(
+          jsonDecode(res.body) as Map<String, dynamic>,
+        );
       }
     } catch (_) {}
 
@@ -266,14 +317,21 @@ class MangaDexService {
   MangaItem normalizeDirectManga(Map<String, dynamic> m) {
     final a = m['attributes'] as Map<String, dynamic>? ?? {};
     final rels = (m['relationships'] as List<dynamic>?) ?? [];
-    final coverRel = rels.firstWhere((r) => r['type'] == 'cover_art', orElse: () => null);
-    final fileName = coverRel != null && coverRel['attributes'] != null ? coverRel['attributes']['fileName']?.toString() : null;
+    final coverRel = rels.firstWhere(
+      (r) => r['type'] == 'cover_art',
+      orElse: () => null,
+    );
+    final fileName = coverRel != null && coverRel['attributes'] != null
+        ? coverRel['attributes']['fileName']?.toString()
+        : null;
     final id = m['id']?.toString() ?? '';
 
     String title = '';
     final titleMap = a['title'];
     if (titleMap is Map) {
-      title = titleMap['en']?.toString() ?? (titleMap.isNotEmpty ? titleMap.values.first.toString() : '');
+      title =
+          titleMap['en']?.toString() ??
+          (titleMap.isNotEmpty ? titleMap.values.first.toString() : '');
     }
     if (title.isEmpty) {
       final alt = (a['altTitles'] as List<dynamic>?) ?? [];
@@ -289,11 +347,15 @@ class MangaDexService {
     String desc = '';
     final descMap = a['description'];
     if (descMap is Map) {
-      desc = descMap['en']?.toString() ?? (descMap.isNotEmpty ? descMap.values.first.toString() : '');
+      desc =
+          descMap['en']?.toString() ??
+          (descMap.isNotEmpty ? descMap.values.first.toString() : '');
     }
 
     final origLang = a['originalLanguage']?.toString() ?? '';
-    final type = origLang == 'ko' ? 'manhwa' : (origLang.startsWith('zh') ? 'manhua' : 'manga');
+    final type = origLang == 'ko'
+        ? 'manhwa'
+        : (origLang.startsWith('zh') ? 'manhua' : 'manga');
     final coverUrl = (fileName != null && fileName.isNotEmpty)
         ? HtmlScraperUtils.normalizeImgUrl(
             'https://uploads.mangadex.org/covers/$id/$fileName.512.jpg',
@@ -303,7 +365,11 @@ class MangaDexService {
 
     final authors = rels
         .where((r) => r['type'] == 'author' || r['type'] == 'artist')
-        .map((r) => (r['attributes'] as Map<String, dynamic>?)?['name']?.toString() ?? '')
+        .map(
+          (r) =>
+              (r['attributes'] as Map<String, dynamic>?)?['name']?.toString() ??
+              '',
+        )
         .where((n) => n.isNotEmpty)
         .toSet()
         .toList();

@@ -16,6 +16,7 @@ import '../widgets/common.dart';
 import '../widgets/skeleton.dart';
 
 enum ReaderMode {
+  automatic,   // ⚡ Automatic: Detects based on comic type (Manga: RTL, Manhwa: Webtoon, Other: LTR)
   rightToLeft, // 🇯🇵 Standard Manga: Right to Left
   webtoon,     // 🇰🇷 Manhwa / Webtoon: Continuous vertical scroll
   leftToRight, // 🇨🇳 Manhua / Western: Left to Right
@@ -23,12 +24,21 @@ enum ReaderMode {
 
 extension ReaderModeInfo on ReaderMode {
   String get label => switch (this) {
+        ReaderMode.automatic => 'Automatic',
         ReaderMode.rightToLeft => 'RTL (Manga)',
         ReaderMode.webtoon => 'Webtoon',
         ReaderMode.leftToRight => 'Left-to-Right',
       };
 
+  String get shortLabel => switch (this) {
+        ReaderMode.automatic => 'Auto',
+        ReaderMode.rightToLeft => 'RTL',
+        ReaderMode.webtoon => 'Webtoon',
+        ReaderMode.leftToRight => 'LTR',
+      };
+
   IconData get icon => switch (this) {
+        ReaderMode.automatic => Icons.auto_awesome_rounded,
         ReaderMode.rightToLeft => Icons.arrow_back_rounded,
         ReaderMode.webtoon => Icons.swap_vert_rounded,
         ReaderMode.leftToRight => Icons.arrow_forward_rounded,
@@ -46,6 +56,8 @@ class ReaderScreen extends StatefulWidget {
     this.coverUrl,
     this.chapters = const [],
     this.initialIndex = 0,
+    this.mangaType,
+    this.tags,
   });
 
   final String? chapterId;
@@ -56,6 +68,68 @@ class ReaderScreen extends StatefulWidget {
   final String? coverUrl;
   final List<ChapterItem> chapters;
   final int initialIndex;
+  final String? mangaType;
+  final List<String>? tags;
+
+  /// Resolves the automatic reading mode based on comic metadata:
+  /// - Manga -> Right to Left (RTL paged)
+  /// - Manhwa / Webtoon -> Webtoon (continuous vertical scroll)
+  /// - Other / Else (e.g. Manhua, Western comic) -> Left to Right (LTR paged)
+  static ReaderMode resolveAutomaticMode({
+    String? type,
+    String? mangaId,
+    String? title,
+    List<String>? tags,
+  }) {
+    final cleanType = type?.trim().toLowerCase() ?? '';
+    final cleanId = mangaId?.trim().toLowerCase() ?? '';
+    final cleanTitle = title?.trim().toLowerCase() ?? '';
+    final lowerTags = tags?.map((t) => t.trim().toLowerCase()).toList() ?? const [];
+
+    bool hasKeyword(String keyword) {
+      if (cleanType == keyword || cleanType.contains(keyword)) return true;
+      if (lowerTags.any((t) => t == keyword || t.contains(keyword))) return true;
+      if (cleanTitle.contains('[$keyword]') || cleanTitle.contains('($keyword)')) return true;
+      return false;
+    }
+
+    // 1. Manhwa / Webtoon: Korean continuous vertical scroll
+    final isManhwa = hasKeyword('manhwa') ||
+        hasKeyword('manwha') ||
+        hasKeyword('webtoon') ||
+        hasKeyword('korean') ||
+        cleanId.startsWith('asura:') ||
+        cleanId.startsWith('flame:');
+
+    if (isManhwa) {
+      return ReaderMode.webtoon;
+    }
+
+    // 2. Explicit other comic formats (Manhua / Chinese / Western comic / Webcomic)
+    final isOtherExplicit = hasKeyword('manhua') ||
+        hasKeyword('chinese') ||
+        hasKeyword('comic') ||
+        hasKeyword('western') ||
+        hasKeyword('webcomic');
+
+    if (isOtherExplicit) {
+      return ReaderMode.leftToRight;
+    }
+
+    // 3. Manga: Japanese standard right-to-left
+    final isManga = hasKeyword('manga') ||
+        hasKeyword('japanese') ||
+        cleanId.startsWith('pill:') ||
+        cleanId.startsWith('katana:') ||
+        cleanId.startsWith('mread:');
+
+    if (isManga) {
+      return ReaderMode.rightToLeft;
+    }
+
+    // 4. Default fallback: other else -> left to right
+    return ReaderMode.leftToRight;
+  }
 
   @override
   State<ReaderScreen> createState() => _ReaderScreenState();
@@ -81,10 +155,23 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   int _totalPages = 1;
   int _page = 1;
+  late final ValueNotifier<int> _pageNotifier;
+  final Set<String> _finishedChapterIds = {};
+  Timer? _progressDebounceTimer;
+  DateTime _lastTrackTime = DateTime.fromMillisecondsSinceEpoch(0);
   bool _chrome = true;
   bool _advancing = false;
 
-  ReaderMode _mode = ReaderMode.webtoon;
+  ReaderMode _selectedMode = ReaderMode.automatic;
+  late ReaderMode _resolvedAutoMode;
+
+  ReaderMode get _effectiveMode =>
+      _selectedMode == ReaderMode.automatic ? _resolvedAutoMode : _selectedMode;
+  ReaderMode get _mode => _effectiveMode;
+
+  ReaderMode get selectedMode => _selectedMode;
+  ReaderMode get effectiveMode => _effectiveMode;
+
   BoxFit _fitMode = BoxFit.fitWidth;
   bool _enableTapZones = true;
   bool _invertTapZones = false;
@@ -127,19 +214,97 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void initState() {
     super.initState();
+    _pageNotifier = ValueNotifier<int>(_page);
     _pageController = _newPageController(0);
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
 
+    // 1. Initial resolution of automatic reading direction based on metadata
+    final cached = ApiService.instance.libraryRepo.knownManga[widget.mangaId] ??
+        ApiService.instance.libraryRepo.localLibrary[widget.mangaId];
+
+    _resolvedAutoMode = ReaderScreen.resolveAutomaticMode(
+      type: widget.mangaType ?? cached?.type,
+      mangaId: widget.mangaId,
+      title: widget.mangaTitle.isNotEmpty ? widget.mangaTitle : (cached?.title ?? ''),
+      tags: widget.tags ?? cached?.tags,
+    );
+
+    // 2. Load preferences
     SharedPreferences.getInstance().then((prefs) {
       if (mounted) {
+        final savedModeStr = prefs.getString('reader_direction_${widget.mangaId}');
+        ReaderMode? saved;
+        if (savedModeStr != null) {
+          saved = ReaderMode.values.cast<ReaderMode?>().firstWhere(
+                (m) => m?.name == savedModeStr,
+                orElse: () => null,
+              );
+        }
+
+        final oldEffective = _effectiveMode;
         setState(() {
           _enableTapZones = prefs.getBool('reader_enable_tap_zones') ?? true;
           _invertTapZones = prefs.getBool('reader_invert_tap_zones') ?? false;
           _brightness = prefs.getDouble('reader_brightness') ?? 1.0;
           _tint = prefs.getDouble('reader_tint') ?? 0.0;
+          if (saved != null) {
+            _selectedMode = saved;
+          }
         });
+
+        if (_effectiveMode != oldEffective) {
+          final oldCtrl = _pageController;
+          _pageController = _newPageController(_page - 1);
+          _webtoonLoadedIndices
+            ..clear()
+            ..add(_currentChapterIndex);
+          _pageSlots.clear();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            oldCtrl.dispose();
+            if (mounted && _effectiveMode == ReaderMode.webtoon && _page > 1) {
+              _scrollToWebtoonPage(_page);
+            }
+          });
+        }
       }
     });
+
+    // 3. Asynchronous refinement if metadata was not yet in cache
+    if ((widget.mangaType == null || widget.mangaType!.isEmpty) &&
+        cached == null &&
+        widget.mangaId.isNotEmpty) {
+      ApiService.instance.getManga(widget.mangaId).then((m) {
+        if (!mounted) return;
+        final updatedAuto = ReaderScreen.resolveAutomaticMode(
+          type: m.type,
+          mangaId: m.id,
+          title: m.title,
+          tags: m.tags,
+        );
+        if (updatedAuto != _resolvedAutoMode) {
+          final oldEffective = _effectiveMode;
+          setState(() {
+            _resolvedAutoMode = updatedAuto;
+          });
+          if (_selectedMode == ReaderMode.automatic && _effectiveMode != oldEffective) {
+            final oldCtrl = _pageController;
+            setState(() {
+              _pageController = _newPageController(_page - 1);
+              _webtoonLoadedIndices
+                ..clear()
+                ..add(_currentChapterIndex);
+              _pageSlots.clear();
+            });
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              oldCtrl.dispose();
+              if (mounted && _effectiveMode == ReaderMode.webtoon && _page > 1) {
+                _scrollToWebtoonPage(_page);
+              }
+            });
+          }
+        }
+      }).catchError((_) {});
+    }
 
     // Setup chapters list
     if (widget.chapters.isNotEmpty) {
@@ -276,8 +441,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
+    _flushProgress();
     _scrollController.dispose();
     _pageController.dispose();
+    _pageNotifier.dispose();
     super.dispose();
   }
 
@@ -396,7 +563,46 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _syncProgress(int currentPage) {
     if (widget.mangaId.isEmpty) return;
     final chapter = _currentChapter;
-    final completed = currentPage >= _totalPages && _totalPages > 0;
+    if (chapter.id.isEmpty) return;
+
+    final pages = _pagesCache[chapter.id];
+    final actualTotal = pages?.length ?? _totalPages;
+    final completed = pages != null && pages.isNotEmpty && currentPage >= actualTotal;
+    if (completed) {
+      _onChapterFinished(_currentChapterIndex);
+    }
+
+    _progressDebounceTimer?.cancel();
+    _progressDebounceTimer = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted) return;
+      ApiService.instance.saveProgress(
+        mangaId: widget.mangaId,
+        chapterId: chapter.id,
+        mangaTitle: widget.mangaTitle,
+        cover: widget.coverUrl,
+        chapterNumber: chapter.number,
+        chapterTitle: chapter.title,
+        page: currentPage,
+        totalPages: actualTotal,
+        completed: completed,
+      );
+    });
+  }
+
+  void _flushProgress() {
+    _progressDebounceTimer?.cancel();
+    _progressDebounceTimer = null;
+    if (widget.mangaId.isEmpty) return;
+    final chapter = _currentChapter;
+    if (chapter.id.isEmpty) return;
+
+    final pages = _pagesCache[chapter.id];
+    final actualTotal = pages?.length ?? _totalPages;
+    final completed = pages != null && pages.isNotEmpty && _page >= actualTotal;
+    if (completed) {
+      _onChapterFinished(_currentChapterIndex);
+    }
+
     ApiService.instance.saveProgress(
       mangaId: widget.mangaId,
       chapterId: chapter.id,
@@ -404,8 +610,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       cover: widget.coverUrl,
       chapterNumber: chapter.number,
       chapterTitle: chapter.title,
-      page: currentPage,
-      totalPages: _totalPages,
+      page: _page,
+      totalPages: actualTotal,
       completed: completed,
     );
   }
@@ -413,6 +619,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _onChapterFinished(int finishedIdx) {
     if (finishedIdx < 0 || finishedIdx >= _chapters.length) return;
     final finished = _chapters[finishedIdx];
+    if (finished.id.isEmpty) return;
+    if (!_finishedChapterIds.add(finished.id)) return; // Avoid duplicate triggers
+
     // Automatically mark the finished chapter as read
     ApiService.instance.markChapterRead(widget.mangaId, finished.id, read: true);
     // Auto sync reading progress to AniList Tracker
@@ -427,8 +636,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   /// replaced, so the new chapter always starts at its first page.
   void _switchToChapter(int newIndex) {
     if (newIndex < 0 || newIndex >= _chapters.length || newIndex == _currentChapterIndex) return;
-    // Only moving forward counts as finishing the chapter.
-    if (newIndex == _currentChapterIndex + 1) _onChapterFinished(_currentChapterIndex);
+    final currentPages = _pagesCache[_chapters[_currentChapterIndex].id];
+    final currentTotal = currentPages?.length ?? _totalPages;
+    if (currentPages != null && currentPages.isNotEmpty && _page >= currentTotal) {
+      _onChapterFinished(_currentChapterIndex);
+    }
 
     final chapter = _chapters[newIndex];
     final cached = _pagesCache[chapter.id];
@@ -446,6 +658,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       _pageSlots.clear();
       _pageController = _newPageController(0);
     });
+    _pageNotifier.value = 1;
     WidgetsBinding.instance.addPostFrameCallback((_) => oldController.dispose());
 
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
@@ -468,6 +681,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final next = last + 1;
     if (next >= _chapters.length) return;
     if (!_pagesCache.containsKey(_chapters[last].id)) return;
+    _onChapterFinished(last);
     setState(() => _webtoonLoadedIndices.add(next));
     _loadChapter(next);
   }
@@ -476,9 +690,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (notif.depth != 0) return false;
     if (notif is! ScrollUpdateNotification && notif is! ScrollEndNotification) return false;
 
-    if (notif.metrics.extentAfter < 1600) _extendWebtoonFeed();
+    if (notif.metrics.extentAfter < 2000) _extendWebtoonFeed();
+
+    // Reached bottom of loaded webtoon feed -> mark completed chapters read
+    if (notif.metrics.pixels >= notif.metrics.maxScrollExtent - 200) {
+      for (final idx in _webtoonLoadedIndices) {
+        final ch = _chapters[idx];
+        final pages = _pagesCache[ch.id];
+        if (pages != null && pages.isNotEmpty) {
+          _onChapterFinished(idx);
+        }
+      }
+    }
+
     if (DateTime.now().isBefore(_trackingPausedUntil)) return false;
-    _trackWebtoonPosition();
+
+    final now = DateTime.now();
+    // Throttle render-tree measurements to at most once per 80ms during scroll, or on scroll end
+    if (notif is ScrollEndNotification || now.difference(_lastTrackTime).inMilliseconds >= 80) {
+      _lastTrackTime = now;
+      _trackWebtoonPosition();
+    }
     return false;
   }
 
@@ -490,14 +722,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (listBox is! RenderBox || !listBox.attached || !listBox.hasSize) return;
     final anchor = listBox.size.height * 0.4;
 
+    _PageSlot? activeSlot;
     for (final slot in _pageSlots.values) {
       final box = slot.key.currentContext?.findRenderObject();
       if (box is! RenderBox || !box.attached || !box.hasSize) continue;
       final top = box.localToGlobal(Offset.zero, ancestor: listBox).dy;
       if (top <= anchor && anchor < top + box.size.height) {
-        _updateWebtoonPosition(slot.chapterIndex, slot.pageIndex);
-        return;
+        activeSlot = slot;
+        break;
+      } else if (top + box.size.height <= anchor) {
+        // This page is fully above the anchor line (user read past it)
+        final pages = _pagesCache[_chapters[slot.chapterIndex].id];
+        if (pages != null && pages.isNotEmpty && slot.pageIndex >= pages.length - 1) {
+          _onChapterFinished(slot.chapterIndex);
+        }
       }
+    }
+
+    if (activeSlot != null) {
+      _updateWebtoonPosition(activeSlot.chapterIndex, activeSlot.pageIndex);
     }
   }
 
@@ -508,17 +751,25 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     if (chapterIndex != _currentChapterIndex) {
       final oldIdx = _currentChapterIndex;
-      if (chapterIndex == oldIdx + 1) _onChapterFinished(oldIdx);
+      _onChapterFinished(oldIdx);
       setState(() {
         _currentChapterIndex = chapterIndex;
         _totalPages = pages.length;
         _page = newPage;
       });
+      _pageNotifier.value = newPage;
+      if (newPage >= pages.length) {
+        _onChapterFinished(chapterIndex);
+      }
       _syncProgress(newPage);
       _precacheSlidingWindow(pages, pageIndex);
       _loadChapter(chapterIndex + 1);
     } else if (newPage != _page) {
-      setState(() => _page = newPage);
+      _page = newPage;
+      _pageNotifier.value = newPage;
+      if (newPage >= pages.length) {
+        _onChapterFinished(chapterIndex);
+      }
       _syncProgress(newPage);
       _precacheSlidingWindow(pages, pageIndex);
     }
@@ -559,7 +810,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _go(int p) {
     final target = p.clamp(1, _totalPages);
-    setState(() => _page = target);
+    _page = target;
+    _pageNotifier.value = target;
+    final pages = _pagesCache[_currentChapter.id];
+    final actualTotal = pages?.length ?? _totalPages;
+    if (pages != null && pages.isNotEmpty && target >= actualTotal) {
+      _onChapterFinished(_currentChapterIndex);
+    }
     _syncProgress(target);
 
     if (_mode == ReaderMode.webtoon) {
@@ -570,23 +827,41 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _setMode(ReaderMode mode) {
-    if (mode == _mode) return;
+    if (mode == _selectedMode) return;
+    final oldEffective = _effectiveMode;
     final oldController = _pageController;
+
     setState(() {
-      _mode = mode;
-      _pageController = _newPageController(_page - 1);
-      _webtoonLoadedIndices
-        ..clear()
-        ..add(_currentChapterIndex);
-      _pageSlots.clear();
+      _selectedMode = mode;
+      final newEffective = _effectiveMode;
+      if (newEffective != oldEffective) {
+        _pageController = _newPageController(_page - 1);
+        _webtoonLoadedIndices
+          ..clear()
+          ..add(_currentChapterIndex);
+        _pageSlots.clear();
+      }
     });
+
+    SharedPreferences.getInstance().then(
+      (prefs) => prefs.setString('reader_direction_${widget.mangaId}', mode.name),
+    );
+
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      oldController.dispose();
-      if (mounted && _mode == ReaderMode.webtoon && _page > 1) _scrollToWebtoonPage(_page);
+      if (_effectiveMode != oldEffective) {
+        oldController.dispose();
+      }
+      if (mounted && _effectiveMode == ReaderMode.webtoon && _page > 1) {
+        _scrollToWebtoonPage(_page);
+      }
     });
+
+    final msg = mode == ReaderMode.automatic
+        ? 'Reading Direction: Auto (${_effectiveMode.shortLabel})'
+        : 'Reading Direction: ${mode.label}';
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text('Reading Mode: ${mode.label}'),
+        content: Text(msg),
         duration: const Duration(seconds: 1),
       ),
     );
@@ -615,27 +890,30 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ),
               ListTile(
                 leading: Icon(
-                  Icons.swap_vert_rounded,
-                  color: _mode == ReaderMode.webtoon ? AppColors.primary : AppColors.muted,
+                  Icons.auto_awesome_rounded,
+                  color: _selectedMode == ReaderMode.automatic ? AppColors.primary : AppColors.muted,
                 ),
-                title: Text('Webtoon (Vertical continuous scroll 🇰🇷)', style: AppText.bodyMedium),
-                subtitle: Text('Continuous strip across chapters with zero loading', style: AppText.caption),
-                trailing: _mode == ReaderMode.webtoon
+                title: Text('Automatic', style: AppText.bodyMedium),
+                subtitle: Text(
+                  'Auto-detect: Manga → RTL, Manhwa → Webtoon, Other → LTR (${_effectiveMode.label})',
+                  style: AppText.caption,
+                ),
+                trailing: _selectedMode == ReaderMode.automatic
                     ? const Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
                 onTap: () {
                   Navigator.pop(context);
-                  _setMode(ReaderMode.webtoon);
+                  _setMode(ReaderMode.automatic);
                 },
               ),
               ListTile(
                 leading: Icon(
                   Icons.arrow_back_rounded,
-                  color: _mode == ReaderMode.rightToLeft ? AppColors.primary : AppColors.muted,
+                  color: _selectedMode == ReaderMode.rightToLeft ? AppColors.primary : AppColors.muted,
                 ),
                 title: Text('Right to Left (Standard Manga 🇯🇵)', style: AppText.bodyMedium),
                 subtitle: Text('Swipe left for next page, auto-advances to next chapter', style: AppText.caption),
-                trailing: _mode == ReaderMode.rightToLeft
+                trailing: _selectedMode == ReaderMode.rightToLeft
                     ? const Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
                 onTap: () {
@@ -645,12 +923,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ),
               ListTile(
                 leading: Icon(
-                  Icons.arrow_forward_rounded,
-                  color: _mode == ReaderMode.leftToRight ? AppColors.primary : AppColors.muted,
+                  Icons.swap_vert_rounded,
+                  color: _selectedMode == ReaderMode.webtoon ? AppColors.primary : AppColors.muted,
                 ),
-                title: Text('Left to Right (Western comics 🇨🇳)', style: AppText.bodyMedium),
+                title: Text('Webtoon (Vertical continuous scroll 🇰🇷)', style: AppText.bodyMedium),
+                subtitle: Text('Continuous strip across chapters with zero loading', style: AppText.caption),
+                trailing: _selectedMode == ReaderMode.webtoon
+                    ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                    : null,
+                onTap: () {
+                  Navigator.pop(context);
+                  _setMode(ReaderMode.webtoon);
+                },
+              ),
+              ListTile(
+                leading: Icon(
+                  Icons.arrow_forward_rounded,
+                  color: _selectedMode == ReaderMode.leftToRight ? AppColors.primary : AppColors.muted,
+                ),
+                title: Text('Left to Right (Western comics / Manhua 🇨🇳)', style: AppText.bodyMedium),
                 subtitle: Text('Swipe right for next page, auto-advances to next chapter', style: AppText.caption),
-                trailing: _mode == ReaderMode.leftToRight
+                trailing: _selectedMode == ReaderMode.leftToRight
                     ? const Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
                 onTap: () {
@@ -758,7 +1051,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {
+        _flushProgress();
+      },
+      child: Scaffold(
       backgroundColor: AppColors.bg,
       body: Stack(
         fit: StackFit.expand,
@@ -811,7 +1109,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
           ),
         ],
       ),
-    );
+    ),
+  );
   }
 
   Widget _buildReaderBody() =>
@@ -1018,15 +1317,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
         final pageIdx = item.pageIndex ?? 0;
         final chapterId = _chapters[chIdx].id;
         final url = item.url!;
-        return ZoomablePageWrapper(
-          child: _ReaderPageImage(
-            url: url,
-            fallbackUrls: _fallbackUrlsFor(chapterId, pageIdx, url),
-            pageNumber: pageIdx + 1,
-            fit: BoxFit.fitWidth,
-            expandWidth: true,
-            onReloadChapter: () => _reloadChapterPages(chIdx),
-          ),
+        return _ReaderPageImage(
+          url: url,
+          fallbackUrls: _fallbackUrlsFor(chapterId, pageIdx, url),
+          pageNumber: pageIdx + 1,
+          fit: BoxFit.fitWidth,
+          expandWidth: true,
+          onReloadChapter: () => _reloadChapterPages(chIdx),
         );
 
       case _ItemType.divider:
@@ -1143,11 +1440,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
       controller: _pageController,
       reverse: isRtl,
       itemCount: pageCount,
+      physics: const PageScrollPhysics(),
       onPageChanged: (idx) {
         if (idx < pages.length) {
-          if (_page != idx + 1) {
-            setState(() => _page = idx + 1);
-            _syncProgress(idx + 1);
+          final newP = idx + 1;
+          if (_page != newP) {
+            _page = newP;
+            _pageNotifier.value = newP;
+            if (newP >= pages.length) {
+              _onChapterFinished(chapterIdx);
+            }
+            _syncProgress(newP);
             _precacheSlidingWindow(pages, idx);
             // Prefetch next chapter when nearing the end
             if (idx >= pages.length - 3 && chapterIdx + 1 < _chapters.length) {
@@ -1155,6 +1458,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             }
           }
         } else if (hasNext) {
+          _onChapterFinished(chapterIdx);
           _scheduleAutoAdvance(chapterIdx, idx);
         }
       },
@@ -1249,11 +1553,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   style: AppText.bodyMedium,
                 ),
                 const SizedBox(height: 3),
-                Text(
-                  '$_chapterLabel · Page $_page/$_totalPages',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.caption,
+                ValueListenableBuilder<int>(
+                  valueListenable: _pageNotifier,
+                  builder: (_, page, _) => Text(
+                    '$_chapterLabel · Page $page/$_totalPages',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.caption,
+                  ),
                 ),
               ],
             ),
@@ -1294,8 +1601,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
             onTap: () => _reloadChapterPages(_currentChapterIndex),
           ),
           BarIcon(
-            _mode.icon,
-            label: _mode.label,
+            _selectedMode == ReaderMode.automatic ? Icons.auto_awesome_rounded : _mode.icon,
+            label: _selectedMode == ReaderMode.automatic
+                ? 'Auto (${_mode.shortLabel})'
+                : _selectedMode.label,
             onTap: _showModeSheet,
           ),
         ],
@@ -1323,19 +1632,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
             children: [
               _ScrubButton('‹', () => _go(_page - 1)),
               Expanded(
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 3,
-                    activeTrackColor: AppColors.primary,
-                    inactiveTrackColor: AppColors.outline,
-                    thumbColor: AppColors.primary,
-                    overlayColor: AppColors.primary.withValues(alpha: .12),
-                  ),
-                  child: Slider(
-                    min: 1,
-                    max: math.max(1, _totalPages).toDouble(),
-                    value: _page.clamp(1, math.max(1, _totalPages)).toDouble(),
-                    onChanged: (v) => _go(v.round()),
+                child: ValueListenableBuilder<int>(
+                  valueListenable: _pageNotifier,
+                  builder: (context, page, _) => SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 3,
+                      activeTrackColor: AppColors.primary,
+                      inactiveTrackColor: AppColors.outline,
+                      thumbColor: AppColors.primary,
+                      overlayColor: AppColors.primary.withValues(alpha: .12),
+                    ),
+                    child: Slider(
+                      min: 1,
+                      max: math.max(1, _totalPages).toDouble(),
+                      value: page.clamp(1, math.max(1, _totalPages)).toDouble(),
+                      onChanged: (v) => _go(v.round()),
+                    ),
                   ),
                 ),
               ),
@@ -1343,10 +1655,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 constraints: const BoxConstraints(minWidth: 52),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
-                  child: Text(
-                    '$_page / $_totalPages',
-                    textAlign: TextAlign.center,
-                    style: AppText.caption,
+                  child: ValueListenableBuilder<int>(
+                    valueListenable: _pageNotifier,
+                    builder: (_, page, _) => Text(
+                      '$page / $_totalPages',
+                      textAlign: TextAlign.center,
+                      style: AppText.caption,
+                    ),
                   ),
                 ),
               ),
@@ -1401,10 +1716,16 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     child: Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(_mode.icon, size: 20, color: AppColors.primary),
+                        Icon(
+                          _selectedMode == ReaderMode.automatic ? Icons.auto_awesome_rounded : _mode.icon,
+                          size: 20,
+                          color: AppColors.primary,
+                        ),
                         const SizedBox(height: 4),
                         Text(
-                          _mode.label,
+                          _selectedMode == ReaderMode.automatic
+                              ? 'Auto (${_mode.shortLabel})'
+                              : _selectedMode.label,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: AppText.caption.copyWith(color: AppColors.primary),
@@ -1587,6 +1908,20 @@ class ZoomablePageWrapper extends StatefulWidget {
 class _ZoomablePageWrapperState extends State<ZoomablePageWrapper> {
   final TransformationController _controller = TransformationController();
   TapDownDetails? _doubleTapDetails;
+  bool _isZoomed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_onTransformChanged);
+  }
+
+  void _onTransformChanged() {
+    final zoomed = _controller.value.getMaxScaleOnAxis() > 1.05;
+    if (zoomed != _isZoomed) {
+      setState(() => _isZoomed = zoomed);
+    }
+  }
 
   void _handleDoubleTap() {
     final currentScale = _controller.value.getMaxScaleOnAxis();
@@ -1603,6 +1938,7 @@ class _ZoomablePageWrapperState extends State<ZoomablePageWrapper> {
 
   @override
   void dispose() {
+    _controller.removeListener(_onTransformChanged);
     _controller.dispose();
     super.dispose();
   }
@@ -1617,6 +1953,7 @@ class _ZoomablePageWrapperState extends State<ZoomablePageWrapper> {
         transformationController: _controller,
         minScale: 1.0,
         maxScale: 4.0,
+        panEnabled: _isZoomed,
         clipBehavior: Clip.none,
         child: widget.child,
       ),
@@ -1698,7 +2035,7 @@ class _ReaderPageImageState extends State<_ReaderPageImage> {
       fallbackUrls: widget.fallbackUrls,
       fit: widget.fit,
       width: widget.expandWidth ? double.infinity : null,
-      fadeInDuration: const Duration(milliseconds: 220),
+      fadeInDuration: const Duration(milliseconds: 60),
       progressBuilder: (_, progress) => _PageLoadingSkeleton(
         pageNumber: widget.pageNumber,
         progress: progress,

@@ -207,15 +207,20 @@ class _UpdatesScreenState extends State<UpdatesScreen>
                               _ApiUpdateRow(
                                 item: item,
                                 onTap: () {
+                                  final mId = item['mangaId']?.toString() ?? '';
+                                  final known = ApiService.instance.libraryRepo.knownManga[mId] ??
+                                      ApiService.instance.libraryRepo.localLibrary[mId];
                                   Navigator.of(context).push(
                                     smoothRoute(
                                       ReaderScreen(
                                         chapterId: item['id']?.toString() ?? '',
-                                        mangaId: item['mangaId']?.toString() ?? '',
+                                        mangaId: mId,
                                         mangaTitle: item['mangaTitle'] ?? 'Untitled',
                                         chapterTitle: item['chapterTitle'],
                                         coverUrl: item['cover'],
                                         chapterNumber: item['chapterNumber']?.toString(),
+                                        mangaType: known?.type ?? item['type']?.toString(),
+                                        tags: known?.tags,
                                       ),
                                     ),
                                   );

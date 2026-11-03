@@ -11,10 +11,7 @@ class FlameScraper {
   List<MangaItem>? _flameSeriesCache;
   DateTime? _flameCacheExpiresAt;
 
-  FlameScraper({
-    required this._clientProvider,
-    this._cache,
-  });
+  FlameScraper({required this._clientProvider, this._cache});
 
   http.Client get _client => _clientProvider();
 
@@ -67,7 +64,8 @@ class FlameScraper {
       if (end == -1) return [];
       final jsonStr = html.substring(html.indexOf('>', idx) + 1, end);
       final data = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final seriesList = (data['props']?['pageProps']?['series'] as List<dynamic>?) ?? [];
+      final seriesList =
+          (data['props']?['pageProps']?['series'] as List<dynamic>?) ?? [];
 
       final items = seriesList.map((item) {
         final sId = item['series_id']?.toString() ?? '';
@@ -75,16 +73,33 @@ class FlameScraper {
         final rawCover = coverFile.startsWith('http')
             ? coverFile
             : (coverFile.isNotEmpty
-                ? 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$coverFile'
-                : '');
-        final coverUrl = HtmlScraperUtils.normalizeImgUrl(rawCover, referer: 'https://flamecomics.xyz/');
-        final cats = (item['categories'] as List<dynamic>?)?.map((c) => c.toString()).toList() ?? <String>[];
-        final authors = (item['author'] as List<dynamic>?)?.map((a) => a.toString()).toList() ?? <String>[];
+                  ? 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$coverFile'
+                  : '');
+        final coverUrl = HtmlScraperUtils.normalizeImgUrl(
+          rawCover,
+          referer: 'https://flamecomics.xyz/',
+        );
+        final cats =
+            (item['categories'] as List<dynamic>?)
+                ?.map((c) => c.toString())
+                .toList() ??
+            <String>[];
+        final authors =
+            (item['author'] as List<dynamic>?)
+                ?.map((a) => a.toString())
+                .toList() ??
+            <String>[];
 
         return MangaItem(
           id: 'flame:$sId',
-          title: HtmlScraperUtils.unescapeHtml(item['title']?.toString() ?? 'Untitled'),
-          description: HtmlScraperUtils.unescapeHtml((item['description']?.toString() ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim()),
+          title: HtmlScraperUtils.unescapeHtml(
+            item['title']?.toString() ?? 'Untitled',
+          ),
+          description: HtmlScraperUtils.unescapeHtml(
+            (item['description']?.toString() ?? '')
+                .replaceAll(RegExp(r'<[^>]*>'), '')
+                .trim(),
+          ),
           cover: coverUrl,
           status: item['status']?.toString() ?? '',
           type: item['type']?.toString().toLowerCase() ?? 'manhwa',
@@ -117,7 +132,8 @@ class FlameScraper {
       final t = type.toLowerCase();
       items = items.where((m) {
         final mt = m.type.toLowerCase();
-        if (t == 'manhwa') return mt.contains('manhwa') || mt == 'webtoon' || mt == 'comic';
+        if (t == 'manhwa')
+          return mt.contains('manhwa') || mt == 'webtoon' || mt == 'comic';
         if (t == 'manga') return mt.contains('manga');
         if (t == 'manhua') return mt.contains('manhua');
         return mt == t;
@@ -126,9 +142,13 @@ class FlameScraper {
 
     if (query != null && query.trim().isNotEmpty) {
       final q = query.trim().toLowerCase();
-      items = items.where((m) =>
-          m.title.toLowerCase().contains(q) ||
-          m.description.toLowerCase().contains(q)).toList();
+      items = items
+          .where(
+            (m) =>
+                m.title.toLowerCase().contains(q) ||
+                m.description.toLowerCase().contains(q),
+          )
+          .toList();
       items.sort((a, b) {
         final aTitle = a.title.toLowerCase().contains(q) ? 0 : 1;
         final bTitle = b.title.toLowerCase().contains(q) ? 0 : 1;
@@ -162,21 +182,40 @@ class FlameScraper {
         final end = html.indexOf('</script>', idx);
         final jsonStr = html.substring(html.indexOf('>', idx) + 1, end);
         final data = jsonDecode(jsonStr) as Map<String, dynamic>;
-        final s = data['props']?['pageProps']?['series'] as Map<String, dynamic>? ?? {};
+        final s =
+            data['props']?['pageProps']?['series'] as Map<String, dynamic>? ??
+            {};
         final coverFile = s['cover']?.toString() ?? '';
         final rawCover = coverFile.startsWith('http')
             ? coverFile
             : (coverFile.isNotEmpty
-                ? 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$coverFile'
-                : '');
-        final coverUrl = HtmlScraperUtils.normalizeImgUrl(rawCover, referer: 'https://flamecomics.xyz/');
-        final cats = (s['categories'] as List<dynamic>?)?.map((c) => c.toString()).toList() ?? <String>[];
-        final authors = (s['author'] as List<dynamic>?)?.map((a) => a.toString()).toList() ?? <String>[];
+                  ? 'https://cdn.flamecomics.xyz/uploads/images/series/$sId/$coverFile'
+                  : '');
+        final coverUrl = HtmlScraperUtils.normalizeImgUrl(
+          rawCover,
+          referer: 'https://flamecomics.xyz/',
+        );
+        final cats =
+            (s['categories'] as List<dynamic>?)
+                ?.map((c) => c.toString())
+                .toList() ??
+            <String>[];
+        final authors =
+            (s['author'] as List<dynamic>?)
+                ?.map((a) => a.toString())
+                .toList() ??
+            <String>[];
 
         return MangaItem(
           id: id,
-          title: HtmlScraperUtils.unescapeHtml(s['title']?.toString() ?? 'Untitled'),
-          description: HtmlScraperUtils.unescapeHtml((s['description']?.toString() ?? '').replaceAll(RegExp(r'<[^>]*>'), '').trim()),
+          title: HtmlScraperUtils.unescapeHtml(
+            s['title']?.toString() ?? 'Untitled',
+          ),
+          description: HtmlScraperUtils.unescapeHtml(
+            (s['description']?.toString() ?? '')
+                .replaceAll(RegExp(r'<[^>]*>'), '')
+                .trim(),
+          ),
           cover: coverUrl,
           status: s['status']?.toString() ?? '',
           type: s['type']?.toString().toLowerCase() ?? 'manhwa',
@@ -210,7 +249,8 @@ class FlameScraper {
         final end = html.indexOf('</script>', idx);
         final jsonStr = html.substring(html.indexOf('>', idx) + 1, end);
         final data = jsonDecode(jsonStr) as Map<String, dynamic>;
-        final chs = (data['props']?['pageProps']?['chapters'] as List<dynamic>?) ?? [];
+        final chs =
+            (data['props']?['pageProps']?['chapters'] as List<dynamic>?) ?? [];
 
         final list = chs.map((c) {
           final token = c['token']?.toString() ?? '';
@@ -243,15 +283,17 @@ class FlameScraper {
     if (parts.length < 3) throw Exception('Invalid Flame chapter ID');
     final sId = parts[1];
     final token = parts[2];
-    final res = await _client.get(
-      Uri.parse('https://flamecomics.xyz/series/$sId/$token'),
-      headers: const {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
-        'Referer': 'https://flamecomics.xyz/',
-      },
-    ).timeout(const Duration(seconds: 10));
+    final res = await _client
+        .get(
+          Uri.parse('https://flamecomics.xyz/series/$sId/$token'),
+          headers: const {
+            'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html',
+            'Referer': 'https://flamecomics.xyz/',
+          },
+        )
+        .timeout(const Duration(seconds: 10));
 
     HtmlScraperUtils.checkResponseHealth(res, 'Flame Comics');
 
@@ -266,7 +308,9 @@ class FlameScraper {
         final pagesList = <String>[];
         if (imgsObj is Map<String, dynamic>) {
           final sortedKeys = imgsObj.keys.toList()
-            ..sort((a, b) => (int.tryParse(a) ?? 0).compareTo(int.tryParse(b) ?? 0));
+            ..sort(
+              (a, b) => (int.tryParse(a) ?? 0).compareTo(int.tryParse(b) ?? 0),
+            );
           for (final k in sortedKeys) {
             final imgMap = imgsObj[k];
             if (imgMap is Map<String, dynamic>) {
@@ -282,7 +326,9 @@ class FlameScraper {
           }
         } else if (imgsObj is List) {
           for (final entry in imgsObj) {
-            final name = entry is Map ? entry['name']?.toString() ?? '' : entry.toString();
+            final name = entry is Map
+                ? entry['name']?.toString() ?? ''
+                : entry.toString();
             if (name.isNotEmpty) {
               final u = HtmlScraperUtils.normalizeImgUrl(
                 name.startsWith('http')
@@ -294,7 +340,11 @@ class FlameScraper {
             }
           }
         }
-        return ChapterPages(chapterId: chapterId, pages: pagesList, dataSaver: pagesList);
+        return ChapterPages(
+          chapterId: chapterId,
+          pages: pagesList,
+          dataSaver: pagesList,
+        );
       }
     }
     throw Exception('Failed to load Flame Comics chapter pages');

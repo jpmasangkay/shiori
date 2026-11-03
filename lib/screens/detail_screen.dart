@@ -302,6 +302,8 @@ class _DetailScreenState extends State<DetailScreen> {
           chapterTitle: title,
           chapters: readingChapters,
           initialIndex: idx,
+          mangaType: _manga.type,
+          tags: _manga.tags,
         ),
       ),
     ).then((_) {

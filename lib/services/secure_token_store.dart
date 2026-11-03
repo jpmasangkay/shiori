@@ -39,7 +39,11 @@ class SecureTokenStore {
       _useMemoryFallback = true;
       _memoryFallback[key] = value;
     } catch (e, st) {
-      AppLogger.warn('SecureTokenStore write failed for key $key, falling back to memory', e, st);
+      AppLogger.warn(
+        'SecureTokenStore write failed for key $key, falling back to memory',
+        e,
+        st,
+      );
       _useMemoryFallback = true;
       _memoryFallback[key] = value;
     }
@@ -60,7 +64,11 @@ class SecureTokenStore {
       _useMemoryFallback = true;
       return _memoryFallback[key];
     } catch (e, st) {
-      AppLogger.warn('SecureTokenStore read failed for key $key, falling back to memory', e, st);
+      AppLogger.warn(
+        'SecureTokenStore read failed for key $key, falling back to memory',
+        e,
+        st,
+      );
       _useMemoryFallback = true;
       return _memoryFallback[key];
     }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../models/manga_models.dart';
+import '../services/api_service.dart';
 import '../services/download_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -332,6 +333,9 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
             ))
         .toList();
 
+    final known = ApiService.instance.libraryRepo.knownManga[chapter.mangaId] ??
+        ApiService.instance.libraryRepo.localLibrary[chapter.mangaId];
+
     Navigator.of(context).push(
       smoothRoute(
         ReaderScreen(
@@ -342,6 +346,8 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
           chapterNumber: chapter.chapterNumber,
           coverUrl: chapter.mangaCover,
           chapters: chapterItems,
+          mangaType: known?.type,
+          tags: known?.tags,
         ),
       ),
     );

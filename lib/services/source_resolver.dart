@@ -81,7 +81,8 @@ class SourceResolver {
         s == 'mread';
   }
 
-  static String resolveSource(String id, [String? explicit]) => resolve(id, explicit);
+  static String resolveSource(String id, [String? explicit]) =>
+      resolve(id, explicit);
 
   static String prefix(String source, String id) {
     if (id.startsWith('$source:')) return id;
