@@ -297,7 +297,12 @@ class HistoryRepository extends ChangeNotifier {
     return _bookmarkedChapterIds.contains(chapterId);
   }
 
-  Future<bool> toggleChapterBookmark(String chapterId) async {
+  Future<bool> toggleChapterBookmark(
+    String chapterId, {
+    http.Client? client,
+    String? baseUrl,
+    Map<String, String>? headers,
+  }) async {
     final has = _bookmarkedChapterIds.contains(chapterId);
     if (has) {
       _bookmarkedChapterIds.remove(chapterId);
@@ -306,6 +311,24 @@ class HistoryRepository extends ChangeNotifier {
     }
     await _persistChapterBookmarks();
     notifyListeners();
+
+    // Silent background cloud sync for real-time chapter bookmark update
+    if (client != null && baseUrl != null && headers != null) {
+      try {
+        unawaited(
+          client
+              .post(
+                Uri.parse('$baseUrl/progress/chapter-bookmarks/toggle'),
+                headers: headers,
+                body: jsonEncode({'chapterId': chapterId}),
+              )
+              .timeout(const Duration(seconds: 5)),
+        );
+      } catch (e) {
+        AppLogger.warn('Cloud chapter bookmark toggle failed', e);
+      }
+    }
+
     return !has;
   }
 
@@ -385,7 +408,12 @@ class HistoryRepository extends ChangeNotifier {
     String baseUrl,
     Map<String, String> headers,
   ) async {
-    if (_localProgress.isEmpty && _localHistory.isEmpty && _readChapters.isEmpty) return;
+    if (_localProgress.isEmpty &&
+        _localHistory.isEmpty &&
+        _readChapters.isEmpty &&
+        _bookmarkedChapterIds.isEmpty) {
+      return;
+    }
 
     final entriesToUpload = <Map<String, dynamic>>[];
     final seenChapters = <String>{};
@@ -413,6 +441,7 @@ class HistoryRepository extends ChangeNotifier {
             body: jsonEncode({
               'entries': entriesToUpload,
               'readChaptersByManga': readChaptersMap,
+              'chapterBookmarks': _bookmarkedChapterIds.toList(),
             }),
           )
           .timeout(const Duration(seconds: 10));
@@ -433,11 +462,14 @@ class HistoryRepository extends ChangeNotifier {
           .timeout(const Duration(seconds: 8));
       if (syncRes.statusCode == 200) {
         final data = jsonDecode(syncRes.body) as Map<String, dynamic>;
-        if (data.containsKey('history') || data.containsKey('progressByManga')) {
+        if (data.containsKey('history') ||
+            data.containsKey('progressByManga') ||
+            data.containsKey('chapterBookmarks')) {
           _mergeSyncPayload(data);
           await _persistLocalHistory();
           await _persistLocalProgress();
           await _persistReadChapters();
+          await _persistChapterBookmarks();
           notifyListeners();
           return;
         }
@@ -463,11 +495,32 @@ class HistoryRepository extends ChangeNotifier {
         }
         await _persistLocalHistory();
         await _persistLocalProgress();
-        notifyListeners();
       }
     } catch (e) {
       AppLogger.warn('downloadAndMergeSyncData fallback failed', e);
     }
+
+    // 3. Fallback check for chapter bookmarks if sync endpoint did not deliver them
+    try {
+      final bmRes = await client
+          .get(Uri.parse('$baseUrl/progress/chapter-bookmarks'), headers: headers)
+          .timeout(const Duration(seconds: 6));
+      if (bmRes.statusCode == 200) {
+        final data = jsonDecode(bmRes.body) as Map<String, dynamic>;
+        final bms = data['chapterBookmarks'] as List<dynamic>?;
+        if (bms != null) {
+          for (final b in bms) {
+            final bStr = b?.toString().trim();
+            if (bStr != null && bStr.isNotEmpty) {
+              _bookmarkedChapterIds.add(bStr);
+            }
+          }
+          await _persistChapterBookmarks();
+        }
+      }
+    } catch (_) {}
+
+    notifyListeners();
   }
 
   void _mergeSyncPayload(Map<String, dynamic> data) {
@@ -505,6 +558,17 @@ class HistoryRepository extends ChangeNotifier {
         localSet.addAll(list.map((e) => e.toString()));
       }
     });
+
+    // 4. Chapter ribbon favorites cross-device cloud sync
+    final chapterBookmarksList = data['chapterBookmarks'] as List<dynamic>?;
+    if (chapterBookmarksList != null) {
+      for (final b in chapterBookmarksList) {
+        final bStr = b?.toString().trim();
+        if (bStr != null && bStr.isNotEmpty) {
+          _bookmarkedChapterIds.add(bStr);
+        }
+      }
+    }
   }
 
   void mergeRemoteHistory(List<dynamic> remoteItems) {

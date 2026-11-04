@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme.dart';
 
-/// Shimmer effect that pulses a gradient smoothly across its children.
+/// Smooth breathing pulse effect that is lightweight and hardware-accelerated for low-end devices.
 class ShimmerLoading extends StatefulWidget {
   final Widget child;
   final bool isLoading;
@@ -25,11 +25,11 @@ class _ShimmerLoadingState extends State<ShimmerLoading> with SingleTickerProvid
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1400),
-    )..repeat();
+      duration: const Duration(milliseconds: 900),
+    )..repeat(reverse: true);
 
-    _animation = Tween<double>(begin: -1.0, end: 2.0).animate(
-      CurvedAnimation(parent: _controller, curve: Curves.easeInOutSine),
+    _animation = Tween<double>(begin: 0.38, end: 0.95).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
     );
   }
 
@@ -43,31 +43,11 @@ class _ShimmerLoadingState extends State<ShimmerLoading> with SingleTickerProvid
   Widget build(BuildContext context) {
     if (!widget.isLoading) return widget.child;
 
-    return AnimatedBuilder(
-      animation: _animation,
-      builder: (context, child) {
-        return ShaderMask(
-          blendMode: BlendMode.srcATop,
-          shaderCallback: (bounds) {
-            return LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              stops: [
-                (_animation.value - 0.3).clamp(0.0, 1.0),
-                _animation.value.clamp(0.0, 1.0),
-                (_animation.value + 0.3).clamp(0.0, 1.0),
-              ],
-              colors: const [
-                AppColors.surface,
-                AppColors.outline,
-                AppColors.surface,
-              ],
-            ).createShader(bounds);
-          },
-          child: child,
-        );
-      },
-      child: widget.child,
+    return RepaintBoundary(
+      child: FadeTransition(
+        opacity: _animation,
+        child: widget.child,
+      ),
     );
   }
 }

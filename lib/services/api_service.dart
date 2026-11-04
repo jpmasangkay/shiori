@@ -434,7 +434,12 @@ class ApiService extends ChangeNotifier {
 
   bool isChapterBookmarked(String chapterId) => historyRepo.isChapterBookmarked(chapterId);
 
-  Future<bool> toggleChapterBookmark(String chapterId) => historyRepo.toggleChapterBookmark(chapterId);
+  Future<bool> toggleChapterBookmark(String chapterId) => historyRepo.toggleChapterBookmark(
+        chapterId,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
 
   Future<void> setChapterBookmarked(String chapterId, bool bookmarked) =>
       historyRepo.setChapterBookmarked(chapterId, bookmarked);
@@ -519,6 +524,46 @@ class ApiService extends ChangeNotifier {
     }
     notifyListeners();
     return newChaptersCount;
+  }
+
+  bool _isAutoRefreshing = false;
+  bool get isAutoRefreshing => _isAutoRefreshing;
+  DateTime? _lastAutoRefresh;
+
+  /// High-performance automated refresh:
+  /// Synchronizes cloud state, checks library for new chapters, updates extensions,
+  /// and updates all screens. Throttled (min 20s between runs) and non-blocking
+  /// to ensure buttery performance even on budget phones.
+  Future<void> autoRefreshEverything({bool force = false}) async {
+    final now = DateTime.now();
+    if (_isAutoRefreshing) return;
+    if (!force && _lastAutoRefresh != null && now.difference(_lastAutoRefresh!) < const Duration(seconds: 20)) {
+      return;
+    }
+
+    _isAutoRefreshing = true;
+    _lastAutoRefresh = now;
+    notifyListeners();
+
+    try {
+      // 1. Silent cloud synchronization if signed in
+      if (isLoggedIn) {
+        await syncAllCloudData();
+      }
+
+      // 2. Automatic background library chapter update check (4 at a time to prevent UI lag)
+      await checkForLibraryUpdates();
+
+      // 3. Silent extension status check
+      try {
+        await ExtensionService.instance.refreshDeviceExtensions();
+      } catch (_) {}
+    } catch (e, st) {
+      AppLogger.warn('autoRefreshEverything failed: $e', e, st);
+    } finally {
+      _isAutoRefreshing = false;
+      notifyListeners();
+    }
   }
 
   // ---- Backup & Restore ----

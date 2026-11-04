@@ -1,5 +1,5 @@
 import express from 'express';
-import { Progress } from '../models.js';
+import { Progress, User } from '../models.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -153,6 +153,19 @@ router.post('/batch', async (req, res) => {
       await Progress.bulkWrite(ops);
     }
 
+    const rawBookmarks = Array.isArray(req.body?.chapterBookmarks) ? req.body.chapterBookmarks : null;
+    if (rawBookmarks && rawBookmarks.length > 0) {
+      const cleanBookmarks = rawBookmarks
+        .filter((id) => typeof id === 'string' && id.trim())
+        .map((id) => id.trim())
+        .slice(0, 5000);
+      if (cleanBookmarks.length > 0) {
+        await User.findByIdAndUpdate(req.user.id, {
+          $addToSet: { chapterBookmarks: { $each: cleanBookmarks } },
+        });
+      }
+    }
+
     res.json({ success: true, updated: ops.length });
   } catch (err) {
     console.error('[Progress Batch Error]', err.message);
@@ -199,14 +212,66 @@ router.get('/sync', async (req, res) => {
       }
     }
 
+    const userDoc = await User.findById(req.user.id).select('chapterBookmarks');
+    const chapterBookmarks = userDoc?.chapterBookmarks || [];
+
     res.json({
       history,
       progressByManga,
       readChaptersByManga,
+      chapterBookmarks,
     });
   } catch (err) {
     console.error('[Progress Sync Error]', err.message);
     res.status(500).json({ error: 'Failed to retrieve sync state' });
+  }
+});
+
+// GET /api/progress/chapter-bookmarks - Retrieve user's chapter bookmarks
+router.get('/chapter-bookmarks', async (req, res) => {
+  try {
+    const userDoc = await User.findById(req.user.id).select('chapterBookmarks');
+    res.json({ chapterBookmarks: userDoc?.chapterBookmarks || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/progress/chapter-bookmarks - Update / merge user's chapter bookmarks
+router.put('/chapter-bookmarks', async (req, res) => {
+  try {
+    const raw = Array.isArray(req.body?.chapterBookmarks) ? req.body.chapterBookmarks : [];
+    const clean = raw.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim());
+    const userDoc = await User.findByIdAndUpdate(
+      req.user.id,
+      { $addToSet: { chapterBookmarks: { $each: clean } } },
+      { new: true },
+    ).select('chapterBookmarks');
+    res.json({ success: true, chapterBookmarks: userDoc?.chapterBookmarks || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/progress/chapter-bookmarks/toggle - Toggle single chapter bookmark
+router.post('/chapter-bookmarks/toggle', async (req, res) => {
+  try {
+    const { chapterId } = req.body;
+    if (!chapterId || typeof chapterId !== 'string') {
+      return res.status(400).json({ error: 'chapterId is required' });
+    }
+    const cleanId = chapterId.trim();
+    const user = await User.findById(req.user.id).select('chapterBookmarks');
+    const bookmarks = user?.chapterBookmarks || [];
+    const exists = bookmarks.includes(cleanId);
+    if (exists) {
+      await User.findByIdAndUpdate(req.user.id, { $pull: { chapterBookmarks: cleanId } });
+    } else {
+      await User.findByIdAndUpdate(req.user.id, { $addToSet: { chapterBookmarks: cleanId } });
+    }
+    res.json({ success: true, bookmarked: !exists, chapterId: cleanId });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

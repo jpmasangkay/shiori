@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 
 import 'screens/browse_screen.dart';
@@ -14,6 +15,9 @@ import 'widgets/auth_modal.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Performance tuning for low-end phones: constrain decoded image cache to prevent OOM
+  PaintingBinding.instance.imageCache.maximumSize = 250;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 64 * 1024 * 1024; // 64 MB
   await ThemeController.instance.init();
   await ConnectivityService.instance.init();
   await ApiService.instance.init();
@@ -46,28 +50,34 @@ class RootShell extends StatefulWidget {
 class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   int _index = 0;
   final Set<int> _loadedTabs = {0};
-  DateTime? _lastResumeSync;
+  Timer? _autoRefreshTimer;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Continuous background automatic refresh (every 60 seconds)
+    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      ApiService.instance.autoRefreshEverything();
+    });
+    // Automatic refresh on initial launch
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ApiService.instance.autoRefreshEverything();
+    });
   }
 
   @override
   void dispose() {
+    _autoRefreshTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && ApiService.instance.isLoggedIn) {
-      final now = DateTime.now();
-      if (_lastResumeSync == null || now.difference(_lastResumeSync!) > const Duration(seconds: 15)) {
-        _lastResumeSync = now;
-        ApiService.instance.syncAllCloudData();
-      }
+    // When returning to app from background / another app, automatically refresh everything!
+    if (state == AppLifecycleState.resumed) {
+      ApiService.instance.autoRefreshEverything();
     }
   }
 

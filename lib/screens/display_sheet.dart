@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import '../display_settings.dart';
 import '../theme.dart';
 
-Future<void> showDisplaySheet(BuildContext context) {
+Future<void> showDisplaySheet(BuildContext context, {VoidCallback? onManageCategories}) {
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -14,12 +14,14 @@ Future<void> showDisplaySheet(BuildContext context) {
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
     ),
     clipBehavior: Clip.antiAlias,
-    builder: (_) => const _DisplaySheet(),
+    builder: (_) => _DisplaySheet(onManageCategories: onManageCategories),
   );
 }
 
 class _DisplaySheet extends StatelessWidget {
-  const _DisplaySheet();
+  const _DisplaySheet({this.onManageCategories});
+
+  final VoidCallback? onManageCategories;
 
   @override
   Widget build(BuildContext context) {
@@ -56,9 +58,9 @@ class _DisplaySheet extends StatelessWidget {
               overlayColor: const WidgetStatePropertyAll(Colors.transparent),
               tabs: const [Tab(text: 'Sort'), Tab(text: 'Display')],
             ),
-            const Expanded(
+            Expanded(
               child: TabBarView(
-                children: [_SortTab(), _DisplayTab()],
+                children: [_SortTab(), _DisplayTab(onManageCategories: onManageCategories)],
               ),
             ),
           ],
@@ -84,7 +86,9 @@ class _Heading extends StatelessWidget {
 }
 
 class _DisplayTab extends StatelessWidget {
-  const _DisplayTab();
+  const _DisplayTab({this.onManageCategories});
+
+  final VoidCallback? onManageCategories;
 
   @override
   Widget build(BuildContext context) {
@@ -164,6 +168,34 @@ class _DisplayTab extends StatelessWidget {
             const SizedBox(height: 18),
             const _Heading('Library'),
             _ToggleRow('Category tabs', s.categoryTabs, (v) => s.update(() => s.categoryTabs = v)),
+            if (onManageCategories != null) ...[
+              const SizedBox(height: 8),
+              InkWell(
+                onTap: () {
+                  Navigator.pop(context);
+                  onManageCategories!();
+                },
+                borderRadius: BorderRadius.circular(8),
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(minHeight: 44),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.playlist_add_rounded, size: 20, color: AppColors.primary),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'Manage categories',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.body,
+                        ),
+                      ),
+                      const Icon(Icons.chevron_right_rounded, size: 20, color: AppColors.muted),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ],
         );
       },

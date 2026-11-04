@@ -129,23 +129,23 @@ class _LibraryScreenState extends State<LibraryScreen>
         (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
       );
     } else if (sort == LibrarySort.lastRead) {
-      items.sort((a, b) {
-        final dtA = ApiService.instance.historyRepo.localProgress[a.id]?.updatedAt ?? DateTime(1970);
-        final dtB = ApiService.instance.historyRepo.localProgress[b.id]?.updatedAt ?? DateTime(1970);
-        return dtB.compareTo(dtA);
-      });
+      final dateMap = <String, DateTime>{
+        for (final m in items)
+          m.id: ApiService.instance.historyRepo.localProgress[m.id]?.updatedAt ?? DateTime(1970),
+      };
+      items.sort((a, b) => (dateMap[b.id]!).compareTo(dateMap[a.id]!));
     } else if (sort == LibrarySort.lastUpdated) {
-      items.sort((a, b) {
-        final chA = double.tryParse(a.lastChapter ?? '') ?? 0.0;
-        final chB = double.tryParse(b.lastChapter ?? '') ?? 0.0;
-        return chB.compareTo(chA);
-      });
+      final chapterMap = <String, double>{
+        for (final m in items)
+          m.id: double.tryParse(m.lastChapter ?? '') ?? 0.0,
+      };
+      items.sort((a, b) => (chapterMap[b.id]!).compareTo(chapterMap[a.id]!));
     } else if (sort == LibrarySort.unreadCount) {
-      items.sort((a, b) {
-        final uA = ApiService.instance.getUnreadCount(a.id);
-        final uB = ApiService.instance.getUnreadCount(b.id);
-        return uB.compareTo(uA);
-      });
+      final unreadMap = <String, int>{
+        for (final m in items)
+          m.id: ApiService.instance.getUnreadCount(m.id),
+      };
+      items.sort((a, b) => (unreadMap[b.id]!).compareTo(unreadMap[a.id]!));
     }
     return items;
   }
@@ -745,15 +745,22 @@ class _LibraryScreenState extends State<LibraryScreen>
         final userCats = ApiService.instance.getCategories();
         final validCatIds = userCats.map((c) => c.id).toSet();
 
-        final categoryCounts = <String, int>{
-          for (final c in userCats)
-            c.id: _userLibrary
-                .where((m) => ApiService.instance.getMangaCategoryIds(m.id).contains(c.id))
-                .length,
-        };
-        final uncategorizedCount = _userLibrary
-            .where((m) => !ApiService.instance.getMangaCategoryIds(m.id).any(validCatIds.contains))
-            .length;
+        // Optimized single-pass category count calculation for low-end CPUs
+        final categoryCounts = <String, int>{};
+        int uncategorizedCount = 0;
+        for (final m in _userLibrary) {
+          final catIds = ApiService.instance.getMangaCategoryIds(m.id);
+          bool hasValidCat = false;
+          for (final cid in catIds) {
+            if (validCatIds.contains(cid)) {
+              categoryCounts[cid] = (categoryCounts[cid] ?? 0) + 1;
+              hasValidCat = true;
+            }
+          }
+          if (!hasValidCat) {
+            uncategorizedCount++;
+          }
+        }
 
         // Categories ONLY appear when they have something in them
         final visibleTabCategories = <(String?, String)>[];
@@ -802,15 +809,16 @@ class _LibraryScreenState extends State<LibraryScreen>
                       ),
                   ],
                 ),
-                BarIcon(
-                  Icons.playlist_add_rounded,
-                  label: 'Manage categories',
-                  onTap: _showCategoryManagementSheet,
-                ),
+                if (!s.categoryTabs || _userLibrary.isEmpty || visibleTabCategories.isEmpty)
+                  BarIcon(
+                    Icons.playlist_add_rounded,
+                    label: 'Manage categories',
+                    onTap: _showCategoryManagementSheet,
+                  ),
                 BarIcon(
                   Icons.filter_list_rounded,
                   label: 'Filter, sort and display',
-                  onTap: () => showDisplaySheet(context),
+                  onTap: () => showDisplaySheet(context, onManageCategories: _showCategoryManagementSheet),
                 ),
               ],
             ),
@@ -1030,14 +1038,16 @@ class _LibraryScreenState extends State<LibraryScreen>
       itemBuilder: (_, i) {
         final manga = items[i];
         final unread = ApiService.instance.getUnreadCount(manga.id);
-        return CoverCard(
-          title: manga.title,
-          imageUrl: manga.cover,
-          mangaId: manga.id,
-          mode: s.mode,
-          unreadCount: unread,
-          onTap: () => _openManga(manga),
-          onLongPress: () => _showMangaContextMenu(manga),
+        return RepaintBoundary(
+          child: CoverCard(
+            title: manga.title,
+            imageUrl: manga.cover,
+            mangaId: manga.id,
+            mode: s.mode,
+            unreadCount: unread,
+            onTap: () => _openManga(manga),
+            onLongPress: () => _showMangaContextMenu(manga),
+          ),
         );
       },
     );
@@ -1051,8 +1061,9 @@ class _LibraryScreenState extends State<LibraryScreen>
       itemBuilder: (_, i) {
         final manga = items[i];
         final unread = ApiService.instance.getUnreadCount(manga.id);
-        return Dismissible(
-          key: ValueKey('lib_dismiss_${manga.id}'),
+        return RepaintBoundary(
+          child: Dismissible(
+            key: ValueKey('lib_dismiss_${manga.id}'),
           direction: DismissDirection.endToStart,
           background: Container(
             alignment: Alignment.centerRight,
@@ -1133,10 +1144,11 @@ class _LibraryScreenState extends State<LibraryScreen>
               ),
             ),
           ),
-        );
-      },
-    );
-  }
+        ),
+      );
+    },
+  );
+}
 }
 
 class _Tabs extends StatelessWidget {
@@ -1157,69 +1169,117 @@ class _Tabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(minHeight: 44),
+      height: 48,
       decoration: const BoxDecoration(
-        border: Border(bottom: BorderSide(color: AppColors.outline)),
+        border: Border(bottom: BorderSide(color: AppColors.outline, width: 0.8)),
       ),
-      child: Row(
-        children: [
-          Expanded(
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.only(left: 4),
-              child: Row(
-                children: [
-                  for (final (key, label) in categories)
-                    InkWell(
-                      onTap: () => onSelect(key),
-                      child: Container(
-                        constraints: const BoxConstraints(minHeight: 44),
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        alignment: Alignment.center,
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              '$label ${counts[key] ?? 0}',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: AppText.chip.copyWith(
-                                fontWeight: key == selected
-                                    ? FontWeight.w600
-                                    : FontWeight.w500,
-                                color: key == selected
-                                    ? AppColors.primary
-                                    : AppColors.muted,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Container(
-                              height: 2,
-                              width: 24,
-                              color: key == selected
-                                  ? AppColors.primary
-                                  : Colors.transparent,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+        itemCount: categories.length + 1,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (ctx, index) {
+          if (index == categories.length) {
+            return _ManageCategoryPill(onTap: onManageCategories);
+          }
+          final (key, label) = categories[index];
+          final count = counts[key] ?? 0;
+          final isSelected = key == selected;
+          return _CategoryPill(
+            label: label,
+            count: count,
+            isSelected: isSelected,
+            onTap: () => onSelect(key),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _CategoryPill extends StatelessWidget {
+  const _CategoryPill({
+    required this.label,
+    required this.count,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final String label;
+  final int count;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: isSelected ? AppColors.active : AppColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(
+          color: isSelected
+              ? AppColors.primary.withValues(alpha: 0.6)
+              : AppColors.outline,
+          width: isSelected ? 1.2 : 1.0,
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+          child: Center(
+            child: Text(
+              '$label $count',
+              style: AppText.chip.copyWith(
+                color: isSelected ? AppColors.primary : AppColors.muted,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                fontSize: 12,
               ),
             ),
           ),
-          IconButton(
-            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-            icon: const Icon(
-              Icons.playlist_add_rounded,
-              size: 20,
-              color: AppColors.primary,
+        ),
+      ),
+    );
+  }
+}
+
+class _ManageCategoryPill extends StatelessWidget {
+  const _ManageCategoryPill({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: 'Manage categories',
+      child: Material(
+        color: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: AppColors.outline, width: 1.0),
+        ),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(20),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.add_rounded, size: 14, color: AppColors.muted),
+                const SizedBox(width: 4),
+                Text(
+                  'Manage',
+                  style: AppText.chip.copyWith(
+                    color: AppColors.muted,
+                    fontWeight: FontWeight.w500,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
             ),
-            tooltip: 'Manage Categories',
-            onPressed: onManageCategories,
           ),
-        ],
+        ),
       ),
     );
   }

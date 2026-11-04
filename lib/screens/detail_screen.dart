@@ -853,9 +853,11 @@ class _DetailScreenState extends State<DetailScreen> {
           fit: StackFit.expand,
           children: [
             // Background cover with blur
-            ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
-              child: CoverImage(imageUrl: m.cover, mangaId: m.id, saturation: .5),
+            RepaintBoundary(
+              child: ImageFiltered(
+                imageFilter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
+                child: CoverImage(imageUrl: m.cover, mangaId: m.id, saturation: .5),
+              ),
             ),
             const ColoredBox(color: Color.fromRGBO(0, 0, 0, .82)),
             DecoratedBox(

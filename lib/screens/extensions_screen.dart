@@ -603,15 +603,6 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.refresh_rounded, size: 18, color: AppColors.muted),
-                  constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                  tooltip: 'Refresh repository',
-                  onPressed: () {
-                    _service.refreshDeviceExtensions();
-                    _service.fetchExtensions(force: true);
-                  },
-                ),
-                IconButton(
                   icon: const Icon(Icons.hub_rounded, size: 18, color: AppColors.muted),
                   constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                   tooltip: 'Repository Settings',
@@ -891,14 +882,8 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh_rounded, color: AppColors.muted),
-            onPressed: () {
-              _service.refreshDeviceExtensions();
-              _service.fetchExtensions(force: true);
-            },
-          ),
-          IconButton(
             icon: const Icon(Icons.hub_rounded, color: AppColors.muted),
+            tooltip: 'Repository Settings',
             onPressed: _addRepoDialog,
           ),
         ],

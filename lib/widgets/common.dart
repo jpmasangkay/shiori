@@ -414,6 +414,8 @@ class RetryingNetworkImage extends StatefulWidget {
     this.fit,
     this.width,
     this.height,
+    this.memCacheWidth,
+    this.memCacheHeight,
     this.placeholder,
     this.progressBuilder,
     this.errorBuilder,
@@ -426,6 +428,8 @@ class RetryingNetworkImage extends StatefulWidget {
   final BoxFit? fit;
   final double? width;
   final double? height;
+  final int? memCacheWidth;
+  final int? memCacheHeight;
   final WidgetBuilder? placeholder;
   final Widget Function(BuildContext context, double? progress)?
   progressBuilder;
@@ -695,6 +699,8 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
           fit: widget.fit,
           width: widget.width,
           height: widget.height,
+          cacheWidth: widget.memCacheWidth,
+          cacheHeight: widget.memCacheHeight,
           gaplessPlayback: true,
           errorBuilder: (ctx, _, _) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -714,6 +720,10 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
       fit: widget.fit,
       width: widget.width,
       height: widget.height,
+      memCacheWidth: widget.memCacheWidth,
+      memCacheHeight: widget.memCacheHeight,
+      maxWidthDiskCache: 1200,
+      maxHeightDiskCache: 1800,
       fadeInDuration: widget.fadeInDuration,
       fadeOutDuration: const Duration(milliseconds: 120),
       placeholder: progressBuilder == null
@@ -754,12 +764,16 @@ class CoverImage extends StatefulWidget {
     this.mangaId,
     this.saturation = .7,
     this.fit,
+    this.memCacheWidth = 360,
+    this.memCacheHeight,
   });
 
   final String? imageUrl;
   final String? mangaId;
   final double saturation;
   final BoxFit? fit;
+  final int? memCacheWidth;
+  final int? memCacheHeight;
 
   @override
   State<CoverImage> createState() => _CoverImageState();
@@ -865,6 +879,8 @@ class _CoverImageState extends State<CoverImage> {
           fit: widget.fit ?? BoxFit.cover,
           width: double.infinity,
           height: double.infinity,
+          cacheWidth: widget.memCacheWidth,
+          cacheHeight: widget.memCacheHeight,
           gaplessPlayback: true,
           errorBuilder: (_, _, _) {
             if (!_triedRefreshOnError &&
@@ -891,6 +907,8 @@ class _CoverImageState extends State<CoverImage> {
         fit: widget.fit ?? BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
+        memCacheWidth: widget.memCacheWidth,
+        memCacheHeight: widget.memCacheHeight,
         errorBuilder: (_, retry) {
           if (!_triedRefreshOnError &&
               widget.mangaId != null &&

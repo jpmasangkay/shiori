@@ -216,7 +216,11 @@ void main() {
           }
           if (request.url.path == '/api/progress/sync') {
             return http.Response(
-              jsonEncode({'history': [], 'completed': []}),
+              jsonEncode({
+                'history': [],
+                'completed': [],
+                'chapterBookmarks': ['c2_cloud'],
+              }),
               200,
             );
           }
@@ -251,6 +255,7 @@ void main() {
         totalPages: 20,
       );
       await ApiService.instance.markChapterRead('m1', 'c1', read: true);
+      await ApiService.instance.toggleChapterBookmark('c1');
       await ApiService.instance.addCategory('Action');
 
       // Set logged in
@@ -280,6 +285,12 @@ void main() {
           batchProgressPayload['readChaptersByManga'] as Map<String, dynamic>?;
       expect(readChapters, isNotNull);
       expect(readChapters!['m1'], contains('c1'));
+
+      final chapterBookmarks =
+          batchProgressPayload['chapterBookmarks'] as List?;
+      expect(chapterBookmarks, isNotNull);
+      expect(chapterBookmarks, contains('c1'));
+      expect(ApiService.instance.isChapterBookmarked('c2_cloud'), isTrue);
     });
   });
 

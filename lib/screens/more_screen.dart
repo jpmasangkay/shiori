@@ -161,19 +161,25 @@ class _MoreScreenState extends State<MoreScreen> {
                                     style: AppText.caption.copyWith(color: color, fontWeight: FontWeight.w500),
                                   ),
                                 ),
-                                InkWell(
-                                  onTap: () => ApiService.instance.syncNow(),
-                                  borderRadius: BorderRadius.circular(4),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        const Icon(Icons.sync_rounded, size: 14, color: AppColors.primary),
-                                        const SizedBox(width: 4),
-                                        Text('Sync Now', style: AppText.caption.copyWith(color: AppColors.primary)),
-                                      ],
-                                    ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.primary.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.cloud_done_rounded, size: 14, color: AppColors.primary),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        'Auto-Sync Active',
+                                        style: AppText.caption.copyWith(
+                                          color: AppColors.primary,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
                                   ),
                                 ),
                               ],
