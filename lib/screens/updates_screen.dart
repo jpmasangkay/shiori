@@ -11,7 +11,9 @@ import 'detail_screen.dart';
 import 'reader_screen.dart';
 
 class UpdatesScreen extends StatefulWidget {
-  const UpdatesScreen({super.key});
+  const UpdatesScreen({super.key, this.isActive = true});
+
+  final bool isActive;
 
   @override
   State<UpdatesScreen> createState() => _UpdatesScreenState();
@@ -21,6 +23,7 @@ class _UpdatesScreenState extends State<UpdatesScreen>
     with WidgetsBindingObserver {
   Map<String, dynamic> _groups = {};
   bool _loading = false;
+  bool _dirty = false;
   Timer? _realtimeTimer;
 
   String? _selectedSource;
@@ -31,20 +34,43 @@ class _UpdatesScreenState extends State<UpdatesScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _fetch();
-    ApiService.instance.addListener(_fetch);
-    // Real-time silent background refresh every 45 seconds
+    ApiService.instance.addListener(_onServiceChanged);
+    // Real-time silent background refresh every 45 seconds when visible
     _realtimeTimer = Timer.periodic(
       const Duration(seconds: 45),
-      (_) => _fetch(silent: true),
+      (_) {
+        if (widget.isActive) {
+          _fetch(silent: true);
+        } else {
+          _dirty = true;
+        }
+      },
     );
+  }
+
+  @override
+  void didUpdateWidget(covariant UpdatesScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive && _dirty) {
+      _dirty = false;
+      _fetch(silent: true);
+    }
   }
 
   @override
   void dispose() {
     _realtimeTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
-    ApiService.instance.removeListener(_fetch);
+    ApiService.instance.removeListener(_onServiceChanged);
     super.dispose();
+  }
+
+  void _onServiceChanged() {
+    if (!widget.isActive) {
+      _dirty = true;
+      return;
+    }
+    _fetch(silent: true);
   }
 
   @override

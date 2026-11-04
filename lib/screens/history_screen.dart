@@ -10,7 +10,9 @@ import 'detail_screen.dart';
 import 'reader_screen.dart';
 
 class HistoryScreen extends StatefulWidget {
-  const HistoryScreen({super.key});
+  const HistoryScreen({super.key, this.isActive = true});
+
+  final bool isActive;
 
   @override
   State<HistoryScreen> createState() => _HistoryScreenState();
@@ -19,6 +21,7 @@ class HistoryScreen extends StatefulWidget {
 class _HistoryScreenState extends State<HistoryScreen> {
   List<ReadHistoryEntry> _history = [];
   bool _loading = true;
+  bool _dirty = false;
   String _searchQuery = '';
   String? _selectedSource;
   final TextEditingController _searchController = TextEditingController();
@@ -31,6 +34,15 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant HistoryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive && _dirty) {
+      _dirty = false;
+      _fetch(silent: true);
+    }
+  }
+
+  @override
   void dispose() {
     _searchController.dispose();
     ApiService.instance.removeListener(_onServiceChanged);
@@ -38,6 +50,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   void _onServiceChanged() {
+    if (!widget.isActive) {
+      _dirty = true;
+      return;
+    }
     _fetch(silent: true);
   }
 
@@ -406,22 +422,20 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       style: AppText.bodyMedium,
                     ),
                     const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Text(
-                          subtitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppText.caption.copyWith(color: AppColors.primary),
-                        ),
-                        if (item.source.isNotEmpty) ...[
-                          const SizedBox(width: 6),
-                          Text(
-                            '· ${SourceResolver.displayName(item.source)}',
-                            style: AppText.caption.copyWith(color: AppColors.muted),
-                          ),
+                    Text.rich(
+                      TextSpan(
+                        text: subtitle,
+                        style: AppText.caption.copyWith(color: AppColors.primary),
+                        children: [
+                          if (item.source.isNotEmpty)
+                            TextSpan(
+                              text: ' · ${SourceResolver.displayName(item.source)}',
+                              style: AppText.caption.copyWith(color: AppColors.muted),
+                            ),
                         ],
-                      ],
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ],
                 ),

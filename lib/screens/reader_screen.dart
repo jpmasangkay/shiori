@@ -488,12 +488,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
           _page = _page.clamp(1, _totalPages);
         }
       });
-      _precacheSlidingWindow(res.pages, 0);
+      _precacheSlidingWindow(res.pages, 0, window: 6);
 
       if (idx == _currentChapterIndex) {
         _syncProgress(_page);
+        // Preload first 6 pages immediately so turning pages is instant
+        _precacheRange(res.pages, 0, 6);
         // Prefetch the next chapter so continuing to read has no loading gap.
         _loadChapter(idx + 1);
+      } else if (idx == _currentChapterIndex + 1) {
+        // Preload initial pages of the upcoming chapter as well
+        _precacheRange(res.pages, 0, 3);
       }
     } catch (err) {
       _loadingChapterIds.remove(chapter.id);
@@ -544,6 +549,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (p.startsWith('file://')) {
         precacheImage(FileImage(File(p.replaceFirst('file://', ''))), context, onError: (_, _) {});
       } else if (p.startsWith('http')) {
+        // Preload native extension bytes if extension loader is present
+        if (ImageReferers.hasNativeLoader(p)) {
+          ImageReferers.fetchNativeBytes(p);
+        }
         precacheImage(
           CachedNetworkImageProvider(p, headers: imageHeadersForUrl(p)),
           context,
@@ -553,10 +562,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  void _precacheSlidingWindow(List<String> pages, int currentIndex, {int window = 2}) {
+  void _precacheSlidingWindow(List<String> pages, int currentIndex, {int window = 6}) {
     if (!mounted || pages.isEmpty) return;
-    final start = math.max(0, currentIndex - window);
-    final count = (window * 2) + 1;
+    final start = math.max(0, currentIndex - 1);
+    final count = window + 2;
     _precacheRange(pages, start, count);
   }
 
@@ -567,8 +576,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     final pages = _pagesCache[chapter.id];
     final actualTotal = pages?.length ?? _totalPages;
-    final completed = pages != null && pages.isNotEmpty && currentPage >= actualTotal;
-    if (completed) {
+    final isFinished = pages != null &&
+        pages.isNotEmpty &&
+        (currentPage >= actualTotal || (actualTotal > 2 && currentPage >= (actualTotal * 0.85).ceil()));
+    if (isFinished) {
       _onChapterFinished(_currentChapterIndex);
     }
 
@@ -584,7 +595,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         chapterTitle: chapter.title,
         page: currentPage,
         totalPages: actualTotal,
-        completed: completed,
+        completed: isFinished,
       );
     });
   }
@@ -598,8 +609,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     final pages = _pagesCache[chapter.id];
     final actualTotal = pages?.length ?? _totalPages;
-    final completed = pages != null && pages.isNotEmpty && _page >= actualTotal;
-    if (completed) {
+    final isFinished = pages != null &&
+        pages.isNotEmpty &&
+        (_page >= actualTotal || (actualTotal > 2 && _page >= (actualTotal * 0.85).ceil()));
+    if (isFinished) {
       _onChapterFinished(_currentChapterIndex);
     }
 
@@ -612,7 +625,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       chapterTitle: chapter.title,
       page: _page,
       totalPages: actualTotal,
-      completed: completed,
+      completed: isFinished,
     );
   }
 
@@ -638,7 +651,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (newIndex < 0 || newIndex >= _chapters.length || newIndex == _currentChapterIndex) return;
     final currentPages = _pagesCache[_chapters[_currentChapterIndex].id];
     final currentTotal = currentPages?.length ?? _totalPages;
-    if (currentPages != null && currentPages.isNotEmpty && _page >= currentTotal) {
+    if (newIndex > _currentChapterIndex ||
+        (currentPages != null && currentPages.isNotEmpty && _page >= (currentTotal * 0.85).ceil())) {
       _onChapterFinished(_currentChapterIndex);
     }
 
@@ -665,6 +679,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     if (cached != null) {
       _syncProgress(1);
+      _precacheRange(cached, 0, 6);
       _loadChapter(newIndex + 1);
     } else {
       _loadChapter(newIndex);
@@ -690,10 +705,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (notif.depth != 0) return false;
     if (notif is! ScrollUpdateNotification && notif is! ScrollEndNotification) return false;
 
-    if (notif.metrics.extentAfter < 2000) _extendWebtoonFeed();
+    if (notif.metrics.extentAfter < 2500) _extendWebtoonFeed();
 
     // Reached bottom of loaded webtoon feed -> mark completed chapters read
-    if (notif.metrics.pixels >= notif.metrics.maxScrollExtent - 200) {
+    if (notif.metrics.pixels >= notif.metrics.maxScrollExtent - 400) {
       for (final idx in _webtoonLoadedIndices) {
         final ch = _chapters[idx];
         final pages = _pagesCache[ch.id];
@@ -758,20 +773,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _page = newPage;
       });
       _pageNotifier.value = newPage;
-      if (newPage >= pages.length) {
+      if (newPage >= pages.length || (pages.length > 2 && newPage >= (pages.length * 0.85).ceil())) {
         _onChapterFinished(chapterIndex);
       }
       _syncProgress(newPage);
-      _precacheSlidingWindow(pages, pageIndex);
+      _precacheSlidingWindow(pages, pageIndex, window: 6);
       _loadChapter(chapterIndex + 1);
     } else if (newPage != _page) {
       _page = newPage;
       _pageNotifier.value = newPage;
-      if (newPage >= pages.length) {
+      if (newPage >= pages.length || (pages.length > 2 && newPage >= (pages.length * 0.85).ceil())) {
         _onChapterFinished(chapterIndex);
       }
       _syncProgress(newPage);
-      _precacheSlidingWindow(pages, pageIndex);
+      _precacheSlidingWindow(pages, pageIndex, window: 6);
     }
   }
 
@@ -1447,13 +1462,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
           if (_page != newP) {
             _page = newP;
             _pageNotifier.value = newP;
-            if (newP >= pages.length) {
+            if (newP >= pages.length || (pages.length > 2 && newP >= pages.length - 1)) {
               _onChapterFinished(chapterIdx);
             }
             _syncProgress(newP);
-            _precacheSlidingWindow(pages, idx);
+            _precacheSlidingWindow(pages, idx, window: 6);
             // Prefetch next chapter when nearing the end
-            if (idx >= pages.length - 3 && chapterIdx + 1 < _chapters.length) {
+            if (idx >= pages.length - 4 && chapterIdx + 1 < _chapters.length) {
               _loadChapter(chapterIdx + 1);
             }
           }

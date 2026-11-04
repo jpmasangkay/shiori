@@ -58,11 +58,11 @@ class _DetailScreenState extends State<DetailScreen> {
   void _onApiChanged() {
     if (!mounted) return;
     final inLib = ApiService.instance.isInLibrary(_manga.id);
-    if (inLib != _inLibrary) {
-      setState(() => _inLibrary = inLib);
-    } else {
-      setState(() {});
-    }
+    final localRead = ApiService.instance.getReadChapterIds(_manga.id);
+    setState(() {
+      _inLibrary = inLib;
+      _readChapterIds = {..._readChapterIds, ...localRead};
+    });
   }
 
   void _onDownloadsChanged() {
@@ -308,6 +308,10 @@ class _DetailScreenState extends State<DetailScreen> {
       ),
     ).then((_) {
       if (mounted) {
+        final localRead = ApiService.instance.getReadChapterIds(_manga.id);
+        setState(() {
+          _readChapterIds = {..._readChapterIds, ...localRead};
+        });
         _loadMangaData();
       }
     });

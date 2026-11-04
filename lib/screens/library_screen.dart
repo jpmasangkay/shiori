@@ -10,7 +10,9 @@ import 'detail_screen.dart';
 import 'display_sheet.dart';
 
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key});
+  const LibraryScreen({super.key, this.isActive = true});
+
+  final bool isActive;
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -21,6 +23,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   String? _category;
   List<MangaItem> _userLibrary = [];
   bool _loading = false;
+  bool _dirty = false;
 
   @override
   void initState() {
@@ -31,6 +34,15 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   @override
+  void didUpdateWidget(covariant LibraryScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive && _dirty) {
+      _dirty = false;
+      _loadUserLibrary(silent: true);
+    }
+  }
+
+  @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     ApiService.instance.removeListener(_onServiceChanged);
@@ -38,6 +50,10 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   void _onServiceChanged() {
+    if (!widget.isActive) {
+      _dirty = true;
+      return;
+    }
     if (mounted) {
       setState(() {});
       _loadUserLibrary(silent: true);
@@ -82,9 +98,12 @@ class _LibraryScreenState extends State<LibraryScreen>
     }
   }
 
-  List<MangaItem> _visibleItems(DisplaySettings s) {
+  List<MangaItem> _visibleItems(DisplaySettings s, List<(String?, String)> visibleTabs) {
+    if (!s.categoryTabs || visibleTabs.isEmpty) {
+      return _sortItems([..._userLibrary], s.sort);
+    }
     List<MangaItem> items;
-    if (!s.categoryTabs) {
+    if (_category == '__all__') {
       items = [..._userLibrary];
     } else if (_category == null) {
       final validCatIds = ApiService.instance
@@ -101,23 +120,27 @@ class _LibraryScreenState extends State<LibraryScreen>
         return catIds.contains(_category);
       }).toList();
     }
-    if (s.sort == LibrarySort.alphabetical) {
+    return _sortItems(items, s.sort);
+  }
+
+  List<MangaItem> _sortItems(List<MangaItem> items, LibrarySort sort) {
+    if (sort == LibrarySort.alphabetical) {
       items.sort(
         (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
       );
-    } else if (s.sort == LibrarySort.lastRead) {
+    } else if (sort == LibrarySort.lastRead) {
       items.sort((a, b) {
         final dtA = ApiService.instance.historyRepo.localProgress[a.id]?.updatedAt ?? DateTime(1970);
         final dtB = ApiService.instance.historyRepo.localProgress[b.id]?.updatedAt ?? DateTime(1970);
         return dtB.compareTo(dtA);
       });
-    } else if (s.sort == LibrarySort.lastUpdated) {
+    } else if (sort == LibrarySort.lastUpdated) {
       items.sort((a, b) {
         final chA = double.tryParse(a.lastChapter ?? '') ?? 0.0;
         final chB = double.tryParse(b.lastChapter ?? '') ?? 0.0;
         return chB.compareTo(chA);
       });
-    } else if (s.sort == LibrarySort.unreadCount) {
+    } else if (sort == LibrarySort.unreadCount) {
       items.sort((a, b) {
         final uA = ApiService.instance.getUnreadCount(a.id);
         final uB = ApiService.instance.getUnreadCount(b.id);
@@ -720,16 +743,35 @@ class _LibraryScreenState extends State<LibraryScreen>
       builder: (context, _) {
         final s = displaySettings;
         final userCats = ApiService.instance.getCategories();
-        if (_category != null && !userCats.any((c) => c.id == _category)) {
-          _category = null;
-        }
-        final items = _visibleItems(s);
         final validCatIds = userCats.map((c) => c.id).toSet();
 
-        final tabCategories = <(String?, String)>[
-          (null, 'All'),
-          ...userCats.map((c) => (c.id as String?, c.name)),
-        ];
+        final categoryCounts = <String, int>{
+          for (final c in userCats)
+            c.id: _userLibrary
+                .where((m) => ApiService.instance.getMangaCategoryIds(m.id).contains(c.id))
+                .length,
+        };
+        final uncategorizedCount = _userLibrary
+            .where((m) => !ApiService.instance.getMangaCategoryIds(m.id).any(validCatIds.contains))
+            .length;
+
+        // Categories ONLY appear when they have something in them
+        final visibleTabCategories = <(String?, String)>[];
+        if (uncategorizedCount > 0) {
+          visibleTabCategories.add((null, 'All'));
+        }
+        for (final c in userCats) {
+          if ((categoryCounts[c.id] ?? 0) > 0) {
+            visibleTabCategories.add((c.id, c.name));
+          }
+        }
+
+        final validTabKeys = visibleTabCategories.map((t) => t.$1).toSet();
+        if (!validTabKeys.contains(_category)) {
+          _category = visibleTabCategories.isNotEmpty ? visibleTabCategories.first.$1 : null;
+        }
+
+        final items = _visibleItems(s, visibleTabCategories);
 
         return Column(
           children: [
@@ -772,26 +814,14 @@ class _LibraryScreenState extends State<LibraryScreen>
                 ),
               ],
             ),
-            if (s.categoryTabs && _userLibrary.isNotEmpty)
+            if (s.categoryTabs && _userLibrary.isNotEmpty && visibleTabCategories.isNotEmpty)
               _Tabs(
-                categories: tabCategories,
+                categories: visibleTabCategories,
                 selected: _category,
                 counts: {
-                  null: _userLibrary
-                      .where(
-                        (m) => !ApiService.instance
-                            .getMangaCategoryIds(m.id)
-                            .any(validCatIds.contains),
-                      )
-                      .length,
-                  for (final c in userCats)
-                    c.id: _userLibrary
-                        .where(
-                          (m) => ApiService.instance
-                              .getMangaCategoryIds(m.id)
-                              .contains(c.id),
-                        )
-                        .length,
+                  '__all__': _userLibrary.length,
+                  null: uncategorizedCount,
+                  for (final c in userCats) c.id: categoryCounts[c.id] ?? 0,
                 },
                 onSelect: (c) => setState(() => _category = c),
                 onManageCategories: _showCategoryManagementSheet,

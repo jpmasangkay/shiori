@@ -88,11 +88,12 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   }
 
   Widget _buildTabContent(int index) {
+    final active = _index == index;
     return RepaintBoundary(
       child: switch (index) {
-        0 => const LibraryScreen(),
-        1 => const UpdatesScreen(),
-        2 => const HistoryScreen(),
+        0 => LibraryScreen(isActive: active),
+        1 => UpdatesScreen(isActive: active),
+        2 => HistoryScreen(isActive: active),
         3 => const BrowseScreen(),
         4 => const MoreScreen(),
         _ => const SizedBox.shrink(),
