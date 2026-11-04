@@ -334,12 +334,15 @@ class MangaCatalogService {
     if (chapterId.startsWith('asura:')) return asura.getChapterPages(chapterId);
     if (chapterId.startsWith('flame:')) return flame.getChapterPages(chapterId);
     if (chapterId.startsWith('weeb:')) return weeb.getChapterPages(chapterId);
-    if (chapterId.startsWith('pill:'))
+    if (chapterId.startsWith('pill:')) {
       return mangapill.getChapterPages(chapterId);
-    if (chapterId.startsWith('katana:'))
+    }
+    if (chapterId.startsWith('katana:')) {
       return mangakatana.getChapterPages(chapterId);
-    if (chapterId.startsWith('mread:'))
+    }
+    if (chapterId.startsWith('mread:')) {
       return mangaread.getChapterPages(chapterId);
+    }
 
     if (chapterId.startsWith('ext:')) {
       final firstColon = chapterId.indexOf(':');

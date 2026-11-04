@@ -155,11 +155,13 @@ class WebExtensionScraper {
           if (itemUrl.isEmpty ||
               itemUrl == '#' ||
               itemUrl == base ||
-              itemUrl == '$base/')
+              itemUrl == '$base/') {
             return;
+          }
           if (itemUrl.startsWith('javascript:') ||
-              itemUrl.startsWith('mailto:'))
+              itemUrl.startsWith('mailto:')) {
             return;
+          }
           final lowerHref = itemUrl.toLowerCase();
           if (lowerHref.contains('/wp-login') ||
               lowerHref.contains('/genre/') ||
@@ -509,8 +511,9 @@ class WebExtensionScraper {
         );
         if (chUrl.isEmpty ||
             chUrl.startsWith('#') ||
-            chUrl.startsWith('javascript:'))
+            chUrl.startsWith('javascript:')) {
           continue;
+        }
         if (!chUrl.startsWith('http')) {
           final uri = Uri.parse(seriesUrl);
           chUrl = chUrl.startsWith('/')

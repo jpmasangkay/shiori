@@ -132,8 +132,9 @@ class FlameScraper {
       final t = type.toLowerCase();
       items = items.where((m) {
         final mt = m.type.toLowerCase();
-        if (t == 'manhwa')
+        if (t == 'manhwa') {
           return mt.contains('manhwa') || mt == 'webtoon' || mt == 'comic';
+        }
         if (t == 'manga') return mt.contains('manga');
         if (t == 'manhua') return mt.contains('manhua');
         return mt == t;
