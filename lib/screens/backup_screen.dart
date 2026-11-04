@@ -389,10 +389,10 @@ class _BackupScreenState extends State<BackupScreen> {
                 ),
               ),
 
-              if (!_api.isLoggedIn) ...[
-                const SizedBox(height: 24),
-                Text('CLOUD SYNC', style: AppText.sectionHeader),
-                const SizedBox(height: 10),
+              const SizedBox(height: 24),
+              Text('CLOUD SYNC', style: AppText.sectionHeader),
+              const SizedBox(height: 10),
+              if (!_api.isLoggedIn)
                 InkWell(
                   borderRadius: BorderRadius.circular(14),
                   onTap: () => showAuthModal(context),
@@ -430,8 +430,70 @@ class _BackupScreenState extends State<BackupScreen> {
                       ],
                     ),
                   ),
+                )
+              else
+                ValueListenableBuilder<SyncState>(
+                  valueListenable: ApiService.instance.syncState,
+                  builder: (context, syncState, _) {
+                    return Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.surface,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: AppColors.outline),
+                      ),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                        leading: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: syncState.isSyncing
+                              ? const Center(
+                                  child: SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                                  ),
+                                )
+                              : const Icon(Icons.cloud_sync_rounded, color: AppColors.primary, size: 22),
+                        ),
+                        title: Text('Cloud Account Synced', style: AppText.cardTitle),
+                        subtitle: Text(
+                          syncState.isSyncing
+                              ? 'Syncing library and reading progress...'
+                              : (syncState.lastSyncedAt != null
+                                  ? 'Last synced: ${syncState.lastSyncedAt!.toLocal().toString().split('.').first}'
+                                  : 'Tap to sync immediately with cloud'),
+                          style: AppText.caption,
+                        ),
+                        trailing: FilledButton.tonal(
+                          onPressed: syncState.isSyncing
+                              ? null
+                              : () async {
+                                  final ok = await ApiService.instance.syncNow();
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text(ok ? 'Sync completed successfully' : 'Sync error. Please check network.'),
+                                        backgroundColor: AppColors.surfaceHigh,
+                                        duration: const Duration(seconds: 2),
+                                      ),
+                                    );
+                                  }
+                                },
+                          style: FilledButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            minimumSize: const Size(80, 36),
+                          ),
+                          child: const Text('Sync Now'),
+                        ),
+                      ),
+                    );
+                  },
                 ),
-              ],
             ],
           );
         },

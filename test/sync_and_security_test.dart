@@ -292,6 +292,169 @@ void main() {
       expect(chapterBookmarks, contains('c1'));
       expect(ApiService.instance.isChapterBookmarked('c2_cloud'), isTrue);
     });
+
+    test('markChapterRead and markChaptersRead send real-time cloud read-status', () async {
+      final calls = <Map<String, dynamic>>[];
+
+      ApiService.instance.setMockClient(
+        MockClient((request) async {
+          if (request.url.path == '/api/progress/read-status') {
+            calls.add(jsonDecode(request.body) as Map<String, dynamic>);
+            return http.Response(jsonEncode({'success': true}), 200);
+          }
+          return http.Response(jsonEncode({}), 200);
+        }),
+      );
+
+      // Pre-seed an active token
+      await ApiService.instance.auth.saveAuthData(
+        'current_jwt',
+        const UserAccount(
+          id: 'user_1',
+          email: 'test@shiori.app',
+          displayName: 'Reader',
+        ),
+      );
+
+      // Single chapter mark read
+      await ApiService.instance.markChapterRead('manga_x', 'ch_1', read: true);
+      expect(ApiService.instance.isChapterRead('manga_x', 'ch_1'), isTrue);
+
+      // Multiple chapters mark read
+      await ApiService.instance.markChaptersRead('manga_x', ['ch_2', 'ch_3'], read: true);
+      expect(ApiService.instance.isChapterRead('manga_x', 'ch_2'), isTrue);
+      expect(ApiService.instance.isChapterRead('manga_x', 'ch_3'), isTrue);
+
+      // Mark single chapter unread
+      await ApiService.instance.markChapterRead('manga_x', 'ch_1', read: false);
+      expect(ApiService.instance.isChapterRead('manga_x', 'ch_1'), isFalse);
+
+      // Check calls were recorded
+      expect(calls.length, 3);
+      expect(calls[0]['chapterId'], 'ch_1');
+      expect(calls[0]['read'], isTrue);
+      expect(calls[1]['chapterIds'], ['ch_2', 'ch_3']);
+      expect(calls[1]['read'], isTrue);
+      expect(calls[2]['chapterId'], 'ch_1');
+      expect(calls[2]['read'], isFalse);
+    });
+
+    test('syncCategoriesWithCloud downloads and preserves cloud custom categories', () async {
+      var uploadedCategories = <dynamic>[];
+
+      ApiService.instance.setMockClient(
+        MockClient((request) async {
+          if (request.url.path == '/api/library/categories') {
+            if (request.method == 'GET') {
+              return http.Response(
+                jsonEncode({
+                  'categories': [
+                    {'id': 'reading', 'name': 'Reading', 'order': 0},
+                    {'id': 'cat_cloud_custom', 'name': 'Sci-Fi Cloud', 'order': 1},
+                  ],
+                  'mangaCategories': {
+                    'manga_1': ['cat_cloud_custom'],
+                  },
+                }),
+                200,
+              );
+            }
+            if (request.method == 'PUT') {
+              final body = jsonDecode(request.body) as Map<String, dynamic>;
+              uploadedCategories = body['categories'] as List<dynamic>? ?? [];
+              return http.Response(jsonEncode({'success': true}), 200);
+            }
+          }
+          return http.Response(jsonEncode({}), 200);
+        }),
+      );
+
+      // Pre-seed an active token
+      await ApiService.instance.auth.saveAuthData(
+        'current_jwt',
+        const UserAccount(
+          id: 'user_1',
+          email: 'test@shiori.app',
+          displayName: 'Reader',
+        ),
+      );
+
+      // Create a local custom category
+      await ApiService.instance.addCategory('Local Shonen');
+
+      // Sync categories with cloud
+      await ApiService.instance.libraryRepo.syncCategoriesWithCloud(
+        ApiService.instance.httpManager.client,
+        ApiService.instance.baseUrl,
+        ApiService.instance.auth.headers(withAuth: true),
+      );
+
+      final currentCats = ApiService.instance.getCategories();
+      final catNames = currentCats.map((c) => c.name).toSet();
+
+      // Cloud category must be merged
+      expect(catNames, contains('Sci-Fi Cloud'));
+      // Local category must be preserved
+      expect(catNames, contains('Local Shonen'));
+
+      // Both must have been uploaded to cloud
+      final uploadedNames = uploadedCategories.map((c) => (c as Map)['name']).toSet();
+      expect(uploadedNames, contains('Sci-Fi Cloud'));
+      expect(uploadedNames, contains('Local Shonen'));
+    });
+
+    test('downloadLibraryBookmarks does not overwrite valid covers with empty string or file URI', () async {
+      ApiService.instance.setMockClient(
+        MockClient((request) async {
+          if (request.url.path == '/api/library') {
+            return http.Response(
+              jsonEncode({
+                'items': [
+                  {
+                    'mangaId': 'manga_with_local_cover',
+                    'title': 'Test Manga',
+                    'cover': '', // Empty in cloud
+                  },
+                  {
+                    'mangaId': 'manga_with_file_cover',
+                    'title': 'Test Manga 2',
+                    'cover': 'file:///deviceA/data/cover.jpg', // Local path on device A
+                  },
+                ],
+              }),
+              200,
+            );
+          }
+          return http.Response(jsonEncode({}), 200);
+        }),
+      );
+
+      // Pre-seed local library with valid remote covers
+      await ApiService.instance.addToLibrary(
+        const MangaItem(
+          id: 'manga_with_local_cover',
+          title: 'Test Manga',
+          cover: 'https://cdn.example.com/cover1.jpg',
+        ),
+      );
+      await ApiService.instance.addToLibrary(
+        const MangaItem(
+          id: 'manga_with_file_cover',
+          title: 'Test Manga 2',
+          cover: 'https://cdn.example.com/cover2.jpg',
+        ),
+      );
+
+      await ApiService.instance.libraryRepo.downloadLibraryBookmarks(
+        ApiService.instance.httpManager.client,
+        ApiService.instance.baseUrl,
+        ApiService.instance.auth.headers(withAuth: true),
+      );
+
+      final lib = ApiService.instance.libraryRepo.localLibrary;
+      expect(lib['manga_with_local_cover']?.cover, 'https://cdn.example.com/cover1.jpg');
+      expect(lib['manga_with_file_cover']?.cover, 'https://cdn.example.com/cover2.jpg');
+    });
   });
 
   group('Privacy Logout Wipe (#38)', () {

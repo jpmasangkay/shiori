@@ -8,6 +8,7 @@ import '../services/extension_bridge.dart';
 import '../services/extension_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/duplicate_migration_sheet.dart';
 import '../widgets/skeleton.dart';
 import 'reader_screen.dart';
 
@@ -184,6 +185,43 @@ class _DetailScreenState extends State<DetailScreen> {
   Future<void> _toggleLibrary() async {
     final m = _manga;
     final newStatus = !_inLibrary;
+
+    if (newStatus) {
+      final duplicates = DuplicateDetector.findDuplicatesInLibrary(
+        m,
+        ApiService.instance.libraryRepo.localLibrary.values,
+      );
+      if (duplicates.isNotEmpty && mounted) {
+        final result = await showPossibleDuplicatesSheet(
+          context: context,
+          targetManga: m,
+          duplicates: duplicates,
+          targetChapters: _apiChapters,
+        );
+        if (result == null || result.action == DuplicateResolutionAction.cancel) {
+          return;
+        }
+        if (result.action == DuplicateResolutionAction.copied ||
+            result.action == DuplicateResolutionAction.migrated) {
+          if (mounted) {
+            setState(() => _inLibrary = true);
+            final actionWord =
+                result.action == DuplicateResolutionAction.migrated ? 'Migrated' : 'Copied';
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '$actionWord data from ${result.duplicateManga?.title ?? "duplicate"} to library',
+                ),
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+          return;
+        }
+        // If addAnyway, proceed to normal addition below
+      }
+    }
+
     setState(() => _inLibrary = newStatus);
 
     try {

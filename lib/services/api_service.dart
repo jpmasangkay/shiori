@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/app_logger.dart';
 import 'package:manga_reader/services/auth_service.dart';
+import 'package:manga_reader/services/extension_bridge.dart';
 import 'package:manga_reader/services/extension_service.dart';
 import 'package:manga_reader/services/history_repository.dart';
 import 'package:manga_reader/services/http_cache.dart';
@@ -161,6 +162,39 @@ class ApiService extends ChangeNotifier {
     await libraryRepo.init(prefs);
     await historyRepo.init(prefs);
 
+    // Wire up automatic cover lookup for missing or failed manga covers (#11, #32)
+    ImageReferers.coverLookup = (String mangaId) async {
+      try {
+        final manga = await getManga(mangaId);
+        if (manga.cover.isNotEmpty && !manga.cover.startsWith('file://')) {
+          await updateCachedMangaMetadata(manga);
+          return manga.cover;
+        }
+      } catch (e) {
+        AppLogger.warn('ImageReferers coverLookup failed for $mangaId', e);
+      }
+      return null;
+    };
+
+    ImageReferers.nativeLoaderProvider = (String url, String? mangaId) {
+      if (mangaId != null && mangaId.startsWith('ext:')) {
+        final pkg = mangaId.substring(4).split(':').first;
+        return (targetUrl) => ExtensionBridge.instance.fetchImageBytes(pkg: pkg, url: targetUrl);
+      }
+      return null;
+    };
+
+    ImageReferers.refererProvider = (String url, String? mangaId) {
+      if (mangaId != null && mangaId.startsWith('ext:')) {
+        final pkg = mangaId.substring(4).split(':').first;
+        final ext = ExtensionService.instance.getExtensionByPkg(pkg);
+        if (ext != null && ext.homeUrl.isNotEmpty) {
+          return ext.homeUrl;
+        }
+      }
+      return null;
+    };
+
     final firstInit = !_initialized;
     _initialized = true;
 
@@ -262,7 +296,12 @@ class ApiService extends ChangeNotifier {
       await historyRepo.uploadProgressAndHistory(httpManager.client, _baseUrl, h);
 
       // 3. Download cloud bookmarks
-      await libraryRepo.downloadLibraryBookmarks(httpManager.client, _baseUrl, h);
+      await libraryRepo.downloadLibraryBookmarks(
+        httpManager.client,
+        _baseUrl,
+        h,
+        coverFallback: (id) => historyRepo.localProgress[id]?.cover,
+      );
 
       // 4. Download and merge reading history with timestamp checks (#31)
       await historyRepo.downloadAndMergeSyncData(httpManager.client, _baseUrl, h);
@@ -293,7 +332,12 @@ class ApiService extends ChangeNotifier {
   Future<List<MangaItem>> getLibrary({String? type}) async {
     if (isLoggedIn) {
       try {
-        await libraryRepo.downloadLibraryBookmarks(httpManager.client, _baseUrl, auth.headers(withAuth: true));
+        await libraryRepo.downloadLibraryBookmarks(
+          httpManager.client,
+          _baseUrl,
+          auth.headers(withAuth: true),
+          coverFallback: (id) => historyRepo.localProgress[id]?.cover,
+        );
       } catch (_) {}
     }
     return libraryRepo.getLibraryItems(type: type);
@@ -345,11 +389,27 @@ class ApiService extends ChangeNotifier {
 
   List<CategoryItem> getCategories() => libraryRepo.getCategories();
 
-  Future<CategoryItem> createCategory(String name) => libraryRepo.createCategory(name);
+  Future<CategoryItem> createCategory(String name) => libraryRepo.createCategory(
+        name,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
 
-  Future<void> renameCategory(String id, String newName) => libraryRepo.renameCategory(id, newName);
+  Future<void> renameCategory(String id, String newName) => libraryRepo.renameCategory(
+        id,
+        newName,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
 
-  Future<void> deleteCategory(String id) => libraryRepo.deleteCategory(id);
+  Future<void> deleteCategory(String id) => libraryRepo.deleteCategory(
+        id,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
 
   List<String> getMangaCategoryIds(String mangaId) => libraryRepo.getMangaCategoryIds(mangaId);
 
@@ -358,14 +418,28 @@ class ApiService extends ChangeNotifier {
     List<String> categoryIds, {
     MangaItem? manga,
   }) =>
-      libraryRepo.setMangaCategories(mangaId, categoryIds, manga: manga);
+      libraryRepo.setMangaCategories(
+        mangaId,
+        categoryIds,
+        manga: manga,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
 
   Future<void> toggleMangaCategory(
     String mangaId,
     String categoryId, {
     MangaItem? manga,
   }) =>
-      libraryRepo.toggleMangaCategory(mangaId, categoryId, manga: manga);
+      libraryRepo.toggleMangaCategory(
+        mangaId,
+        categoryId,
+        manga: manga,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
 
   // ---- Reading Progress & History Methods (#6, #18, #31, #33) ----
 
@@ -423,12 +497,28 @@ class ApiService extends ChangeNotifier {
   Set<String> getReadChapterIds(String mangaId) => historyRepo.getReadChapterIds(mangaId);
 
   Future<void> markChapterRead(String mangaId, String chapterId, {bool read = true}) =>
-      historyRepo.markChapterRead(mangaId, chapterId, read: read);
+      historyRepo.markChapterRead(
+        mangaId,
+        chapterId,
+        read: read,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
 
   Future<void> markChaptersRead(String mangaId, List<String> chapterIds, {bool read = true}) =>
-      historyRepo.markChaptersRead(mangaId, chapterIds, read: read);
+      historyRepo.markChaptersRead(
+        mangaId,
+        chapterIds,
+        read: read,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
 
   void recordChapterCount(String mangaId, int count) => historyRepo.recordChapterCount(mangaId, count);
+
+  int getChapterCount(String mangaId) => historyRepo.getChapterCount(mangaId);
 
   int getUnreadCount(String mangaId) => historyRepo.getUnreadCount(mangaId);
 
@@ -442,7 +532,94 @@ class ApiService extends ChangeNotifier {
       );
 
   Future<void> setChapterBookmarked(String chapterId, bool bookmarked) =>
-      historyRepo.setChapterBookmarked(chapterId, bookmarked);
+      historyRepo.setChapterBookmarked(
+        chapterId,
+        bookmarked,
+        client: isLoggedIn ? httpManager.client : null,
+        baseUrl: _baseUrl,
+        headers: auth.headers(withAuth: true),
+      );
+
+  Future<void> migrateOrCopyReadingProgress({
+    required String sourceMangaId,
+    required MangaItem targetManga,
+    List<ChapterItem> targetChapters = const [],
+  }) async {
+    final sourceProgress = historyRepo.localProgress[sourceMangaId];
+
+    var chs = targetChapters;
+    if (chs.isEmpty) {
+      try {
+        chs = await getChapters(targetManga.id);
+      } catch (_) {}
+    }
+
+    if (chs.isNotEmpty) {
+      final targetIdsToMark = <String>[];
+      ChapterItem? bestMatchedProgressChapter;
+
+      final readChapterNumbers = <String>{};
+      double? maxReadNum;
+
+      if (sourceProgress != null) {
+        final sNum = double.tryParse(sourceProgress.chapterNumber);
+        if (sNum != null) maxReadNum = sNum;
+        if (sourceProgress.chapterNumber.isNotEmpty) {
+          readChapterNumbers.add(sourceProgress.chapterNumber.trim());
+        }
+      }
+
+      for (final entry in historyRepo.localHistory) {
+        if (entry.mangaId == sourceMangaId) {
+          final numStr = entry.chapterNumber.trim();
+          if (numStr.isNotEmpty) {
+            readChapterNumbers.add(numStr);
+            final parsed = double.tryParse(numStr);
+            if (parsed != null && (maxReadNum == null || parsed > maxReadNum)) {
+              maxReadNum = parsed;
+            }
+          }
+        }
+      }
+
+      for (final ch in chs) {
+        final chNum = ch.number?.trim() ?? '';
+        final curNum = double.tryParse(chNum);
+
+        final isRead = (curNum != null && maxReadNum != null && curNum <= maxReadNum) ||
+            (chNum.isNotEmpty && readChapterNumbers.contains(chNum));
+
+        if (isRead) {
+          targetIdsToMark.add(ch.id);
+        }
+
+        if (sourceProgress != null &&
+            (chNum == sourceProgress.chapterNumber ||
+                (curNum != null &&
+                    curNum == double.tryParse(sourceProgress.chapterNumber)))) {
+          bestMatchedProgressChapter = ch;
+        }
+      }
+
+      if (targetIdsToMark.isNotEmpty) {
+        await markChaptersRead(targetManga.id, targetIdsToMark, read: true);
+      }
+
+      if (bestMatchedProgressChapter != null && sourceProgress != null) {
+        await saveProgress(
+          mangaId: targetManga.id,
+          chapterId: bestMatchedProgressChapter.id,
+          mangaTitle: targetManga.title,
+          cover: targetManga.cover,
+          chapterNumber: bestMatchedProgressChapter.number,
+          chapterTitle: bestMatchedProgressChapter.title,
+          page: sourceProgress.page,
+          totalPages: sourceProgress.totalPages,
+          completed: sourceProgress.completed,
+        );
+      }
+    }
+  }
 
   Set<String> getBookmarkedChapterIds() => historyRepo.getBookmarkedChapterIds();
 

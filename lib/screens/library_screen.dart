@@ -5,6 +5,7 @@ import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/duplicate_migration_sheet.dart';
 import '../widgets/skeleton.dart';
 import 'detail_screen.dart';
 import 'display_sheet.dart';
@@ -417,6 +418,38 @@ class _LibraryScreenState extends State<LibraryScreen>
     }
   }
 
+  Map<String, List<MangaItem>> _findDuplicateGroups() {
+    final groups = <String, List<MangaItem>>{};
+    for (int i = 0; i < _userLibrary.length; i++) {
+      for (int j = i + 1; j < _userLibrary.length; j++) {
+        if (DuplicateDetector.isPossibleDuplicate(
+          _userLibrary[i].title,
+          _userLibrary[j].title,
+        )) {
+          final norm = DuplicateDetector.normalize(_userLibrary[i].title);
+          groups.putIfAbsent(norm, () => []).addAll([_userLibrary[i], _userLibrary[j]]);
+        }
+      }
+    }
+    final result = <String, List<MangaItem>>{};
+    groups.forEach((key, list) {
+      final seen = <String>{};
+      final unique = list.where((m) => seen.add(m.id)).toList();
+      if (unique.length > 1) {
+        result[key] = unique;
+      }
+    });
+    return result;
+  }
+
+  void _showResolveDuplicatesSheet(Map<String, List<MangaItem>> duplicateGroups) {
+    showLibraryDuplicatesSheet(
+      context: context,
+      duplicateGroups: duplicateGroups,
+      onRefresh: () => _loadUserLibrary(silent: true),
+    );
+  }
+
   void _showCategoryManagementSheet() {
     showModalBottomSheet(
       context: context,
@@ -779,6 +812,9 @@ class _LibraryScreenState extends State<LibraryScreen>
         }
 
         final items = _visibleItems(s, visibleTabCategories);
+        final duplicateGroups = _findDuplicateGroups();
+        final duplicateCount =
+            duplicateGroups.values.fold<int>(0, (sum, l) => sum + l.length);
 
         return Column(
           children: [
@@ -786,6 +822,12 @@ class _LibraryScreenState extends State<LibraryScreen>
               title: 'Library',
               branded: true,
               actions: [
+                if (duplicateGroups.isNotEmpty)
+                  BarIcon(
+                    Icons.copy_all_rounded,
+                    label: 'Resolve duplicates (${duplicateGroups.length})',
+                    onTap: () => _showResolveDuplicatesSheet(duplicateGroups),
+                  ),
                 PopupMenuButton<LibrarySort>(
                   icon: const Icon(Icons.sort_rounded, size: 22, color: AppColors.muted),
                   tooltip: 'Sort library',
@@ -822,6 +864,50 @@ class _LibraryScreenState extends State<LibraryScreen>
                 ),
               ],
             ),
+            if (duplicateGroups.isNotEmpty)
+              Container(
+                margin: const EdgeInsets.fromLTRB(12, 6, 12, 4),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: AppColors.primary.withValues(alpha: 0.35),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info_outline_rounded, size: 18, color: AppColors.primary),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        '${duplicateGroups.length} duplicate title${duplicateGroups.length > 1 ? "s" : ""} in library ($duplicateCount entries)',
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Colors.white,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      onPressed: () => _showResolveDuplicatesSheet(duplicateGroups),
+                      child: const Text(
+                        'Resolve',
+                        style: TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             if (s.categoryTabs && _userLibrary.isNotEmpty && visibleTabCategories.isNotEmpty)
               _Tabs(
                 categories: visibleTabCategories,

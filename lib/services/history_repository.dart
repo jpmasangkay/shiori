@@ -254,7 +254,14 @@ class HistoryRepository extends ChangeNotifier {
     return Set<String>.from(_readChapters[mangaId] ?? const <String>{});
   }
 
-  Future<void> markChapterRead(String mangaId, String chapterId, {bool read = true}) async {
+  Future<void> markChapterRead(
+    String mangaId,
+    String chapterId, {
+    bool read = true,
+    http.Client? client,
+    String? baseUrl,
+    Map<String, String>? headers,
+  }) async {
     final set = _readChapters.putIfAbsent(mangaId, () => <String>{});
     if (read) {
       set.add(chapterId);
@@ -263,9 +270,35 @@ class HistoryRepository extends ChangeNotifier {
     }
     await _persistReadChapters();
     notifyListeners();
+
+    // Silent background cloud sync for read status update (#34)
+    if (client != null && baseUrl != null && headers != null) {
+      try {
+        await client
+            .post(
+              Uri.parse('$baseUrl/progress/read-status'),
+              headers: headers,
+              body: jsonEncode({
+                'mangaId': mangaId,
+                'chapterId': chapterId,
+                'read': read,
+              }),
+            )
+            .timeout(const Duration(seconds: 6));
+      } catch (e) {
+        AppLogger.warn('Cloud markChapterRead failed for $chapterId', e);
+      }
+    }
   }
 
-  Future<void> markChaptersRead(String mangaId, List<String> chapterIds, {bool read = true}) async {
+  Future<void> markChaptersRead(
+    String mangaId,
+    List<String> chapterIds, {
+    bool read = true,
+    http.Client? client,
+    String? baseUrl,
+    Map<String, String>? headers,
+  }) async {
     final set = _readChapters.putIfAbsent(mangaId, () => <String>{});
     if (read) {
       set.addAll(chapterIds);
@@ -274,6 +307,25 @@ class HistoryRepository extends ChangeNotifier {
     }
     await _persistReadChapters();
     notifyListeners();
+
+    // Silent background cloud sync for batch read status update (#34)
+    if (client != null && baseUrl != null && headers != null && chapterIds.isNotEmpty) {
+      try {
+        await client
+            .post(
+              Uri.parse('$baseUrl/progress/read-status'),
+              headers: headers,
+              body: jsonEncode({
+                'mangaId': mangaId,
+                'chapterIds': chapterIds,
+                'read': read,
+              }),
+            )
+            .timeout(const Duration(seconds: 8));
+      } catch (e) {
+        AppLogger.warn('Cloud markChaptersRead failed for ${chapterIds.length} chapters', e);
+      }
+    }
   }
 
   void recordChapterCount(String mangaId, int count) {
@@ -283,6 +335,8 @@ class HistoryRepository extends ChangeNotifier {
       notifyListeners();
     }
   }
+
+  int getChapterCount(String mangaId) => _mangaChapterCounts[mangaId] ?? 0;
 
   int getUnreadCount(String mangaId) {
     final total = _mangaChapterCounts[mangaId] ?? 0;
@@ -332,7 +386,14 @@ class HistoryRepository extends ChangeNotifier {
     return !has;
   }
 
-  Future<void> setChapterBookmarked(String chapterId, bool bookmarked) async {
+  Future<void> setChapterBookmarked(
+    String chapterId,
+    bool bookmarked, {
+    http.Client? client,
+    String? baseUrl,
+    Map<String, String>? headers,
+  }) async {
+    final has = _bookmarkedChapterIds.contains(chapterId);
     if (bookmarked) {
       _bookmarkedChapterIds.add(chapterId);
     } else {
@@ -340,6 +401,23 @@ class HistoryRepository extends ChangeNotifier {
     }
     await _persistChapterBookmarks();
     notifyListeners();
+
+    // Silent background cloud sync for real-time chapter bookmark update
+    if (has != bookmarked && client != null && baseUrl != null && headers != null) {
+      try {
+        unawaited(
+          client
+              .post(
+                Uri.parse('$baseUrl/progress/chapter-bookmarks/toggle'),
+                headers: headers,
+                body: jsonEncode({'chapterId': chapterId}),
+              )
+              .timeout(const Duration(seconds: 5)),
+        );
+      } catch (e) {
+        AppLogger.warn('Cloud setChapterBookmarked failed', e);
+      }
+    }
   }
 
   Set<String> getBookmarkedChapterIds() {
@@ -445,6 +523,18 @@ class HistoryRepository extends ChangeNotifier {
             }),
           )
           .timeout(const Duration(seconds: 10));
+
+      if (_bookmarkedChapterIds.isNotEmpty) {
+        try {
+          await client
+              .put(
+                Uri.parse('$baseUrl/progress/chapter-bookmarks'),
+                headers: headers,
+                body: jsonEncode({'chapterBookmarks': _bookmarkedChapterIds.toList()}),
+              )
+              .timeout(const Duration(seconds: 6));
+        } catch (_) {}
+      }
     } catch (e) {
       AppLogger.warn('uploadProgressAndHistory failed', e);
     }

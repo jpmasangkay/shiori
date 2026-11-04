@@ -465,3 +465,44 @@ class ReadHistoryEntry {
     );
   }
 }
+
+/// Detects duplicate manga/manhwa/manhua titles across different sources in the library
+class DuplicateDetector {
+  const DuplicateDetector._();
+
+  static String normalize(String title) {
+    var s = title.toLowerCase().trim();
+    // Strip common bracketed/parenthesized tags like (Official), [Webtoon], (Colored), (Re-upload)
+    s = s.replaceAll(RegExp(r'\s*[\(\[\{][^\)\]\}]*[\)\]\}]'), ' ');
+    // Strip common punctuation and symbols
+    s = s.replaceAll(RegExp(r'[^\w\s]'), ' ');
+    // Collapse multiple spaces
+    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return s;
+  }
+
+  static bool isPossibleDuplicate(String titleA, String titleB) {
+    final normA = normalize(titleA);
+    final normB = normalize(titleB);
+    if (normA.isEmpty || normB.isEmpty) return false;
+    if (normA == normB) return true;
+
+    // Substring / prefix check if significant portion matches
+    if (normA.length >= 4 && normB.length >= 4) {
+      if (normA.startsWith(normB) || normB.startsWith(normA)) return true;
+      if (normA.contains(normB) && (normB.length / normA.length) >= 0.7) return true;
+      if (normB.contains(normA) && (normA.length / normB.length) >= 0.7) return true;
+    }
+    return false;
+  }
+
+  static List<MangaItem> findDuplicatesInLibrary(
+    MangaItem target,
+    Iterable<MangaItem> library,
+  ) {
+    return library.where((m) {
+      if (m.id == target.id) return false;
+      return isPossibleDuplicate(m.title, target.title);
+    }).toList();
+  }
+}

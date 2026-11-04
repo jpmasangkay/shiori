@@ -17,6 +17,8 @@ const String _imageAccept =
 
 typedef NativeImageLoader = Future<Uint8List?> Function(String url);
 typedef CoverLookup = Future<String?> Function(String mangaId);
+typedef NativeLoaderProvider = NativeImageLoader? Function(String url, String? mangaId);
+typedef RefererProvider = String? Function(String url, String? mangaId);
 
 Future<void> evictCachedImageUrl(String url) async {
   ImageReferers.evictNativeCache(url);
@@ -51,6 +53,12 @@ class ImageReferers {
 
   /// Optional global resolver wired by [ApiService] to backfill missing/expired covers.
   static CoverLookup? coverLookup;
+
+  /// Optional provider to dynamically resolve a native OkHttp image loader (e.g. from Tachiyomi extensions).
+  static NativeLoaderProvider? nativeLoaderProvider;
+
+  /// Optional provider to dynamically resolve a source's referer base URL.
+  static RefererProvider? refererProvider;
   static final Map<String, String> _resolvedCovers = {};
   static final Set<String> _failedCoverIds = {};
   static final Map<String, Future<String?>> _inFlightCoverLookups = {};
@@ -132,15 +140,26 @@ class ImageReferers {
   static Map<String, String>? lookupHeaders(String host) =>
       _hostHeaders[host.toLowerCase()];
 
-  static NativeImageLoader? lookupNativeLoader(String url) {
+  static NativeImageLoader? lookupNativeLoader(String url, {String? mangaId}) {
     final direct = _urlNativeLoaders[url];
     if (direct != null) return direct;
     final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
-    if (host.isEmpty) return null;
-    return _hostNativeLoaders[host];
+    if (host.isNotEmpty) {
+      final hostLoader = _hostNativeLoaders[host];
+      if (hostLoader != null) return hostLoader;
+    }
+    if (nativeLoaderProvider != null) {
+      final provided = nativeLoaderProvider!(url, mangaId);
+      if (provided != null) {
+        registerSourceConfig([url], nativeLoader: provided);
+        return provided;
+      }
+    }
+    return null;
   }
 
-  static bool hasNativeLoader(String url) => lookupNativeLoader(url) != null;
+  static bool hasNativeLoader(String url, {String? mangaId}) =>
+      lookupNativeLoader(url, mangaId: mangaId) != null;
 
   static bool prefersNative(String url) {
     if (_preferNativeUrls.contains(url)) return true;
@@ -280,11 +299,13 @@ class ImageReferers {
     _failedCoverIds.clear();
     _inFlightCoverLookups.clear();
     coverLookup = null;
+    nativeLoaderProvider = null;
+    refererProvider = null;
   }
 }
 
 /// Standard browser headers for CDN image fetching to bypass Cloudflare and referer blocks.
-Map<String, String> imageHeadersForUrl(String url) {
+Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
   final uri = Uri.tryParse(url);
   final host = uri?.host.toLowerCase() ?? '';
   final custom = ImageReferers.lookupHeaders(host);
@@ -306,6 +327,22 @@ Map<String, String> imageHeadersForUrl(String url) {
       'Accept': _imageAccept,
     };
   }
+
+  if (ImageReferers.refererProvider != null) {
+    final provided = ImageReferers.refererProvider!(url, mangaId);
+    if (provided != null && provided.isNotEmpty) {
+      final ref = provided.endsWith('/') ? provided : '$provided/';
+      if (host.isNotEmpty) {
+        ImageReferers.register(url, ref);
+      }
+      return {
+        'User-Agent': _browserUserAgent,
+        'Referer': ref,
+        'Accept': _imageAccept,
+      };
+    }
+  }
+
   String referer = 'https://$host/';
   if (host.contains('comick') || host.contains('meo')) {
     referer = 'https://comick.art/';
@@ -321,6 +358,8 @@ Map<String, String> imageHeadersForUrl(String url) {
       host.contains('planeptune') ||
       host.contains('compsci88')) {
     referer = 'https://weebcentral.com/';
+  } else if (host.contains('resmk') || host.contains('mangabuddy')) {
+    referer = 'https://mangabuddy.com/';
   } else if (host.contains('pstatic') || host.contains('webtoon')) {
     referer = 'https://www.webtoons.com/';
   } else if (host.contains('bato') ||
@@ -342,7 +381,30 @@ Map<String, String> imageHeadersForUrl(String url) {
     referer = 'https://chapmanganato.to/';
   } else if (host.contains('mangakakalot')) {
     referer = 'https://mangakakalot.com/';
+  } else if (host.contains('mpcdn') ||
+      host.contains('kakacdn') ||
+      host.contains('natocdn') ||
+      host.contains('manganelo')) {
+    referer = 'https://manganelo.com/';
+  } else if (mangaId != null && mangaId.startsWith('ext:')) {
+    final pkg = mangaId.substring(4).split(':').first.toLowerCase();
+    if (pkg.contains('mangabuddy')) {
+      referer = 'https://mangabuddy.com/';
+    } else if (pkg.contains('manganelo')) {
+      referer = 'https://manganelo.com/';
+    } else if (pkg.contains('manganato')) {
+      referer = 'https://chapmanganato.to/';
+    } else if (pkg.contains('asura')) {
+      referer = 'https://asuracomic.net/';
+    } else if (pkg.contains('flame')) {
+      referer = 'https://flamecomics.xyz/';
+    }
   }
+
+  if (host.isNotEmpty && referer != 'https://$host/') {
+    ImageReferers.register(url, referer);
+  }
+
   return {
     'User-Agent': _browserUserAgent,
     'Referer': referer,
@@ -350,18 +412,25 @@ Map<String, String> imageHeadersForUrl(String url) {
   };
 }
 
-/// Alternative header sets to try when an image fails with the default
-/// headers. Capped to 2 fast variants so stalled/broken pages surface retry UI quickly.
-List<Map<String, String>> imageHeaderVariants(String url) {
-  final primary = imageHeadersForUrl(url);
+/// Alternative header sets to try when an image fails with the default headers.
+List<Map<String, String>> imageHeaderVariants(String url, {String? mangaId}) {
+  final primary = imageHeadersForUrl(url, mangaId: mangaId);
+  final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
   final ua = primary['User-Agent'] ?? _browserUserAgent;
   final cookie = primary['Cookie'] ?? primary['cookie'];
+
+  final hostRootRef = <String, String>{
+    'User-Agent': ua,
+    if (host.isNotEmpty) 'Referer': 'https://$host/',
+    'Accept': _imageAccept,
+    if (cookie != null && cookie.isNotEmpty) 'Cookie': cookie,
+  };
   final noRef = <String, String>{
     'User-Agent': ua,
     'Accept': _imageAccept,
     if (cookie != null && cookie.isNotEmpty) 'Cookie': cookie,
   };
-  final variants = <Map<String, String>>[primary, noRef];
+  final variants = <Map<String, String>>[primary, hostRootRef, noRef];
   final seen = <String>{};
   return [
     for (final v in variants)
@@ -411,6 +480,7 @@ class RetryingNetworkImage extends StatefulWidget {
     super.key,
     required this.url,
     this.fallbackUrls = const [],
+    this.mangaId,
     this.fit,
     this.width,
     this.height,
@@ -425,6 +495,7 @@ class RetryingNetworkImage extends StatefulWidget {
 
   final String url;
   final List<String> fallbackUrls;
+  final String? mangaId;
   final BoxFit? fit;
   final double? width;
   final double? height;
@@ -467,6 +538,7 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
   void didUpdateWidget(covariant RetryingNetworkImage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.url != widget.url ||
+        oldWidget.mangaId != widget.mangaId ||
         !listEquals(oldWidget.fallbackUrls, widget.fallbackUrls)) {
       _cancelTimers();
       _attempt = 0;
@@ -521,14 +593,14 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
     ];
     final attempts = <_ImageAttempt>[];
     for (final u in urls) {
-      final hasNative = ImageReferers.hasNativeLoader(u);
+      final hasNative = ImageReferers.hasNativeLoader(u, mangaId: widget.mangaId);
       final preferNative = hasNative && ImageReferers.prefersNative(u);
 
       if (preferNative) {
         attempts.add(_ImageAttempt(kind: _AttemptKind.native, url: u));
       }
 
-      final variants = imageHeaderVariants(u);
+      final variants = imageHeaderVariants(u, mangaId: widget.mangaId);
       final host = Uri.tryParse(u)?.host.toLowerCase() ?? '';
       final preferred = RetryingNetworkImage._workingVariantByHost[host];
       final order = [for (var i = 0; i < variants.length; i++) i];
@@ -783,6 +855,7 @@ class _CoverImageState extends State<CoverImage> {
   String? _resolvedUrl;
   bool _resolving = false;
   bool _triedRefreshOnError = false;
+  int _retryGeneration = 0;
 
   @override
   void initState() {
@@ -798,6 +871,7 @@ class _CoverImageState extends State<CoverImage> {
       _resolvedUrl = null;
       _resolving = false;
       _triedRefreshOnError = false;
+      _retryGeneration = 0;
       _syncCoverState();
     }
   }
@@ -842,10 +916,16 @@ class _CoverImageState extends State<CoverImage> {
       final normalized = _normalizeUrl(fresh);
       setState(() {
         _resolving = false;
-        if (normalized != null && normalized.isNotEmpty) {
+        if (normalized != null &&
+            normalized.isNotEmpty &&
+            normalized != _resolvedUrl) {
           _resolvedUrl = normalized;
+          _retryGeneration++;
+          _triedRefreshOnError = false;
         }
       });
+    }).catchError((_) {
+      if (mounted) setState(() => _resolving = false);
     });
   }
 
@@ -903,7 +983,9 @@ class _CoverImageState extends State<CoverImage> {
 
     return _wrapSaturation(
       RetryingNetworkImage(
+        key: ValueKey('${effective}_#$_retryGeneration'),
         url: effective,
+        mangaId: widget.mangaId,
         fit: widget.fit ?? BoxFit.cover,
         width: double.infinity,
         height: double.infinity,
@@ -921,7 +1003,11 @@ class _CoverImageState extends State<CoverImage> {
           }
           return GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: retry,
+            onTap: () {
+              _triedRefreshOnError = false;
+              _resolveRemoteCover(force: true);
+              retry();
+            },
             child: const _CoverPlaceholder(),
           );
         },

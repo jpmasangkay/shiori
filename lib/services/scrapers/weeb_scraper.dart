@@ -140,7 +140,9 @@ class WeebScraper {
     final parts = id.split(':');
     final sId = parts.length > 1 ? parts[1] : '';
     final slug = parts.length > 2 ? parts[2] : '';
-    final url = 'https://weebcentral.com/series/$sId/$slug';
+    final url = slug.isNotEmpty
+        ? 'https://weebcentral.com/series/$sId/$slug'
+        : 'https://weebcentral.com/series/$sId';
 
     final res = await _getCached(
       Uri.parse(url),

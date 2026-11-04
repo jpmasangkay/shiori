@@ -187,18 +187,48 @@ class _MoreScreenState extends State<MoreScreen> {
                           );
                         },
                       ),
-                      OutlinedButton(
-                        onPressed: _confirmLogout,
-                        style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: AppColors.outline),
-                          minimumSize: const Size.fromHeight(44),
-                          padding: const EdgeInsets.symmetric(vertical: 10),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                        ),
-                        child: Text(
-                          'Sign Out',
-                          style: AppText.bodyMedium.copyWith(color: AppColors.muted),
-                        ),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: FilledButton.tonalIcon(
+                              onPressed: () async {
+                                final ok = await ApiService.instance.syncNow();
+                                if (context.mounted) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    SnackBar(
+                                      content: Text(ok ? 'Sync completed successfully' : 'Sync error. Please check network.'),
+                                      backgroundColor: AppColors.surfaceHigh,
+                                      duration: const Duration(seconds: 2),
+                                    ),
+                                  );
+                                }
+                              },
+                              icon: const Icon(Icons.sync_rounded, size: 16),
+                              label: const Text('Sync Now'),
+                              style: FilledButton.styleFrom(
+                                minimumSize: const Size.fromHeight(42),
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed: _confirmLogout,
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: AppColors.outline),
+                                minimumSize: const Size.fromHeight(42),
+                                padding: const EdgeInsets.symmetric(vertical: 8),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                              ),
+                              child: Text(
+                                'Sign Out',
+                                style: AppText.bodyMedium.copyWith(color: AppColors.muted),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ] else
                       FilledButton(

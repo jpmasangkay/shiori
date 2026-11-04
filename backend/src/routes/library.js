@@ -86,7 +86,8 @@ router.put('/categories', async (req, res) => {
           order: typeof c.order === 'number' ? c.order : idx,
         }));
 
-      const keepIds = sanitized.map((c) => c.categoryId);
+      const defaultIds = ['reading', 'completed', 'plan_to_read', 'favorites'];
+      const keepIds = [...new Set([...sanitized.map((c) => c.categoryId), ...defaultIds])];
       await UserCategory.deleteMany({
         user: req.user.id,
         categoryId: { $nin: keepIds },
@@ -162,13 +163,15 @@ router.post('/batch', async (req, res) => {
 
       const setFields = {
         title: cleanTitle,
-        cover: typeof item.cover === 'string' ? item.cover.trim() : '',
         type: sanitizeType(item.type),
         status: typeof item.status === 'string' ? item.status.trim() : '',
         source: typeof item.source === 'string' ? item.source.trim().slice(0, 80) : '',
         chapterCount: Number(item.chapterCount) || 0,
         latestChapter: typeof item.latestChapter === 'string' ? item.latestChapter.trim() : '',
       };
+      if (typeof item.cover === 'string' && item.cover.trim().length > 0) {
+        setFields.cover = item.cover.trim();
+      }
       const cleanCats = sanitizeCategories(item.categories);
       if (cleanCats !== undefined) {
         setFields.categories = cleanCats;
@@ -210,13 +213,15 @@ router.post('/', async (req, res) => {
     const cleanTitle = title.trim().slice(0, 200);
     const setFields = {
       title: cleanTitle,
-      cover: typeof cover === 'string' ? cover.trim() : '',
       type: sanitizeType(type),
       status: typeof status === 'string' ? status.trim() : '',
       source: typeof source === 'string' ? source.trim().slice(0, 80) : '',
       chapterCount: Number(chapterCount) || 0,
       latestChapter: typeof latestChapter === 'string' ? latestChapter.trim() : '',
     };
+    if (typeof cover === 'string' && cover.trim().length > 0) {
+      setFields.cover = cover.trim();
+    }
     const cleanCats = sanitizeCategories(categories);
     if (cleanCats !== undefined) {
       setFields.categories = cleanCats;
@@ -238,22 +243,37 @@ router.post('/', async (req, res) => {
   }
 });
 
-// DELETE /api/library/:mangaId
-router.delete('/:mangaId', async (req, res) => {
+// Helper function for library entry removal
+async function handleRemoveLibraryEntry(req, res, rawMangaId) {
   try {
-    const mangaId = String(req.params.mangaId).trim();
-    const result = await LibraryEntry.findOneAndDelete({
+    const mangaId = String(rawMangaId || '').trim();
+    if (!mangaId) {
+      return res.status(400).json({ error: 'Valid mangaId is required' });
+    }
+    await LibraryEntry.findOneAndDelete({
       user: req.user.id,
       mangaId,
     });
-    if (!result) {
-      return res.status(404).json({ error: 'Entry not found in library' });
-    }
     res.json({ success: true, removed: mangaId });
   } catch (err) {
     console.error('[Library Delete Error]', err.message);
     res.status(500).json({ error: 'Failed to remove from library' });
   }
+}
+
+// POST /api/library/remove - Safe removal endpoint handling any manga ID with slashes/colons
+router.post('/remove', async (req, res) => {
+  await handleRemoveLibraryEntry(req, res, req.body?.mangaId || req.query?.mangaId);
+});
+
+// DELETE /api/library - Deletion via query param or body
+router.delete('/', async (req, res) => {
+  await handleRemoveLibraryEntry(req, res, req.query?.mangaId || req.body?.mangaId);
+});
+
+// DELETE /api/library/:mangaId(*) - Supports wildcards and slashes in mangaId
+router.delete('/:mangaId(*)', async (req, res) => {
+  await handleRemoveLibraryEntry(req, res, req.params.mangaId);
 });
 
 export default router;

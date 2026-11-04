@@ -227,6 +227,52 @@ router.get('/sync', async (req, res) => {
   }
 });
 
+// POST /api/progress/read-status - Update read/unread status for single or multiple chapters
+router.post('/read-status', async (req, res) => {
+  try {
+    const { mangaId, chapterId, chapterIds, read } = req.body || {};
+    const isRead = read !== false;
+    const cleanMangaId = typeof mangaId === 'string' ? mangaId.trim() : '';
+
+    const targetIds = [];
+    if (typeof chapterId === 'string' && chapterId.trim()) {
+      targetIds.push(chapterId.trim());
+    }
+    if (Array.isArray(chapterIds)) {
+      for (const id of chapterIds) {
+        if (typeof id === 'string' && id.trim()) {
+          targetIds.push(id.trim());
+        }
+      }
+    }
+
+    if (targetIds.length === 0) {
+      return res.status(400).json({ error: 'Valid chapterId or chapterIds required' });
+    }
+
+    const ops = targetIds.slice(0, 2000).map((chId) => ({
+      updateOne: {
+        filter: { user: req.user.id, chapterId: chId },
+        update: {
+          $set: {
+            ...(cleanMangaId ? { mangaId: cleanMangaId } : {}),
+            completed: isRead,
+            updatedAt: new Date(),
+          },
+          $setOnInsert: { page: 1, totalPages: 0, createdAt: new Date() },
+        },
+        upsert: true,
+      },
+    }));
+
+    await Progress.bulkWrite(ops);
+    res.json({ success: true, count: targetIds.length, read: isRead });
+  } catch (err) {
+    console.error('[Progress Read Status Error]', err.message);
+    res.status(500).json({ error: 'Failed to update read status' });
+  }
+});
+
 // GET /api/progress/chapter-bookmarks - Retrieve user's chapter bookmarks
 router.get('/chapter-bookmarks', async (req, res) => {
   try {
@@ -241,10 +287,10 @@ router.get('/chapter-bookmarks', async (req, res) => {
 router.put('/chapter-bookmarks', async (req, res) => {
   try {
     const raw = Array.isArray(req.body?.chapterBookmarks) ? req.body.chapterBookmarks : [];
-    const clean = raw.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim());
+    const clean = raw.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim()).slice(0, 5000);
     const userDoc = await User.findByIdAndUpdate(
       req.user.id,
-      { $addToSet: { chapterBookmarks: { $each: clean } } },
+      { $set: { chapterBookmarks: clean } },
       { new: true },
     ).select('chapterBookmarks');
     res.json({ success: true, chapterBookmarks: userDoc?.chapterBookmarks || [] });
