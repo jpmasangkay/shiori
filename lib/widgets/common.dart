@@ -65,7 +65,7 @@ class ImageReferers {
   static int _activeCoverLookups = 0;
   static final Queue<Completer<void>> _coverLookupQueue =
       Queue<Completer<void>>();
-  static const int _maxConcurrentCoverLookups = 3;
+  static const int _maxConcurrentCoverLookups = 4;
 
   /// Remembers that images served from [imageUrl]'s host must be requested
   /// with [referer] (usually the source's base URL).

@@ -638,39 +638,50 @@ class LibraryRepository extends ChangeNotifier {
     String? baseUrl,
     Map<String, String>? headers,
   }) async {
-    bool updated = false;
-    for (final id in mangaIds) {
-      try {
-        final resolved = await ImageReferers.resolveCoverForManga(id);
-        if (resolved != null && resolved.isNotEmpty) {
-          final existing = _localLibrary[id];
-          if (existing != null) {
-            final refreshed = existing.copyWith(cover: resolved);
-            _localLibrary[id] = refreshed;
-            _knownManga[id] = refreshed;
-            updated = true;
-            if (client != null && baseUrl != null && headers != null) {
-              unawaited(
-                client
-                    .post(
-                      Uri.parse('$baseUrl/library'),
-                      headers: headers,
-                      body: jsonEncode({
-                        'mangaId': id,
-                        'cover': resolved,
-                      }),
-                    )
-                    .timeout(const Duration(seconds: 4))
-                    .catchError((_) => http.Response('', 500)),
-              );
+    const chunkSize = 4;
+    for (var i = 0; i < mangaIds.length; i += chunkSize) {
+      final chunk = mangaIds.sublist(
+        i,
+        (i + chunkSize > mangaIds.length) ? mangaIds.length : i + chunkSize,
+      );
+      bool chunkUpdated = false;
+
+      await Future.wait(
+        chunk.map((id) async {
+          try {
+            final resolved = await ImageReferers.resolveCoverForManga(id);
+            if (resolved != null && resolved.isNotEmpty) {
+              final existing = _localLibrary[id];
+              if (existing != null) {
+                final refreshed = existing.copyWith(cover: resolved);
+                _localLibrary[id] = refreshed;
+                _knownManga[id] = refreshed;
+                chunkUpdated = true;
+                if (client != null && baseUrl != null && headers != null) {
+                  unawaited(
+                    client
+                        .post(
+                          Uri.parse('$baseUrl/library'),
+                          headers: headers,
+                          body: jsonEncode({
+                            'mangaId': id,
+                            'cover': resolved,
+                          }),
+                        )
+                        .timeout(const Duration(seconds: 4))
+                        .catchError((_) => http.Response('', 500)),
+                  );
+                }
+              }
             }
-          }
-        }
-      } catch (_) {}
-    }
-    if (updated) {
-      await _persistLocalLibrary();
-      notifyListeners();
+          } catch (_) {}
+        }),
+      );
+
+      if (chunkUpdated) {
+        await _persistLocalLibrary();
+        notifyListeners();
+      }
     }
   }
 
