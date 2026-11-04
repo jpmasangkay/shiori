@@ -190,15 +190,8 @@ class _UpdatesScreenState extends State<UpdatesScreen>
 
     return Column(
       children: [
-        AppTopBar(
+        const AppTopBar(
           title: 'Updates',
-          actions: [
-            BarIcon(
-              Icons.sync_rounded,
-              label: 'Check updates',
-              onTap: _onRefresh,
-            ),
-          ],
         ),
         if (hasRawUpdates && (availableSources.length > 1 || userCategories.length > 1))
           _buildFilterBar(availableSources, userCategories),

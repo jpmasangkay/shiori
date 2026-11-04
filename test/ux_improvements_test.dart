@@ -245,8 +245,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Top bar check updates exists
-      expect(find.byTooltip('Check updates'), findsOneWidget);
+      // Updates top bar renders cleanly without manual refresh button
+      expect(find.text('Updates'), findsOneWidget);
     });
   });
 

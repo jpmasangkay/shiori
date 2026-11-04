@@ -1611,11 +1611,6 @@ class _ReaderScreenState extends State<ReaderScreen> {
             onTap: _showDisplaySheet,
           ),
           BarIcon(
-            Icons.refresh_rounded,
-            label: 'Reload Chapter',
-            onTap: () => _reloadChapterPages(_currentChapterIndex),
-          ),
-          BarIcon(
             _selectedMode == ReaderMode.automatic ? Icons.auto_awesome_rounded : _mode.icon,
             label: _selectedMode == ReaderMode.automatic
                 ? 'Auto (${_mode.shortLabel})'
