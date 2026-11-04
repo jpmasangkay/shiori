@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
-import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/library_repository.dart';
 import 'package:manga_reader/widgets/common.dart';
 import 'package:shared_preferences/shared_preferences.dart';
