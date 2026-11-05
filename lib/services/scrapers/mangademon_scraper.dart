@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/http_cache.dart';
@@ -6,17 +5,15 @@ import 'package:manga_reader/services/scrapers/html_scraper_utils.dart';
 import 'package:manga_reader/widgets/common.dart';
 
 class MangaDemonScraper {
-  final http.Client Function() _clientProvider;
-  final LruHttpCache? _cache;
+  final http.Client Function() clientProvider;
+  final LruHttpCache? cache;
 
   static const String _domain = 'demonicscans.org';
   static const String _referer = 'https://demonicscans.org/';
 
-  MangaDemonScraper({required http.Client Function() clientProvider, LruHttpCache? cache})
-      : _clientProvider = clientProvider,
-        _cache = cache;
+  MangaDemonScraper({required this.clientProvider, this.cache});
 
-  http.Client get _client => _clientProvider();
+  http.Client get _client => clientProvider();
 
   Future<http.Response> _getCached(
     Uri uri, {
@@ -24,8 +21,9 @@ class MangaDemonScraper {
     Duration timeout = const Duration(seconds: 12),
   }) async {
     final key = uri.toString();
-    if (_cache != null) {
-      return _cache.deduplicate(key, () async {
+    final c = cache;
+    if (c != null) {
+      return c.deduplicate(key, () async {
         return await _client.get(uri, headers: headers).timeout(timeout);
       });
     }

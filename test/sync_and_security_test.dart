@@ -400,6 +400,9 @@ void main() {
       await ApiService.instance.deleteCategory('cat_cloud_custom');
       expect(ApiService.instance.getCategories(), isEmpty);
       expect(ApiService.instance.getMangaCategoryIds('manga_1'), isEmpty);
+
+      // Verify categories were synced to cloud
+      expect(uploadedCategories.map((c) => (c as Map)['id']).toSet(), contains('cat_cloud_custom'));
     });
 
     test('downloadLibraryBookmarks does not overwrite valid covers with empty string or file URI', () async {

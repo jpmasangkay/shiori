@@ -274,12 +274,6 @@ class MangaFoxScraper {
       final countMatch = RegExp(r'var\s+imagecount\s*=\s*(\d+)', caseSensitive: false).firstMatch(html);
       final count = countMatch != null ? int.tryParse(countMatch.group(1)!) ?? 0 : 0;
 
-      // Extract base chapter path
-      final baseUri = Uri.parse(chapterUrl);
-      final baseSegments = baseUri.pathSegments.where((s) => s.isNotEmpty).toList();
-      baseSegments.removeLast(); // remove '1.html'
-      final basePath = baseSegments.join('/');
-
       // Extract first page image URL
       final firstImgMatch = RegExp(r'<img[^>]+class="reader-main-img"[^>]+src="([^"]+)"', caseSensitive: false)
               .firstMatch(html) ??
