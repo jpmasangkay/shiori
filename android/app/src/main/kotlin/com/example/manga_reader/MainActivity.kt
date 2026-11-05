@@ -671,7 +671,7 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "fetchImageBytes" -> {
-                    val imageUrl = call.argument<String>("imageUrl") ?: ""
+                    val imageUrl = call.argument<String>("imageUrl") ?: call.argument<String>("url") ?: ""
                     val pageUrl = call.argument<String>("pageUrl")
                     mainScope.launch {
                         try {

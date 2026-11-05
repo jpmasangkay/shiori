@@ -29,11 +29,17 @@ class MangaItem {
 
   factory MangaItem.fromJson(Map<String, dynamic> json) {
     final id = json['id'] as String? ?? '';
+    var cover = json['cover'] as String? ?? '';
+    if (cover.contains('uploads.mangadex.org/covers/') &&
+        !cover.contains('.512.jpg') &&
+        !cover.contains('.256.jpg')) {
+      cover = '.512.jpg';
+    }
     return MangaItem(
       id: id,
       title: json['title'] as String? ?? 'Untitled',
       description: json['description'] as String? ?? '',
-      cover: json['cover'] as String? ?? '',
+      cover: cover,
       authors: (json['authors'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? const [],
       status: json['status'] as String? ?? '',
       type: json['type'] as String? ?? 'manga',

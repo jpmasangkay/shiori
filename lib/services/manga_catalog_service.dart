@@ -14,6 +14,9 @@ import 'package:manga_reader/services/scrapers/mangapill_scraper.dart';
 import 'package:manga_reader/services/scrapers/mangaread_scraper.dart';
 import 'package:manga_reader/services/scrapers/web_extension_scraper.dart';
 import 'package:manga_reader/services/scrapers/weeb_scraper.dart';
+import 'package:manga_reader/services/scrapers/manganato_scraper.dart';
+import 'package:manga_reader/services/scrapers/mangafox_scraper.dart';
+import 'package:manga_reader/services/scrapers/mangademon_scraper.dart';
 
 /// Central catalog service routing queries across direct web scrapers, MangaDex API,
 /// and community extensions (#1)
@@ -25,6 +28,9 @@ class MangaCatalogService {
   final MangaPillScraper mangapill;
   final MangaKatanaScraper mangakatana;
   final MangaReadScraper mangaread;
+  final MangaNatoScraper manganato;
+  final MangaFoxScraper mangafox;
+  final MangaDemonScraper mangademon;
   final WebExtensionScraper webExtension;
   final http.Client Function() _clientProvider;
   final String Function() _baseUrlProvider;
@@ -41,6 +47,9 @@ class MangaCatalogService {
     required this.mangapill,
     required this.mangakatana,
     required this.mangaread,
+    required this.manganato,
+    required this.mangafox,
+    required this.mangademon,
     required this.webExtension,
     required this._clientProvider,
     required this._baseUrlProvider,
@@ -106,6 +115,32 @@ class MangaCatalogService {
     }
     if (s == 'asura') {
       return asura.search(query: query, type: type, page: page);
+    }
+    if (s == 'manganato' || s == 'nato' || s == 'manganelo') {
+      return manganato.search(
+        query: query,
+        type: type,
+        order: order,
+        page: page,
+        limit: limit,
+      );
+    }
+    if (s == 'mangafox' || s == 'fox') {
+      return mangafox.search(
+        query: query,
+        type: type,
+        order: order,
+        page: page,
+        limit: limit,
+      );
+    }
+    if (s == 'mangademon' || s == 'demon') {
+      return mangademon.search(
+        query: query,
+        type: type,
+        page: page,
+        limit: limit,
+      );
     }
 
     // 2. MangaDex API
@@ -196,6 +231,9 @@ class MangaCatalogService {
     if (id.startsWith('pill:')) return mangapill.getManga(id);
     if (id.startsWith('katana:')) return mangakatana.getManga(id);
     if (id.startsWith('mread:')) return mangaread.getManga(id);
+    if (id.startsWith('nato:')) return manganato.getManga(id);
+    if (id.startsWith('fox:')) return mangafox.getManga(id);
+    if (id.startsWith('demon:')) return mangademon.getManga(id);
 
     if (id.startsWith('ext:')) {
       final firstColon = id.indexOf(':');
@@ -255,6 +293,9 @@ class MangaCatalogService {
     if (mangaId.startsWith('pill:')) return mangapill.getChapters(mangaId);
     if (mangaId.startsWith('katana:')) return mangakatana.getChapters(mangaId);
     if (mangaId.startsWith('mread:')) return mangaread.getChapters(mangaId);
+    if (mangaId.startsWith('nato:')) return manganato.getChapters(mangaId);
+    if (mangaId.startsWith('fox:')) return mangafox.getChapters(mangaId);
+    if (mangaId.startsWith('demon:')) return mangademon.getChapters(mangaId);
 
     if (mangaId.startsWith('ext:')) {
       final firstColon = mangaId.indexOf(':');
@@ -342,6 +383,15 @@ class MangaCatalogService {
     }
     if (chapterId.startsWith('mread:')) {
       return mangaread.getChapterPages(chapterId);
+    }
+    if (chapterId.startsWith('nato:')) {
+      return manganato.getChapterPages(chapterId);
+    }
+    if (chapterId.startsWith('fox:')) {
+      return mangafox.getChapterPages(chapterId);
+    }
+    if (chapterId.startsWith('demon:')) {
+      return mangademon.getChapterPages(chapterId);
     }
 
     if (chapterId.startsWith('ext:')) {

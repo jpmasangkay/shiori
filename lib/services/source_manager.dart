@@ -119,8 +119,37 @@ class SourceManager extends ChangeNotifier {
       iconLetter: 'R',
       colorValue: 0xFF8B5CF6,
     ),
+    DirectSourceInfo(
+      id: 'manganato',
+      name: 'MangaNato',
+      lang: 'EN',
+      badge: 'DIRECT • EN',
+      description:
+          'Massive Manga & Manhwa Archive • Over 80,000+ series with high-res chapters',
+      iconLetter: 'N',
+      colorValue: 0xFFF97316,
+    ),
+    DirectSourceInfo(
+      id: 'mangafox',
+      name: 'MangaFox',
+      lang: 'EN',
+      badge: 'DIRECT • EN',
+      description:
+          'Legendary Manga Archive • Over 50,000+ series with high-speed chapters',
+      iconLetter: 'X',
+      colorValue: 0xFFEF4444,
+    ),
+    DirectSourceInfo(
+      id: 'mangademon',
+      name: 'MangaDemon',
+      lang: 'EN',
+      badge: 'DIRECT • EN',
+      description:
+          'Top Action & Cultivation Manhwa • Fast high-res chapters & thousands of series',
+      iconLetter: 'D',
+      colorValue: 0xFFDC2626,
+    ),
   ];
-
   final Set<String> _pinnedSourceIds = {'mangadex', 'asura'};
   Set<String> get pinnedSourceIds => _pinnedSourceIds;
 

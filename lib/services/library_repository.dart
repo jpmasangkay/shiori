@@ -581,13 +581,16 @@ class LibraryRepository extends ChangeNotifier {
           final fallback = coverFallback?.call(id) ?? '';
 
           // Preserve existing valid remote cover if cloud has empty or file:// cover
-          final effectiveCover = (cloudCover.isNotEmpty && !cloudCover.startsWith('file://') && !cloudCover.startsWith('/'))
+          var effectiveCover = (cloudCover.isNotEmpty && !cloudCover.startsWith('file://') && !cloudCover.startsWith('/'))
               ? cloudCover
               : ((existing != null && existing.cover.isNotEmpty && !existing.cover.startsWith('file://') && !existing.cover.startsWith('/'))
                   ? existing.cover
                   : ((fallback.isNotEmpty && !fallback.startsWith('file://') && !fallback.startsWith('/'))
                       ? fallback
                       : (ImageReferers.getResolvedCover(id) ?? '')));
+          if (effectiveCover.contains('uploads.mangadex.org/covers/') && !effectiveCover.contains('.512.jpg') && !effectiveCover.contains('.256.jpg')) {
+            effectiveCover = '$effectiveCover.512.jpg';
+          }
 
           final m = MangaItem(
             id: id,

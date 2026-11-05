@@ -38,6 +38,8 @@ void main() {
       'mangapill',
       'mangakatana',
       'mangaread',
+      'mangafox',
+      'mangademon',
     ];
 
     final failures = <String>[];

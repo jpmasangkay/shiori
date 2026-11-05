@@ -22,6 +22,9 @@ import 'package:manga_reader/services/scrapers/mangapill_scraper.dart';
 import 'package:manga_reader/services/scrapers/mangaread_scraper.dart';
 import 'package:manga_reader/services/scrapers/web_extension_scraper.dart';
 import 'package:manga_reader/services/scrapers/weeb_scraper.dart';
+import 'package:manga_reader/services/scrapers/manganato_scraper.dart';
+import 'package:manga_reader/services/scrapers/mangafox_scraper.dart';
+import 'package:manga_reader/services/scrapers/mangademon_scraper.dart';
 import 'package:manga_reader/widgets/common.dart';
 
 enum SyncStatus { idle, syncing, success, error }
@@ -61,6 +64,9 @@ class ApiService extends ChangeNotifier {
   late MangaPillScraper _mangapill;
   late MangaKatanaScraper _mangakatana;
   late MangaReadScraper _mangaread;
+  late MangaNatoScraper _manganato;
+  late MangaFoxScraper _mangafox;
+  late MangaDemonScraper _mangademon;
   late WebExtensionScraper _webExtension;
 
   String _baseUrl = 'https://shiori-n5hd.onrender.com/api';
@@ -127,6 +133,18 @@ class ApiService extends ChangeNotifier {
       clientProvider: () => httpManager.client,
       cache: httpManager.cache,
     );
+    _manganato = MangaNatoScraper(
+      clientProvider: () => httpManager.client,
+      cache: httpManager.cache,
+    );
+    _mangafox = MangaFoxScraper(
+      clientProvider: () => httpManager.client,
+      cache: httpManager.cache,
+    );
+    _mangademon = MangaDemonScraper(
+      clientProvider: () => httpManager.client,
+      cache: httpManager.cache,
+    );
     _webExtension = WebExtensionScraper(
       clientProvider: () => httpManager.client,
       cache: httpManager.cache,
@@ -140,6 +158,9 @@ class ApiService extends ChangeNotifier {
       mangapill: _mangapill,
       mangakatana: _mangakatana,
       mangaread: _mangaread,
+      manganato: _manganato,
+      mangafox: _mangafox,
+      mangademon: _mangademon,
       webExtension: _webExtension,
       clientProvider: () => httpManager.client,
       baseUrlProvider: () => _baseUrl,

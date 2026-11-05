@@ -16,6 +16,9 @@ class SourceResolver {
     if (id.startsWith('pill:')) return 'mangapill';
     if (id.startsWith('katana:')) return 'mangakatana';
     if (id.startsWith('mread:')) return 'mangaread';
+    if (id.startsWith('nato:')) return 'manganato';
+    if (id.startsWith('fox:')) return 'mangafox';
+    if (id.startsWith('demon:')) return 'mangademon';
     if (id.startsWith('mangadex:')) return 'mangadex';
     if (id.startsWith('ext:')) {
       final parts = id.split(':');
@@ -54,6 +57,13 @@ class SourceResolver {
       case 'mangaread':
       case 'mread':
         return 'MangaRead';
+      case 'manganato':
+      case 'nato':
+      case 'manganelo':
+        return 'MangaNato';
+      case 'mangafox':
+      case 'fox':
+        return 'MangaFox';
       case 'extension':
         return 'Extension';
       case 'unknown':

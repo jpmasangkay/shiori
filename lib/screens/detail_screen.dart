@@ -863,6 +863,12 @@ class _DetailScreenState extends State<DetailScreen> {
     } else if (id.startsWith('mread:') || s.contains('mangaread')) {
       sourceName = 'MANGAREAD';
       sourceColor = const Color(0xFFEC4899);
+    } else if (id.startsWith('nato:') || s.contains('manganato') || s.contains('manganelo')) {
+      sourceName = 'MANGANATO';
+      sourceColor = const Color(0xFFF97316);
+    } else if (id.startsWith('fox:') || s.contains('mangafox') || s.contains('fanfox')) {
+      sourceName = 'MANGAFOX';
+      sourceColor = const Color(0xFFEF4444);
     } else if (id.startsWith('ext:') || s.startsWith('ext:')) {
       final rawSpec = id.startsWith('ext:') ? m.id : m.source;
       final parts = rawSpec.split(':');

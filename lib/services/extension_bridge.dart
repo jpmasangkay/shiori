@@ -171,6 +171,7 @@ class ExtensionBridge {
       final bytes = await _channel.invokeMethod<Uint8List>('fetchImageBytes', {
         'pkg': pkg,
         'url': url,
+        'imageUrl': url,
         'pageUrl': pageUrl,
         'apkPath': apkPath,
       });
@@ -414,6 +415,9 @@ class ExtensionBridge {
       }
     }
     if (u.contains(' ')) u = u.replaceAll(' ', '%20');
+    if (u.contains('uploads.mangadex.org/covers/') && !u.contains('.512.jpg') && !u.contains('.256.jpg')) {
+      u = '$u.512.jpg';
+    }
     return u;
   }
 

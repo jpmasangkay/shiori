@@ -141,9 +141,10 @@ class ImageReferers {
       _hostHeaders[host.toLowerCase()];
 
   static NativeImageLoader? lookupNativeLoader(String url, {String? mangaId}) {
+    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+    if (host.contains('mangadex.org')) return null;
     final direct = _urlNativeLoaders[url];
     if (direct != null) return direct;
-    final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
     if (host.isNotEmpty) {
       final hostLoader = _hostNativeLoaders[host];
       if (hostLoader != null) return hostLoader;
@@ -308,6 +309,13 @@ class ImageReferers {
 Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
   final uri = Uri.tryParse(url);
   final host = uri?.host.toLowerCase() ?? '';
+  if (host.contains('mangadex')) {
+    return const {
+      'User-Agent': 'Shiori/1.0 (Android; Mobile; +https://github.com/jpmasangkay/shiori)',
+      'Referer': 'https://mangadex.org/',
+      'Accept': _imageAccept,
+    };
+  }
   final custom = ImageReferers.lookupHeaders(host);
   final learned = ImageReferers.lookup(host);
 
@@ -368,7 +376,7 @@ Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
     referer = 'https://bato.to/';
   } else if (host.contains('mangapark')) {
     referer = 'https://mangapark.net/';
-  } else if (host.contains('fanfox') || host.contains('mangafox')) {
+  } else if (host.contains('fanfox') || host.contains('mangafox') || host.contains('mfcdn')) {
     referer = 'https://fanfox.net/';
   } else if (host.contains('readdetectiveconan') ||
       host.contains('mangapill')) {
@@ -414,8 +422,22 @@ Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
 
 /// Alternative header sets to try when an image fails with the default headers.
 List<Map<String, String>> imageHeaderVariants(String url, {String? mangaId}) {
-  final primary = imageHeadersForUrl(url, mangaId: mangaId);
   final host = Uri.tryParse(url)?.host.toLowerCase() ?? '';
+  if (host.contains('mangadex')) {
+    return const [
+      {
+        'User-Agent': 'Shiori/1.0 (Android; Mobile; +https://github.com/jpmasangkay/shiori)',
+        'Referer': 'https://mangadex.org/',
+        'Accept': _imageAccept,
+      },
+      {
+        'User-Agent': 'Tachiyomi Mozilla/5.0 (Linux; Android)',
+        'Referer': 'https://mangadex.org/',
+        'Accept': _imageAccept,
+      },
+    ];
+  }
+  final primary = imageHeadersForUrl(url, mangaId: mangaId);
   final ua = primary['User-Agent'] ?? _browserUserAgent;
   final cookie = primary['Cookie'] ?? primary['cookie'];
 
@@ -881,6 +903,9 @@ class _CoverImageState extends State<CoverImage> {
     var u = raw.trim();
     if (u.isEmpty) return null;
     if (u.startsWith('//')) u = 'https:$u';
+    if (u.contains('uploads.mangadex.org/covers/') && !u.contains('.512.jpg') && !u.contains('.256.jpg')) {
+      u = '$u.512.jpg';
+    }
     return u;
   }
 
