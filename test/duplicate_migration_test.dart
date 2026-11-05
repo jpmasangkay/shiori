@@ -43,6 +43,22 @@ void main() {
         DuplicateDetector.isPossibleDuplicate('Solo Leveling', 'One Piece'),
         isFalse,
       );
+      expect(
+        DuplicateDetector.isPossibleDuplicate('Ao Ashi', 'Ao Ashi Brotherfoot'),
+        isFalse,
+      );
+      expect(
+        DuplicateDetector.isPossibleDuplicate('Solo Leveling', 'Solo Leveling Ragnarok'),
+        isFalse,
+      );
+      expect(
+        DuplicateDetector.isPossibleDuplicate('Naruto', 'Naruto Gaiden'),
+        isFalse,
+      );
+      expect(
+        DuplicateDetector.isPossibleDuplicate('Ao Ashi', 'Ao Ashi Digital Colored'),
+        isTrue,
+      );
     });
 
     test('findDuplicatesInLibrary locates entries with similar names', () {

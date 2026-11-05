@@ -487,18 +487,51 @@ class DuplicateDetector {
     return s;
   }
 
+  static const Set<String> _cosmeticDescriptors = {
+    'official',
+    'colored',
+    'colour',
+    'color',
+    'digital',
+    'webtoon',
+    'raw',
+    'reupload',
+    'scans',
+    'scan',
+    'comic',
+    'comics',
+    'manga',
+    'manhwa',
+    'manhua',
+    'edition',
+    'version',
+    'ver',
+    'uncensored',
+    'censored',
+    'hd',
+    'full',
+  };
+
   static bool isPossibleDuplicate(String titleA, String titleB) {
     final normA = normalize(titleA);
     final normB = normalize(titleB);
     if (normA.isEmpty || normB.isEmpty) return false;
     if (normA == normB) return true;
 
-    // Substring / prefix check if significant portion matches
-    if (normA.length >= 4 && normB.length >= 4) {
-      if (normA.startsWith(normB) || normB.startsWith(normA)) return true;
-      if (normA.contains(normB) && (normB.length / normA.length) >= 0.7) return true;
-      if (normB.contains(normA) && (normA.length / normB.length) >= 0.7) return true;
+    // Check if one title is the other plus cosmetic format descriptors
+    // (e.g. "Solo Leveling" vs "Solo Leveling Official" or "Solo Leveling Digital Colored")
+    // Spinoffs, prequels, and sequels like "Ao Ashi" vs "Ao Ashi Brotherfoot" must NOT be flagged.
+    final shorter = normA.length <= normB.length ? normA : normB;
+    final longer = normA.length <= normB.length ? normB : normA;
+
+    if (longer.startsWith(shorter)) {
+      final remainder = longer.substring(shorter.length).trim();
+      final words = remainder.split(' ').where((w) => w.isNotEmpty).toList();
+      if (words.isNotEmpty && words.every((w) => _cosmeticDescriptors.contains(w))) {
+        return true;
+      }
     }
+
     return false;
   }
 
