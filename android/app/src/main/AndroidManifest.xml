@@ -90,5 +90,11 @@
             <action android:name="android.intent.action.VIEW"/>
             <data android:scheme="http"/>
         </intent>
+        <intent>
+            <action android:name="tachiyomi.extension"/>
+        </intent>
+        <intent>
+            <action android:name="eu.kanade.tachiyomi.extension"/>
+        </intent>
     </queries>
 </manifest>

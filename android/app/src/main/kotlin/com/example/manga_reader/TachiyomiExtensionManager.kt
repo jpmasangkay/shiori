@@ -256,6 +256,40 @@ class TachiyomiExtensionManager(private val context: Context) {
 
         val discovered = linkedMapOf<String, Pair<PackageInfo, String?>>()
 
+        // 1. Query services matching tachiyomi.extension intent filters (resilient against package visibility & Binder size limits)
+        val serviceIntents = listOf(
+            Intent("tachiyomi.extension"),
+            Intent("eu.kanade.tachiyomi.extension")
+        )
+        for (intent in serviceIntents) {
+            try {
+                val resolveInfos = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.queryIntentServices(intent, PackageManager.ResolveInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.queryIntentServices(intent, PackageManager.GET_META_DATA)
+                }
+                for (ri in resolveInfos) {
+                    val pkgName = ri.serviceInfo?.packageName ?: continue
+                    if (isStubPackage(pkgName) || discovered.containsKey(pkgName)) continue
+                    try {
+                        val pkgInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            pm.getPackageInfo(pkgName, PackageManager.PackageInfoFlags.of(flags.toLong()))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            pm.getPackageInfo(pkgName, flags)
+                        }
+                        if (pkgInfo != null && isExtensionPackage(pkgInfo)) {
+                            discovered[pkgName] = pkgInfo to pkgInfo.applicationInfo?.sourceDir
+                        }
+                    } catch (_: Throwable) {}
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Error querying intent services for ${intent.action}: ${e.message}")
+            }
+        }
+
+        // 2. Query all installed packages as broad scan
         try {
             val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(flags.toLong()))
@@ -263,12 +297,38 @@ class TachiyomiExtensionManager(private val context: Context) {
                 pm.getInstalledPackages(flags)
             }
             for (pkgInfo in installed) {
-                if (isExtensionPackage(pkgInfo)) {
+                if (isExtensionPackage(pkgInfo) && !discovered.containsKey(pkgInfo.packageName)) {
                     discovered[pkgInfo.packageName] = pkgInfo to pkgInfo.applicationInfo?.sourceDir
                 }
             }
         } catch (e: Throwable) {
-            Log.w(TAG, "Error querying installed packages: ${e.message}")
+            Log.w(TAG, "Error querying installed packages with full flags: ${e.message}, falling back to minimal flags")
+            try {
+                val basicFlags = PackageManager.GET_META_DATA
+                val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getInstalledPackages(PackageManager.PackageInfoFlags.of(basicFlags.toLong()))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getInstalledPackages(basicFlags)
+                }
+                for (pkgInfo in installed) {
+                    if (isExtensionPackage(pkgInfo) && !discovered.containsKey(pkgInfo.packageName)) {
+                        try {
+                            val fullInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                pm.getPackageInfo(pkgInfo.packageName, PackageManager.PackageInfoFlags.of(flags.toLong()))
+                            } else {
+                                @Suppress("DEPRECATION")
+                                pm.getPackageInfo(pkgInfo.packageName, flags)
+                            }
+                            discovered[pkgInfo.packageName] = fullInfo to fullInfo.applicationInfo?.sourceDir
+                        } catch (_: Throwable) {
+                            discovered[pkgInfo.packageName] = pkgInfo to pkgInfo.applicationInfo?.sourceDir
+                        }
+                    }
+                }
+            } catch (fallbackErr: Throwable) {
+                Log.w(TAG, "Error querying installed packages with minimal flags: ${fallbackErr.message}")
+            }
         }
 
         // Scan private-storage fallback APKs ONLY for extensions not installed in PackageManager.
@@ -1450,12 +1510,21 @@ class TachiyomiExtensionManager(private val context: Context) {
     }
 
     private fun computeLegacySlugUrl(url: String): String? {
-        return if (url.startsWith("/comic/")) {
-            url.removePrefix("/comic/").trim('/')
-        } else if (url.contains("/comic/")) {
-            url.substringAfterLast("/comic/").trim('/')
-        } else {
-            null
+        val clean = url.substringBefore('?').substringBefore('#').trim()
+        return when {
+            clean.startsWith("/comic/") -> clean.removePrefix("/comic/").trim('/')
+            clean.contains("/comic/") -> clean.substringAfterLast("/comic/").trim('/')
+            clean.startsWith("http://") || clean.startsWith("https://") -> {
+                val path = clean.substringAfter("://").substringAfter('/', "")
+                when {
+                    path.startsWith("comic/") -> path.removePrefix("comic/").trim('/')
+                    path.isNotEmpty() -> path.substringAfterLast('/').trim('/')
+                    else -> null
+                }
+            }
+            clean.startsWith("/") -> clean.trim('/')
+            clean.isNotEmpty() && !clean.contains("/") -> clean
+            else -> null
         }
     }
 
@@ -1467,12 +1536,16 @@ class TachiyomiExtensionManager(private val context: Context) {
             val useLegacyFirst = basePkg.contains("comick", ignoreCase = true) && !legacySlug.isNullOrEmpty()
             val primaryUrl = if (useLegacyFirst) legacySlug!! else url
 
-            val sManga = mangaCache["$pkg:$url"]
+            val sManga = (mangaCache["$pkg:$url"]
                 ?: mangaCache["$basePkg:$url"]
                 ?: (if (legacySlug != null) mangaCache["$pkg:$legacySlug"] ?: mangaCache["$basePkg:$legacySlug"] else null)
                 ?: SManga.create().apply {
                     this.url = primaryUrl
                     if (!title.isNullOrEmpty()) this.title = title
+                }).apply {
+                    if (useLegacyFirst && !legacySlug.isNullOrEmpty() && (this.url.startsWith("/comic/") || this.url.contains("http://") || this.url.contains("https://"))) {
+                        this.url = legacySlug
+                    }
                 }
 
             suspend fun tryResolveDetails(targetManga: SManga): Pair<SManga?, Throwable?> {
@@ -1564,12 +1637,16 @@ class TachiyomiExtensionManager(private val context: Context) {
             val useLegacyFirst = basePkg.contains("comick", ignoreCase = true) && !legacySlug.isNullOrEmpty()
             val primaryUrl = if (useLegacyFirst) legacySlug!! else url
 
-            val sManga = mangaCache["$pkg:$url"]
+            val sManga = (mangaCache["$pkg:$url"]
                 ?: mangaCache["$basePkg:$url"]
                 ?: (if (legacySlug != null) mangaCache["$pkg:$legacySlug"] ?: mangaCache["$basePkg:$legacySlug"] else null)
                 ?: SManga.create().apply {
                     this.url = primaryUrl
                     if (!title.isNullOrEmpty()) this.title = title
+                }).apply {
+                    if (useLegacyFirst && !legacySlug.isNullOrEmpty() && (this.url.startsWith("/comic/") || this.url.contains("http://") || this.url.contains("https://"))) {
+                        this.url = legacySlug
+                    }
                 }
 
             suspend fun tryResolveChapters(targetManga: SManga): Pair<List<SChapter>?, Throwable?> {
@@ -1615,11 +1692,13 @@ class TachiyomiExtensionManager(private val context: Context) {
 
             var (chapters, lastError) = tryResolveChapters(sManga)
 
-            if (chapters == null && source is HttpSource) {
+            if ((chapters == null || chapters.isEmpty()) && source is HttpSource) {
                 val relativeUrl = if (url.startsWith("http")) source.getUrlWithoutDomain(url) else null
                 val altUrl = when {
                     !relativeUrl.isNullOrEmpty() && relativeUrl != sManga.url -> relativeUrl
                     !legacySlug.isNullOrEmpty() && legacySlug != sManga.url -> legacySlug
+                    sManga.url.startsWith("/comic/") -> sManga.url.removePrefix("/comic/").trim('/')
+                    !sManga.url.contains("/") -> "/comic/${sManga.url}"
                     else -> null
                 }
                 if (altUrl != null) {
@@ -1628,7 +1707,7 @@ class TachiyomiExtensionManager(private val context: Context) {
                         if (!title.isNullOrEmpty()) this.title = title
                     }
                     val (altChapters, _) = tryResolveChapters(altManga)
-                    if (altChapters != null) {
+                    if (!altChapters.isNullOrEmpty()) {
                         chapters = altChapters
                     }
                 }
