@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 
+import 'display_settings.dart';
 import 'screens/browse_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/library_screen.dart';
@@ -9,6 +10,7 @@ import 'screens/updates_screen.dart';
 import 'services/api_service.dart';
 import 'services/connectivity_service.dart';
 import 'services/download_service.dart';
+import 'services/reader_settings.dart';
 import 'services/tracker_service.dart';
 import 'theme.dart';
 import 'widgets/auth_modal.dart';
@@ -19,6 +21,8 @@ Future<void> main() async {
   PaintingBinding.instance.imageCache.maximumSize = 250;
   PaintingBinding.instance.imageCache.maximumSizeBytes = 64 * 1024 * 1024; // 64 MB
   await ThemeController.instance.init();
+  await DisplaySettings.instance.init();
+  await ReaderSettings.instance.init();
   await ConnectivityService.instance.init();
   await ApiService.instance.init();
   await DownloadService.instance.init();

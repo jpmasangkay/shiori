@@ -129,11 +129,48 @@ class ChapterItem {
   }
 
   String get displayTitle {
-    final numStr = number != null ? 'Chapter $number' : 'Chapter';
-    if (title.isNotEmpty) {
-      return '$numStr - $title';
+    final cleanTitle = title.trim();
+    final cleanNum = number?.trim();
+
+    if (cleanTitle.isEmpty) {
+      return (cleanNum != null && cleanNum.isNotEmpty) ? 'Chapter $cleanNum' : 'Chapter';
     }
-    return numStr;
+
+    if (cleanNum == null || cleanNum.isEmpty) {
+      return cleanTitle;
+    }
+
+    final normTitle = cleanTitle.toLowerCase();
+    final normNum = cleanNum.toLowerCase();
+
+    // If the title is strictly the chapter number or standard chapter prefix
+    if (normTitle == normNum ||
+        normTitle == 'chapter $normNum' ||
+        normTitle == 'ch. $normNum' ||
+        normTitle == 'ch.$normNum' ||
+        normTitle == 'ep. $normNum' ||
+        normTitle == 'ep.$normNum' ||
+        normTitle == 'episode $normNum') {
+      return 'Chapter $cleanNum';
+    }
+
+    // Check if cleanTitle already starts with the chapter prefix/number
+    // e.g. "Chapter 220: ...", "Ch. 220 - ...", "Chapter 220 ...", "220 - ..."
+    final prefixRegex = RegExp(
+      r'^(?:(?:chapter|ch\.?|ep\.?|episode)\s*)?' +
+          RegExp.escape(normNum) +
+          r'(?:\s*[:\-\.]\s*|\s+)',
+      caseSensitive: false,
+    );
+
+    if (prefixRegex.hasMatch(cleanTitle)) {
+      if (RegExp(r'^(?:ch\.?|ep\.?)\s*', caseSensitive: false).hasMatch(cleanTitle)) {
+        return cleanTitle.replaceFirst(RegExp(r'^(?:ch\.?|ep\.?)\s*', caseSensitive: false), 'Chapter ');
+      }
+      return cleanTitle;
+    }
+
+    return 'Chapter $cleanNum - $cleanTitle';
   }
 
   ChapterItem copyWith({

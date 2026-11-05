@@ -10,6 +10,7 @@ import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/extension_bridge.dart';
 import '../services/extension_service.dart';
+import '../services/reader_settings.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -172,11 +173,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
   ReaderMode get selectedMode => _selectedMode;
   ReaderMode get effectiveMode => _effectiveMode;
 
-  BoxFit _fitMode = BoxFit.fitWidth;
-  bool _enableTapZones = true;
-  bool _invertTapZones = false;
-  double _brightness = 1.0;
-  double _tint = 0.0;
+  BoxFit _fitMode = ReaderSettings.instance.fitMode;
+  bool _enableTapZones = ReaderSettings.instance.enableTapZones;
+  bool _invertTapZones = ReaderSettings.instance.invertTapZones;
+  double _brightness = ReaderSettings.instance.brightness;
+  double _tint = ReaderSettings.instance.tint;
 
   final _scrollController = ScrollController();
   late PageController _pageController;
@@ -229,26 +230,47 @@ class _ReaderScreenState extends State<ReaderScreen> {
       tags: widget.tags ?? cached?.tags,
     );
 
-    // 2. Load preferences
+    // 2. Load preferences synchronously from ReaderSettings
+    final savedModeStr = ReaderSettings.instance.getReadingDirectionForManga(widget.mangaId);
+    final saved = ReaderMode.values.cast<ReaderMode?>().firstWhere(
+      (m) => m?.name == savedModeStr,
+      orElse: () => null,
+    );
+    if (saved != null) {
+      _selectedMode = saved;
+    }
+    _fitMode = ReaderSettings.instance.fitMode;
+    _enableTapZones = ReaderSettings.instance.enableTapZones;
+    _invertTapZones = ReaderSettings.instance.invertTapZones;
+    _brightness = ReaderSettings.instance.brightness;
+    _tint = ReaderSettings.instance.tint;
+
+    // Async re-check in case ReaderSettings was initialized concurrently
     SharedPreferences.getInstance().then((prefs) {
       if (mounted) {
-        final savedModeStr = prefs.getString('reader_direction_${widget.mangaId}');
-        ReaderMode? saved;
-        if (savedModeStr != null) {
-          saved = ReaderMode.values.cast<ReaderMode?>().firstWhere(
-                (m) => m?.name == savedModeStr,
+        final asyncSavedStr = prefs.getString('reader_direction_${widget.mangaId}');
+        ReaderMode? asyncSaved;
+        if (asyncSavedStr != null) {
+          asyncSaved = ReaderMode.values.cast<ReaderMode?>().firstWhere(
+                (m) => m?.name == asyncSavedStr,
                 orElse: () => null,
               );
         }
 
         final oldEffective = _effectiveMode;
         setState(() {
-          _enableTapZones = prefs.getBool('reader_enable_tap_zones') ?? true;
-          _invertTapZones = prefs.getBool('reader_invert_tap_zones') ?? false;
-          _brightness = prefs.getDouble('reader_brightness') ?? 1.0;
-          _tint = prefs.getDouble('reader_tint') ?? 0.0;
-          if (saved != null) {
-            _selectedMode = saved;
+          _enableTapZones = prefs.getBool('reader_enable_tap_zones') ?? ReaderSettings.instance.enableTapZones;
+          _invertTapZones = prefs.getBool('reader_invert_tap_zones') ?? ReaderSettings.instance.invertTapZones;
+          _brightness = prefs.getDouble('reader_brightness') ?? ReaderSettings.instance.brightness;
+          _tint = prefs.getDouble('reader_tint') ?? ReaderSettings.instance.tint;
+          final fitStr = prefs.getString('reader_fit_mode');
+          if (fitStr == 'contain') {
+            _fitMode = BoxFit.contain;
+          } else if (fitStr == 'fitWidth') {
+            _fitMode = BoxFit.fitWidth;
+          }
+          if (asyncSaved != null) {
+            _selectedMode = asyncSaved;
           }
         });
 
@@ -331,22 +353,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _setEnableTapZones(bool val) {
     setState(() => _enableTapZones = val);
-    SharedPreferences.getInstance().then((prefs) => prefs.setBool('reader_enable_tap_zones', val));
+    ReaderSettings.instance.setEnableTapZones(val);
   }
 
   void _setInvertTapZones(bool val) {
     setState(() => _invertTapZones = val);
-    SharedPreferences.getInstance().then((prefs) => prefs.setBool('reader_invert_tap_zones', val));
+    ReaderSettings.instance.setInvertTapZones(val);
   }
 
   void _setBrightness(double val) {
-    setState(() => _brightness = val.clamp(0.2, 1.0));
-    SharedPreferences.getInstance().then((prefs) => prefs.setDouble('reader_brightness', _brightness));
+    final clamped = val.clamp(0.2, 1.0);
+    setState(() => _brightness = clamped);
+    ReaderSettings.instance.setBrightness(clamped);
   }
 
   void _setTint(double val) {
-    setState(() => _tint = val.clamp(0.0, 1.0));
-    SharedPreferences.getInstance().then((prefs) => prefs.setDouble('reader_tint', _tint));
+    final clamped = val.clamp(0.0, 1.0);
+    setState(() => _tint = clamped);
+    ReaderSettings.instance.setTint(clamped);
   }
 
   void _showDisplaySheet() {
@@ -641,6 +665,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     TrackerService.instance.onChapterFinished(
       mangaTitle: widget.mangaTitle,
       chapterNumber: finished.number,
+      mangaId: widget.mangaId,
     );
   }
 
@@ -858,9 +883,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
     });
 
-    SharedPreferences.getInstance().then(
-      (prefs) => prefs.setString('reader_direction_${widget.mangaId}', mode.name),
-    );
+    ReaderSettings.instance.setReadingDirection(widget.mangaId, mode.name);
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_effectiveMode != oldEffective) {
@@ -1752,6 +1775,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     setState(() {
                       _fitMode = _fitMode == BoxFit.contain ? BoxFit.fitWidth : BoxFit.contain;
                     });
+                    ReaderSettings.instance.setFitMode(_fitMode);
                     ScaffoldMessenger.of(context).showSnackBar(
                       SnackBar(
                         content: Text(_fitMode == BoxFit.contain ? 'Mode: Fit Page' : 'Mode: Fit Width'),

@@ -483,6 +483,35 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                             ),
                           ),
                         ),
+                        if (ext.isCompatible) ...[
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                Navigator.of(context).push(
+                                  smoothRoute(
+                                    SourceCatalogScreen(
+                                      sourceId: ext.pkg,
+                                      sourceName: ext.name,
+                                      sourceLang: ext.lang,
+                                    ),
+                                  ),
+                                );
+                              },
+                              icon: const Icon(Icons.explore_outlined, size: 20),
+                              label: Text('Browse Catalog (${ext.name})'),
+                              style: OutlinedButton.styleFrom(
+                                side: const BorderSide(color: AppColors.primary),
+                                foregroundColor: AppColors.primary,
+                                minimumSize: const Size.fromHeight(46),
+                                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
+                          ),
+                        ],
                       ],
                     );
                   },
@@ -576,7 +605,24 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
         final matchName = ext.name.toLowerCase().contains(q);
         final matchPkg = ext.pkg.toLowerCase().contains(q);
         final matchSrc = ext.sourceNames.any((s) => s.toLowerCase().contains(q));
-        if (!matchName && !matchPkg && !matchSrc) return false;
+        final matchSub = ext.subSources.any((sub) => (sub['name'] ?? '').toLowerCase().contains(q));
+        final isManhwaQuery = q == 'manhwa' || q == 'manwha' || q == 'webtoon';
+        final isManhuaQuery = q == 'manhua';
+        final matchScanlator = (isManhwaQuery &&
+                (ext.pkg.contains('asura') ||
+                    ext.pkg.contains('flame') ||
+                    ext.pkg.contains('reaper') ||
+                    ext.pkg.contains('void') ||
+                    ext.pkg.contains('cosmic') ||
+                    ext.pkg.contains('nightcomic') ||
+                    ext.pkg.contains('manhwa') ||
+                    ext.pkg.contains('manwha'))) ||
+            (isManhuaQuery &&
+                (ext.pkg.contains('colamanga') ||
+                    ext.pkg.contains('bilibili') ||
+                    ext.pkg.contains('baozimh') ||
+                    ext.pkg.contains('manhua')));
+        if (!matchName && !matchPkg && !matchSrc && !matchSub && !matchScanlator) return false;
       }
       return true;
     }
@@ -850,7 +896,9 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                             child: EmptyState(
                               icon: Icons.search_off_rounded,
                               title: 'No extensions found',
-                              message: 'Try searching for another name or changing the language filter from $_selectedLang.',
+                              message: _query.isNotEmpty
+                                  ? 'No extension names match "$_query". If "$_query" is a manga, manhwa, or manhua title, search for it in the Sources tab across all catalogs.'
+                                  : 'Try searching for another name or changing the language filter from $_selectedLang.',
                             ),
                           ),
                         ),
@@ -1120,39 +1168,60 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     );
                   }
 
-                  return FilledButton.icon(
-                    onPressed: () async {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Downloading ${ext.name}...'),
-                          duration: const Duration(seconds: 1),
+                  return Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                        icon: const Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
+                        tooltip: 'Browse ${ext.name} Catalog',
+                        onPressed: () {
+                          Navigator.of(context).push(
+                            smoothRoute(
+                              SourceCatalogScreen(
+                                sourceId: targetSourceId,
+                                sourceName: ext.name,
+                                sourceLang: targetLang,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      FilledButton.icon(
+                        onPressed: () async {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text('Downloading ${ext.name}...'),
+                              duration: const Duration(seconds: 1),
+                            ),
+                          );
+                          final ok = await _service.downloadAndInstallExtension(ext);
+                          if (mounted) {
+                            final installedVer = _service.getExtensionByPkg(ext.pkg)?.version ?? ext.version;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(ok
+                                    ? 'Installed ${ext.name} v$installedVer'
+                                    : (_service.lastInstallError ?? 'Failed to install ${ext.name}.')),
+                                duration: const Duration(seconds: 3),
+                              ),
+                            );
+                          }
+                        },
+                        icon: const Icon(Icons.download_rounded, size: 14),
+                        label: Text(
+                          'Install',
+                          style: AppText.chip.copyWith(color: AppColors.onPrimary, fontWeight: FontWeight.w700),
                         ),
-                      );
-                      final ok = await _service.downloadAndInstallExtension(ext);
-                      if (mounted) {
-                        final installedVer = _service.getExtensionByPkg(ext.pkg)?.version ?? ext.version;
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(ok
-                                ? 'Installed ${ext.name} v$installedVer'
-                                : (_service.lastInstallError ?? 'Failed to install ${ext.name}.')),
-                            duration: const Duration(seconds: 3),
-                          ),
-                        );
-                      }
-                    },
-                    icon: const Icon(Icons.download_rounded, size: 14),
-                    label: Text(
-                      'Install',
-                      style: AppText.chip.copyWith(color: AppColors.onPrimary, fontWeight: FontWeight.w700),
-                    ),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: AppColors.onPrimary,
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      minimumSize: const Size(44, 44),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: AppColors.primary,
+                          foregroundColor: AppColors.onPrimary,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          minimumSize: const Size(44, 44),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                    ],
                   );
                 },
               ),

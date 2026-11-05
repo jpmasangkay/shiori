@@ -32,6 +32,7 @@ class WebExtensionScraper {
     MangaExtension ext, {
     String? sourcePkg,
     String? query,
+    String? type,
     String order = 'popular',
     int page = 1,
     int limit = 24,
@@ -64,6 +65,9 @@ class WebExtensionScraper {
       final candidateUrls = <String>[];
       if (query != null && query.trim().isNotEmpty) {
         final q = Uri.encodeComponent(query.trim());
+        final cleanQ = Uri.encodeComponent(
+          query.trim().replaceAll(RegExp(r'[:"!?,\-_]'), ' ').replaceAll("'", ' ').replaceAll(RegExp(r'\s+'), ' ').trim(),
+        );
         candidateUrls.addAll([
           if (page > 1)
             '$base/page/$page/?s=$q&post_type=wp-manga'
@@ -71,6 +75,20 @@ class WebExtensionScraper {
             '$base/?s=$q&post_type=wp-manga',
           if (page > 1) '$base/page/$page/?s=$q' else '$base/?s=$q',
           '$base/manga/?s=$q&page=$page',
+          '$base/search?q=$q',
+          '$base/search?query=$q',
+          '$base/search?keyword=$q',
+          '$base/search?word=$q',
+          '$base/search?key=$q',
+          '$base/series/?search=$q',
+          '$base/manga/?title=$q',
+          '$base/comics?search=$q',
+          '$base/browse?search=$q',
+          if (cleanQ != q && cleanQ.isNotEmpty) ...[
+            '$base/?s=$cleanQ',
+            '$base/search?q=$cleanQ',
+            '$base/search?keyword=$cleanQ',
+          ],
         ]);
       } else if (order == 'latest') {
         candidateUrls.addAll([
@@ -167,10 +185,27 @@ class WebExtensionScraper {
               lowerHref.contains('/genre/') ||
               lowerHref.contains('/tag/') ||
               lowerHref.contains('/author/') ||
+              lowerHref.contains('discord.gg') ||
+              lowerHref.contains('discord.com') ||
+              lowerHref.contains('/invite/') ||
+              lowerHref.contains('twitter.com') ||
+              lowerHref.contains('x.com') ||
+              lowerHref.contains('t.me/') ||
+              lowerHref.contains('telegram.me') ||
+              lowerHref.contains('patreon.com') ||
+              lowerHref.contains('ko-fi.com') ||
+              lowerHref.contains('facebook.com') ||
+              lowerHref.contains('reddit.com') ||
+              lowerHref.contains('instagram.com') ||
+              lowerHref.contains('tiktok.com') ||
+              lowerHref.contains('youtube.com') ||
               RegExp(
                 r'(?:chapter|ch-|episode|ep-)\d',
                 caseSensitive: false,
               ).hasMatch(lowerHref)) {
+            return;
+          }
+          if (titleHint.trim().isEmpty && coverHint.trim().isEmpty) {
             return;
           }
           if (!itemUrl.startsWith('http')) {
@@ -197,11 +232,34 @@ class WebExtensionScraper {
           final lowerTitle = title.toLowerCase().trim();
           if (title.isEmpty || invalidTitles.contains(lowerTitle)) return;
 
+          final combined = '$lowerTitle $itemUrl ${effectivePkg.toLowerCase()}';
+          String itemType = 'manga';
+          if (combined.contains('manhwa') ||
+              combined.contains('manwha') ||
+              combined.contains('webtoon') ||
+              combined.contains('korean') ||
+              effectivePkg.contains('asura') ||
+              effectivePkg.contains('flame') ||
+              effectivePkg.contains('reaper') ||
+              effectivePkg.contains('void') ||
+              effectivePkg.contains('cosmic')) {
+            itemType = 'manhwa';
+          } else if (combined.contains('manhua') ||
+              combined.contains('chinese') ||
+              effectivePkg.contains('colamanga') ||
+              effectivePkg.contains('bilibili') ||
+              effectivePkg.contains('baozimh')) {
+            itemType = 'manhua';
+          } else if (type != null && type != 'all') {
+            itemType = type;
+          }
+
           items.add(
             MangaItem(
               id: 'ext:$effectivePkg:${Uri.encodeComponent(itemUrl)}',
               title: title,
               cover: coverHint,
+              type: itemType,
               source: effectivePkg,
             ),
           );
@@ -256,10 +314,14 @@ class WebExtensionScraper {
                 caseSensitive: false,
               ).firstMatch(aAttrs) ??
               (imgTagMatch != null
-                  ? RegExp(
-                      r'''alt=["']([^"']+)["']''',
-                      caseSensitive: false,
-                    ).firstMatch(imgTagMatch.group(0)!)
+                  ? (RegExp(
+                          r'''alt=["']([^"']+)["']''',
+                          caseSensitive: false,
+                        ).firstMatch(imgTagMatch.group(0)!) ??
+                        RegExp(
+                          r'''title=["']([^"']+)["']''',
+                          caseSensitive: false,
+                        ).firstMatch(imgTagMatch.group(0)!))
                   : null);
           final titleHint = titleAttrMatch?.group(1) ?? innerHtml;
           tryAddItem(href, titleHint, coverUrl);
@@ -268,7 +330,7 @@ class WebExtensionScraper {
 
         if (items.isEmpty) {
           final cardRegex = RegExp(
-            r'''<div[^>]*class=["'][^"']*(?:page-item-detail|c-tabs-item__content|bsx|utao|manga-item|serie-card)[^"']*["'][^>]*>([\s\S]*?)</div>\s*</div>''',
+            r'''<div[^>]*class=["'][^"']*(?:page-item-detail|c-tabs-item__content|bsx|utao|manga-item|serie-card|story-item|list-story-item|book-item|thumb-item-w|item-comic|manga-box|box-comic|unit|flexbox3|listupd)[^"']*["'][^>]*>([\s\S]*?)</div>\s*</div>''',
             caseSensitive: false,
           );
           for (final cm in cardRegex.allMatches(html)) {
@@ -361,16 +423,19 @@ class WebExtensionScraper {
     MangaExtension? ext,
   }) async {
     final seriesUrl = Uri.decodeComponent(actualId);
-    final parsedUri = Uri.tryParse(seriesUrl);
+    final normSeriesUrl = (!seriesUrl.startsWith('http') && !seriesUrl.startsWith('/'))
+        ? '/$seriesUrl'
+        : seriesUrl;
+    final parsedUri = Uri.tryParse(normSeriesUrl);
     final origin =
         (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
         ? '${parsedUri.scheme}://${parsedUri.host}'
         : (ext?.homeUrl ?? '');
-    final targetUrl = (seriesUrl.startsWith('/') && origin.isNotEmpty)
+    final targetUrl = (normSeriesUrl.startsWith('/') && origin.isNotEmpty)
         ? (origin.endsWith('/')
-            ? '${origin.substring(0, origin.length - 1)}$seriesUrl'
-            : '$origin$seriesUrl')
-        : seriesUrl;
+            ? '${origin.substring(0, origin.length - 1)}$normSeriesUrl'
+            : '$origin$normSeriesUrl')
+        : normSeriesUrl;
     final referer = origin.isNotEmpty
         ? (origin.endsWith('/') ? origin : '$origin/')
         : null;
@@ -490,16 +555,19 @@ class WebExtensionScraper {
     MangaExtension? ext,
   }) async {
     final seriesUrl = Uri.decodeComponent(actualId);
-    final parsedUri = Uri.tryParse(seriesUrl);
+    final normSeriesUrl = (!seriesUrl.startsWith('http') && !seriesUrl.startsWith('/'))
+        ? '/$seriesUrl'
+        : seriesUrl;
+    final parsedUri = Uri.tryParse(normSeriesUrl);
     final origin =
         (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
         ? '${parsedUri.scheme}://${parsedUri.host}'
         : (ext?.homeUrl ?? '');
-    final targetUrl = (seriesUrl.startsWith('/') && origin.isNotEmpty)
+    final targetUrl = (normSeriesUrl.startsWith('/') && origin.isNotEmpty)
         ? (origin.endsWith('/')
-            ? '${origin.substring(0, origin.length - 1)}$seriesUrl'
-            : '$origin$seriesUrl')
-        : seriesUrl;
+            ? '${origin.substring(0, origin.length - 1)}$normSeriesUrl'
+            : '$origin$normSeriesUrl')
+        : normSeriesUrl;
     final targetUri = Uri.tryParse(targetUrl);
     final referer = origin.isNotEmpty
         ? (origin.endsWith('/') ? origin : '$origin/')
@@ -578,8 +646,29 @@ class WebExtensionScraper {
         final directList = parseHtmlChapters(res.body);
         if (directList.isNotEmpty) return directList;
 
+        // Try /full-chapter-list (WeebCentral and similar architectures)
+        final fullChapterListUrl =
+            '${targetUrl.endsWith('/') ? targetUrl : '$targetUrl/'}full-chapter-list';
+        try {
+          final fRes = await _getCached(
+            Uri.parse(fullChapterListUrl),
+            headers: {
+              'User-Agent':
+                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+              'Accept':
+                  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+              'Referer': ?referer,
+            },
+            timeout: const Duration(seconds: 10),
+          );
+          if (fRes.statusCode == 200) {
+            final fList = parseHtmlChapters(fRes.body);
+            if (fList.isNotEmpty) return fList;
+          }
+        } catch (_) {}
+
         final ajaxUrl =
-            '${seriesUrl.endsWith('/') ? seriesUrl : '$seriesUrl/'}ajax/chapters/';
+            '${targetUrl.endsWith('/') ? targetUrl : '$targetUrl/'}ajax/chapters/';
         try {
           final ajaxRes = await _client
               .post(
@@ -588,7 +677,7 @@ class WebExtensionScraper {
                   'User-Agent':
                       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
                   'X-Requested-With': 'XMLHttpRequest',
-                  'Referer': seriesUrl,
+                  'Referer': targetUrl,
                 },
               )
               .timeout(const Duration(seconds: 8));
@@ -610,16 +699,19 @@ class WebExtensionScraper {
     MangaExtension? ext,
   }) async {
     final chapterUrl = Uri.decodeComponent(actualChapterId);
-    final parsedUri = Uri.tryParse(chapterUrl);
+    final normChapterUrl = (!chapterUrl.startsWith('http') && !chapterUrl.startsWith('/'))
+        ? '/$chapterUrl'
+        : chapterUrl;
+    final parsedUri = Uri.tryParse(normChapterUrl);
     final origin =
         (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
         ? '${parsedUri.scheme}://${parsedUri.host}'
         : (ext?.homeUrl ?? '');
-    final targetChapterUrl = (chapterUrl.startsWith('/') && origin.isNotEmpty)
+    final targetChapterUrl = (normChapterUrl.startsWith('/') && origin.isNotEmpty)
         ? (origin.endsWith('/')
-            ? '${origin.substring(0, origin.length - 1)}$chapterUrl'
-            : '$origin$chapterUrl')
-        : chapterUrl;
+            ? '${origin.substring(0, origin.length - 1)}$normChapterUrl'
+            : '$origin$normChapterUrl')
+        : normChapterUrl;
     final referer = origin.isNotEmpty
         ? (origin.endsWith('/') ? origin : '$origin/')
         : null;

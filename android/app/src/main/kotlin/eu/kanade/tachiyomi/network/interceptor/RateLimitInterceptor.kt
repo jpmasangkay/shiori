@@ -18,15 +18,31 @@ open class UncaughtExceptionInterceptor : Interceptor {
 
 open class CloudflareInterceptor(val context: android.content.Context? = null) : Interceptor {
     override fun intercept(chain: Interceptor.Chain): Response {
-        val response = chain.proceed(chain.request())
+        val request = chain.request()
+        val originalHost = request.url.host
+        val response = chain.proceed(request)
         if (response.code == 403 || response.code == 503) {
             val server = response.header("Server") ?: ""
             val cfMitigated = response.header("Cf-Mitigated") ?: ""
             if (server.contains("cloudflare", ignoreCase = true) || cfMitigated.isNotEmpty()) {
-                android.util.Log.w("CloudflareInterceptor", "Cloudflare challenge detected on ${chain.request().url} (HTTP ${response.code})")
+                android.util.Log.w("CloudflareInterceptor", "Cloudflare challenge detected on ${request.url} (HTTP ${response.code})")
                 try {
                     android.webkit.CookieManager.getInstance().flush()
                 } catch (_: Throwable) {}
+            }
+
+            // Transparent failover for blocked Comick mirror (comick.live -> comick.art)
+            if (originalHost.equals("comick.live", ignoreCase = true) || originalHost.equals("www.comick.live", ignoreCase = true)) {
+                response.close()
+                val newUrl = request.url.newBuilder()
+                    .host("comick.art")
+                    .build()
+                val newRequest = request.newBuilder()
+                    .url(newUrl)
+                    .header("Referer", "https://comick.art/")
+                    .build()
+                android.util.Log.i("CloudflareInterceptor", "Transparently rewriting blocked Comick request from $originalHost to ${newUrl.host}")
+                return chain.proceed(newRequest)
             }
         }
         return response

@@ -155,7 +155,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
       final query = _searchController.text.trim();
       var results = await ApiService.instance.searchManga(
         query: query,
-        type: query.isNotEmpty ? null : (_selectedType == 'all' ? null : _selectedType),
+        type: _selectedType == 'all' ? null : _selectedType,
         order: _selectedOrder,
         page: 1,
         limit: 24,
@@ -207,14 +207,27 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
 
     try {
       final query = _searchController.text.trim();
-      final results = await ApiService.instance.searchManga(
+      var results = await ApiService.instance.searchManga(
         query: query,
-        type: query.isNotEmpty ? null : (_selectedType == 'all' ? null : _selectedType),
+        type: _selectedType == 'all' ? null : _selectedType,
         order: _selectedOrder,
         page: nextPage,
         limit: 24,
         source: widget.sourceId,
       );
+      if (results.isEmpty && query.isNotEmpty && _selectedType != 'all') {
+        final allResults = await ApiService.instance.searchManga(
+          query: query,
+          type: null,
+          order: _selectedOrder,
+          page: nextPage,
+          limit: 24,
+          source: widget.sourceId,
+        );
+        if (allResults.isNotEmpty) {
+          results = allResults;
+        }
+      }
       if (mounted && token == _fetchToken) {
         setState(() {
           _page = nextPage;

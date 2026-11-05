@@ -92,23 +92,61 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     if (mounted) setState(() {});
   }
 
-  int _matchingSourcesCount() {
+  List<String> _resolveTargetSourceIds() {
     if (SourceManager.isIOSPlatform) {
-      int count = 0;
-      for (final ds in SourceManager.directSources) {
-        if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) count++;
+      return [
+        for (final ds in SourceManager.directSources)
+          if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) ds.id,
+      ];
+    }
+    if (_selectedSourceFilter == 'ALL') {
+      final targets = <String>[];
+      for (final ext in _extService.installedExtensions) {
+        if (ext.subSources.isNotEmpty) {
+          for (final sub in ext.subSources) {
+            final subId = (sub['id'] ?? '').trim();
+            final subName = (sub['name'] ?? '').trim();
+            if (subId.isNotEmpty) {
+              targets.add('${ext.pkg}@$subId');
+            } else if (subName.isNotEmpty) {
+              targets.add('${ext.pkg}@$subName');
+            }
+          }
+        } else {
+          targets.add(ext.pkg);
+        }
       }
-      return count;
+      if (targets.isEmpty) {
+        for (final ds in SourceManager.allDirectSources) {
+          targets.add(ds.id);
+        }
+      }
+      return targets.where((s) => s.trim().isNotEmpty).toSet().toList();
     } else {
-      final installedExts = _extService.installedExtensions.toList();
-      int count = 0;
-      for (final ext in installedExts) {
-        if (!ext.isCompatible) continue;
-        if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg) count++;
+      if (!_selectedSourceFilter.contains('@')) {
+        final ext = _extService.getExtensionByPkg(_selectedSourceFilter);
+        if (ext != null && ext.subSources.isNotEmpty) {
+          final subs = <String>[];
+          for (final sub in ext.subSources) {
+            final subId = (sub['id'] ?? '').trim();
+            final subName = (sub['name'] ?? '').trim();
+            if (subId.isNotEmpty) {
+              subs.add('${ext.pkg}@$subId');
+            } else if (subName.isNotEmpty) {
+              subs.add('${ext.pkg}@$subName');
+            }
+          }
+          if (subs.isNotEmpty) return subs.toSet().toList();
+        }
       }
-      return count;
+      return [_selectedSourceFilter];
     }
   }
+
+  int _matchingSourcesCount() => _resolveTargetSourceIds().length;
+
+  @visibleForTesting
+  List<String> resolveTargetSourceIdsForTesting() => _resolveTargetSourceIds();
 
   void _onSearchChanged(String val) {
     _searchDebounce?.cancel();
@@ -173,16 +211,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     }
 
     final token = ++_searchToken;
-    final List<String> targetIds = SourceManager.isIOSPlatform
-        ? [
-            for (final ds in SourceManager.directSources)
-              if (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ds.id) ds.id,
-          ]
-        : [
-            for (final ext in _extService.installedExtensions)
-              if (ext.isCompatible && (_selectedSourceFilter == 'ALL' || _selectedSourceFilter == ext.pkg))
-                ext.pkg,
-          ];
+    final List<String> targetIds = _resolveTargetSourceIds();
 
     if (mounted) {
       setState(() {
@@ -201,7 +230,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     for (final sourceId in targetIds) {
       ApiService.instance
           .searchManga(query: q, source: sourceId)
-          .timeout(const Duration(seconds: 9), onTimeout: () => <MangaItem>[])
+          .timeout(const Duration(seconds: 15), onTimeout: () => <MangaItem>[])
           .then((res) {
             if (!mounted || token != _searchToken) return;
             if (res.isNotEmpty) {
@@ -684,15 +713,32 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   style: AppText.cardTitle.copyWith(color: AppColors.muted, fontWeight: FontWeight.w500),
                 ),
                 const SizedBox(height: 14),
-                FilledButton.icon(
-                  onPressed: () => _runGlobalSearch(_searchQuery, bypassCache: true),
-                  icon: const Icon(Icons.refresh_rounded, size: 16),
-                  label: Text('Retry Search', style: AppText.bodySemiBold),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: AppColors.surfaceHigh,
-                    foregroundColor: AppColors.text,
-                    minimumSize: const Size(0, 44),
-                  ),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.center,
+                  children: [
+                    FilledButton.icon(
+                      onPressed: () => _runGlobalSearch(_searchQuery, bypassCache: true),
+                      icon: const Icon(Icons.refresh_rounded, size: 16),
+                      label: Text('Retry Search', style: AppText.bodySemiBold),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.surfaceHigh,
+                        foregroundColor: AppColors.text,
+                        minimumSize: const Size(0, 44),
+                      ),
+                    ),
+                    if (!SourceManager.isIOSPlatform)
+                      OutlinedButton.icon(
+                        onPressed: () => _tabController.animateTo(1),
+                        icon: const Icon(Icons.extension_rounded, size: 16),
+                        label: Text('Browse Extensions', style: AppText.bodySemiBold.copyWith(color: AppColors.primary)),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: AppColors.primary),
+                          minimumSize: const Size(0, 44),
+                        ),
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -744,9 +790,20 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     required String sourceId,
     required List<MangaItem> items,
   }) {
-    final ds = SourceManager.isIOSPlatform ? _sourceManager.getDirectSource(sourceId) : null;
+    final ds = _sourceManager.getDirectSource(sourceId) ??
+        SourceManager.allDirectSources.where((s) => s.id == sourceId).firstOrNull;
     final ext = _extService.getExtensionByPkg(sourceId);
-    final sourceName = ds?.name ?? ext?.name ?? sourceId;
+    String sourceName = ds?.name ?? ext?.name ?? sourceId;
+    if (sourceId.contains('@') && ext != null && ext.subSources.isNotEmpty) {
+      final subSelector = sourceId.split('@').last.toLowerCase();
+      final matchSub = ext.subSources.where((s) =>
+        (s['id'] ?? '').toLowerCase() == subSelector ||
+        (s['name'] ?? '').toLowerCase() == subSelector
+      ).firstOrNull;
+      if (matchSub != null && (matchSub['name'] ?? '').isNotEmpty) {
+        sourceName = '${ext.name} (${matchSub['name']})';
+      }
+    }
     final badgeColor = ds != null ? Color(ds.colorValue) : const Color(0xFF10B981);
 
     return Column(

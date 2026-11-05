@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
@@ -11,6 +12,9 @@ import '../widgets/common.dart';
 import '../widgets/duplicate_migration_sheet.dart';
 import '../widgets/skeleton.dart';
 import 'reader_screen.dart';
+import 'tracking_screen.dart';
+import '../services/smart_update_service.dart';
+import '../services/tracker_service.dart';
 
 class DetailScreen extends StatefulWidget {
   const DetailScreen({
@@ -34,9 +38,103 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _inLibrary = false;
   bool _expanded = false;
   bool _descending = true;
+  bool _filterDownloaded = false;
+  bool _filterUnread = false;
+  bool _filterBookmarked = false;
+  bool _sortByUploadDate = false;
+  bool _displayChapterNumberOnly = false;
+  Set<String> _excludedScanlators = {};
   String? _resumeChapterId;
   String _resumeLabel = 'Start Reading';
   Set<String> _readChapterIds = {};
+  SmartUpdateResult? _smartUpdateResult;
+  bool _isMangaTracked = false;
+
+  bool get _hasActiveFilters =>
+      _filterDownloaded ||
+      _filterUnread ||
+      _filterBookmarked ||
+      _excludedScanlators.isNotEmpty;
+
+  Set<String> get _availableScanlators {
+    final set = <String>{};
+    for (final c in _apiChapters) {
+      final s = c.group.trim();
+      if (s.isNotEmpty) {
+        set.add(s);
+      }
+    }
+    return set;
+  }
+
+  List<ChapterItem> get _filteredChapters {
+    var list = _apiChapters;
+    if (_excludedScanlators.isNotEmpty) {
+      list = list.where((c) {
+        final scanlator = c.group.trim().isNotEmpty ? c.group.trim() : 'Unknown';
+        return !_excludedScanlators.contains(scanlator);
+      }).toList();
+    }
+    if (_filterDownloaded) {
+      list = list.where((c) => DownloadService.instance.isChapterDownloaded(c.id)).toList();
+    }
+    if (_filterUnread) {
+      list = list.where((c) => !_readChapterIds.contains(c.id)).toList();
+    }
+    if (_filterBookmarked) {
+      list = list.where((c) => ApiService.instance.isChapterBookmarked(c.id)).toList();
+    }
+
+    final sorted = [...list];
+    if (_sortByUploadDate) {
+      sorted.sort((a, b) {
+        final dateA = a.publishAt != null ? DateTime.tryParse(a.publishAt!)?.millisecondsSinceEpoch ?? 0 : 0;
+        final dateB = b.publishAt != null ? DateTime.tryParse(b.publishAt!)?.millisecondsSinceEpoch ?? 0 : 0;
+        return _descending ? dateB.compareTo(dateA) : dateA.compareTo(dateB);
+      });
+    } else {
+      sorted.sort((a, b) {
+        final numA = double.tryParse(a.number ?? '') ?? -1.0;
+        final numB = double.tryParse(b.number ?? '') ?? -1.0;
+        final cmp = numA.compareTo(numB);
+        return _descending ? -cmp : cmp;
+      });
+    }
+    return sorted;
+  }
+
+  Future<void> _loadChapterFilters() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final mangaPrefix = 'manga_filter_${_manga.id}';
+      final excludedList = prefs.getStringList('${mangaPrefix}_excluded_scanlators') ?? [];
+      if (mounted) {
+        setState(() {
+          _filterDownloaded = prefs.getBool('${mangaPrefix}_downloaded') ?? false;
+          _filterUnread = prefs.getBool('${mangaPrefix}_unread') ?? false;
+          _filterBookmarked = prefs.getBool('${mangaPrefix}_bookmarked') ?? false;
+          _sortByUploadDate = prefs.getBool('${mangaPrefix}_sort_by_date') ?? false;
+          _descending = prefs.getBool('${mangaPrefix}_descending') ?? true;
+          _displayChapterNumberOnly = prefs.getBool('${mangaPrefix}_num_only') ?? false;
+          _excludedScanlators = excludedList.toSet();
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _saveChapterFilters() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final mangaPrefix = 'manga_filter_${_manga.id}';
+      await prefs.setBool('${mangaPrefix}_downloaded', _filterDownloaded);
+      await prefs.setBool('${mangaPrefix}_unread', _filterUnread);
+      await prefs.setBool('${mangaPrefix}_bookmarked', _filterBookmarked);
+      await prefs.setBool('${mangaPrefix}_sort_by_date', _sortByUploadDate);
+      await prefs.setBool('${mangaPrefix}_descending', _descending);
+      await prefs.setBool('${mangaPrefix}_num_only', _displayChapterNumberOnly);
+      await prefs.setStringList('${mangaPrefix}_excluded_scanlators', _excludedScanlators.toList());
+    } catch (_) {}
+  }
 
   @override
   void initState() {
@@ -46,6 +144,9 @@ class _DetailScreenState extends State<DetailScreen> {
     ApiService.instance.cacheKnownManga(_manga);
     ApiService.instance.addListener(_onApiChanged);
     DownloadService.instance.addListener(_onDownloadsChanged);
+    TrackerService.instance.addListener(_onTrackerChanged);
+    _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
+    _loadChapterFilters();
     _loadMangaData();
   }
 
@@ -53,7 +154,15 @@ class _DetailScreenState extends State<DetailScreen> {
   void dispose() {
     ApiService.instance.removeListener(_onApiChanged);
     DownloadService.instance.removeListener(_onDownloadsChanged);
+    TrackerService.instance.removeListener(_onTrackerChanged);
     super.dispose();
+  }
+
+  void _onTrackerChanged() {
+    if (!mounted) return;
+    setState(() {
+      _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
+    });
   }
 
   void _onApiChanged() {
@@ -93,9 +202,9 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _syncResumeButton() {
-    if (_resumeChapterId == null && _apiChapters.isNotEmpty) {
-      // Chapters are sorted descending (latest at 0, chapter 1 at length-1)
-      final firstCh = _apiChapters.last;
+    final chapters = _filteredChapters;
+    if (_resumeChapterId == null && chapters.isNotEmpty) {
+      final firstCh = _descending ? chapters.last : chapters.first;
       _resumeChapterId = firstCh.id;
       _resumeLabel = firstCh.number != null ? 'Start Ch. ${firstCh.number}' : 'Start Reading';
     }
@@ -168,6 +277,8 @@ class _DetailScreenState extends State<DetailScreen> {
           _apiChapters = chapters;
           _loadingChapters = false;
           _chaptersError = null;
+          _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, chapters);
+          _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
           _syncResumeButton();
         });
       } catch (err) {
@@ -293,11 +404,72 @@ class _DetailScreenState extends State<DetailScreen> {
     }
   }
 
+  void _showSmartUpdateDialog() {
+    final result = _smartUpdateResult ??
+        SmartUpdateService.instance.calculate(_manga, _apiChapters);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('Smart update', style: AppText.sheetTitle),
+        content: Text(
+          result.statusDescription,
+          style: AppText.bodyMedium.copyWith(color: AppColors.text),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: AppColors.muted)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK', style: TextStyle(color: AppColors.primary)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openTrackingScreen() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TrackingScreen(manga: _manga, chapters: _apiChapters),
+      ),
+    );
+    if (mounted) {
+      setState(() {
+        _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
+      });
+    }
+  }
+
+  void _syncTrackerProgressOnMarkRead() {
+    int maxReadNum = 0;
+    for (final c in _apiChapters) {
+      if (_readChapterIds.contains(c.id)) {
+        final num = double.tryParse(c.number ?? '')?.floor();
+        if (num != null && num > maxReadNum) {
+          maxReadNum = num;
+        }
+      }
+    }
+    if (maxReadNum > 0) {
+      TrackerService.instance.onChaptersMarkedRead(
+        mangaId: _manga.id,
+        mangaTitle: _manga.title,
+        maxChapterRead: maxReadNum,
+      );
+    }
+  }
+
   void _openReader({String? chapterId, String? chapterNumber, String? title}) {
-    if (chapterId == null && _apiChapters.isNotEmpty) {
-      chapterId = _descending ? _apiChapters.last.id : _apiChapters.first.id;
-      chapterNumber = _descending ? _apiChapters.last.number : _apiChapters.first.number;
-      title = _descending ? _apiChapters.last.title : _apiChapters.first.title;
+    final chapters = _filteredChapters;
+    if (chapterId == null && chapters.isNotEmpty) {
+      chapterId = _descending ? chapters.last.id : chapters.first.id;
+      chapterNumber = _descending ? chapters.last.number : chapters.first.number;
+      title = _descending ? chapters.last.title : chapters.first.title;
     }
 
     if (chapterId == null) return;
@@ -315,9 +487,9 @@ class _DetailScreenState extends State<DetailScreen> {
       return null;
     }
 
-    final readingChapters = [..._apiChapters];
-    final firstNum = _apiChapters.isNotEmpty ? parseChapterNum(_apiChapters.first) : null;
-    final lastNum = _apiChapters.isNotEmpty ? parseChapterNum(_apiChapters.last) : null;
+    final readingChapters = [...chapters];
+    final firstNum = chapters.isNotEmpty ? parseChapterNum(chapters.first) : null;
+    final lastNum = chapters.isNotEmpty ? parseChapterNum(chapters.last) : null;
     final isSourceDescending = (firstNum != null && lastNum != null && firstNum > lastNum);
 
     readingChapters.sort((a, b) {
@@ -326,8 +498,8 @@ class _DetailScreenState extends State<DetailScreen> {
       if (aNum != null && bNum != null && aNum != bNum) {
         return aNum.compareTo(bNum);
       }
-      final idxA = _apiChapters.indexOf(a);
-      final idxB = _apiChapters.indexOf(b);
+      final idxA = chapters.indexOf(a);
+      final idxB = chapters.indexOf(b);
       return isSourceDescending ? idxB.compareTo(idxA) : idxA.compareTo(idxB);
     });
 
@@ -396,6 +568,7 @@ class _DetailScreenState extends State<DetailScreen> {
                   setState(() {
                     if (!isRead) {
                       _readChapterIds.add(chapter.id);
+                      _syncTrackerProgressOnMarkRead();
                     } else {
                       _readChapterIds.remove(chapter.id);
                     }
@@ -432,6 +605,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     final prevIds = readingChapters.sublist(0, curIdx + 1).map((c) => c.id).toList();
                     await ApiService.instance.markChaptersRead(_manga.id, prevIds, read: true);
                     setState(() => _readChapterIds.addAll(prevIds));
+                    _syncTrackerProgressOnMarkRead();
                   }
                 },
               ),
@@ -633,7 +807,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
     return Scaffold(
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
-      floatingActionButton: _apiChapters.isNotEmpty
+      floatingActionButton: _filteredChapters.isNotEmpty
           ? FadeSlideIn(
               key: const ValueKey('resume_fab'),
               child: _ResumeFab(
@@ -711,13 +885,15 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               ),
             )
-          else if (_apiChapters.isEmpty)
+          else if (_filteredChapters.isEmpty)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.all(32),
                 child: Center(
                   child: Text(
-                    'No chapters available for this title.',
+                    _apiChapters.isEmpty
+                        ? 'No chapters available for this title.'
+                        : 'No chapters match current filter.',
                     style: AppText.body.copyWith(color: AppColors.muted),
                   ),
                 ),
@@ -726,7 +902,7 @@ class _DetailScreenState extends State<DetailScreen> {
           else
             Builder(
               builder: (context) {
-                final chaptersList = _descending ? _apiChapters : _apiChapters.reversed.toList();
+                final chaptersList = _filteredChapters;
                 return SliverList.builder(
                   itemCount: chaptersList.length,
                   itemBuilder: (_, i) {
@@ -738,6 +914,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
                     return _ApiChapterTile(
                       chapter: c,
+                      displayChapterNumberOnly: _displayChapterNumberOnly,
                       isRead: isRead,
                       isBookmarked: isBookmarked,
                       downloadStatus: downloadStatus,
@@ -754,6 +931,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         setState(() {
                           if (nextState) {
                             _readChapterIds.add(c.id);
+                            _syncTrackerProgressOnMarkRead();
                           } else {
                             _readChapterIds.remove(c.id);
                           }
@@ -808,8 +986,9 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _downloadBatch(int count) {
-    final unread = _apiChapters.where((c) => !_readChapterIds.contains(c.id)).toList();
-    final toDownload = (unread.isNotEmpty ? unread : _apiChapters).take(count).toList();
+    final filtered = _filteredChapters;
+    final unread = filtered.where((c) => !_readChapterIds.contains(c.id)).toList();
+    final toDownload = (unread.isNotEmpty ? unread : filtered).take(count).toList();
     for (final c in toDownload) {
       DownloadService.instance.downloadChapter(_manga, c);
     }
@@ -819,7 +998,8 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _downloadUnread() {
-    final unread = _apiChapters.where((c) => !_readChapterIds.contains(c.id)).toList();
+    final filtered = _filteredChapters;
+    final unread = filtered.where((c) => !_readChapterIds.contains(c.id)).toList();
     for (final c in unread) {
       DownloadService.instance.downloadChapter(_manga, c);
     }
@@ -829,11 +1009,12 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _downloadAll() {
-    for (final c in _apiChapters) {
+    final filtered = _filteredChapters;
+    for (final c in filtered) {
       DownloadService.instance.downloadChapter(_manga, c);
     }
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Queued ${_apiChapters.length} chapters for download'), duration: const Duration(seconds: 2)),
+      SnackBar(content: Text('Queued ${filtered.length} chapters for download'), duration: const Duration(seconds: 2)),
     );
   }
 
@@ -1038,6 +1219,8 @@ class _DetailScreenState extends State<DetailScreen> {
 
   Widget _actionRow() {
     final assignedCategories = ApiService.instance.getMangaCategoryIds(_manga.id);
+    final smartResult = _smartUpdateResult ??
+        SmartUpdateService.instance.calculate(_manga, _apiChapters);
 
     return Container(
       constraints: const BoxConstraints(minHeight: 74),
@@ -1052,31 +1235,25 @@ class _DetailScreenState extends State<DetailScreen> {
             label: _inLibrary ? 'In Library' : 'Add to Library',
             active: _inLibrary,
             onTap: _toggleLibrary,
+            onLongPress: _showCategorySheet,
+          ),
+          _Action(
+            icon: Icons.hourglass_top_rounded,
+            label: smartResult.label,
+            active: false,
+            onTap: _showSmartUpdateDialog,
+          ),
+          _Action(
+            icon: Icons.sync_rounded,
+            label: 'Tracking',
+            active: _isMangaTracked,
+            onTap: _openTrackingScreen,
           ),
           _Action(
             icon: Icons.label_outline_rounded,
             label: assignedCategories.isNotEmpty ? 'Categories (${assignedCategories.length})' : 'Categories',
             active: assignedCategories.isNotEmpty,
             onTap: _showCategorySheet,
-          ),
-          _Action(
-            icon: Icons.bookmark_added_rounded,
-            label: 'Bookmarked',
-            active: _apiChapters.any((c) => ApiService.instance.isChapterBookmarked(c.id)),
-            onTap: () {
-              final bms = _apiChapters.where((c) => ApiService.instance.isChapterBookmarked(c.id)).toList();
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(bms.isNotEmpty ? '${bms.length} chapters bookmarked' : 'No chapters bookmarked yet'),
-                  duration: const Duration(seconds: 1),
-                ),
-              );
-            },
-          ),
-          _Action(
-            icon: Icons.public_rounded,
-            label: 'WebView',
-            onTap: _openWebView,
           ),
         ],
       ),
@@ -1187,9 +1364,360 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  void _showScanlatorDialog() {
+    final scanlators = _availableScanlators.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    if (scanlators.isEmpty) return;
+
+    final tempExcluded = Set<String>.from(_excludedScanlators);
+
+    showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF2B2930),
+            surfaceTintColor: Colors.transparent,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+            title: Text(
+              'Exclude scanlators',
+              style: AppText.title.copyWith(fontSize: 22, fontWeight: FontWeight.w500, color: Colors.white),
+            ),
+            contentPadding: const EdgeInsets.only(top: 16, bottom: 8),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(ctx).height * 0.5,
+                ),
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: scanlators.length,
+                  itemBuilder: (_, index) {
+                    final scanlator = scanlators[index];
+                    final isExcluded = tempExcluded.contains(scanlator);
+
+                    return InkWell(
+                      onTap: () {
+                        setDialogState(() {
+                          if (isExcluded) {
+                            tempExcluded.remove(scanlator);
+                          } else {
+                            tempExcluded.add(scanlator);
+                          }
+                        });
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 22,
+                              height: 22,
+                              decoration: BoxDecoration(
+                                color: isExcluded ? const Color(0xFF8B5CF6) : Colors.transparent,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: isExcluded ? const Color(0xFF8B5CF6) : Colors.white70,
+                                  width: 2,
+                                ),
+                              ),
+                              child: isExcluded
+                                  ? const Icon(Icons.close_rounded, size: 16, color: Colors.white)
+                                  : null,
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Text(
+                                scanlator,
+                                style: AppText.body.copyWith(
+                                  fontSize: 16,
+                                  color: Colors.white.withValues(alpha: 0.9),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ),
+            actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            actions: [
+              Row(
+                children: [
+                  TextButton(
+                    onPressed: () {
+                      setDialogState(() {
+                        tempExcluded.clear();
+                      });
+                    },
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF8B5CF6),
+                    ),
+                    child: const Text('Reset'),
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF8B5CF6),
+                    ),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _excludedScanlators = tempExcluded;
+                      });
+                      _saveChapterFilters();
+                      Navigator.of(ctx).pop();
+                    },
+                    style: TextButton.styleFrom(
+                      foregroundColor: const Color(0xFF8B5CF6),
+                    ),
+                    child: const Text('OK'),
+                  ),
+                ],
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  void _showChapterFilterSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final scanlatorCount = _availableScanlators.length;
+          final excludedCount = _excludedScanlators.length;
+
+          return DefaultTabController(
+            length: 3,
+            child: SafeArea(
+              top: false,
+              child: SizedBox(
+                height: 380,
+                child: Column(
+                  children: [
+                    Container(
+                      width: 32,
+                      height: 4,
+                      margin: const EdgeInsets.only(top: 10, bottom: 6),
+                      decoration: BoxDecoration(
+                        color: AppColors.read,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                    TabBar(
+                      dividerColor: AppColors.outline,
+                      indicatorColor: AppColors.primary,
+                      indicatorSize: TabBarIndicatorSize.label,
+                      labelColor: AppColors.primary,
+                      unselectedLabelColor: AppColors.muted,
+                      labelStyle: AppText.bodySemiBold,
+                      unselectedLabelStyle: AppText.body,
+                      overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+                      tabs: const [
+                        Tab(text: 'Filter'),
+                        Tab(text: 'Sort'),
+                        Tab(text: 'Display'),
+                      ],
+                    ),
+                    Expanded(
+                      child: TabBarView(
+                        children: [
+                          // 1. FILTER TAB
+                          ListView(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            children: [
+                              CheckboxListTile(
+                                value: _filterDownloaded,
+                                activeColor: AppColors.primary,
+                                checkColor: Colors.white,
+                                title: Text('Downloaded', style: AppText.body),
+                                controlAffinity: ListTileControlAffinity.leading,
+                                contentPadding: EdgeInsets.zero,
+                                onChanged: (val) {
+                                  setState(() => _filterDownloaded = val ?? false);
+                                  setSheetState(() {});
+                                  _saveChapterFilters();
+                                },
+                              ),
+                              CheckboxListTile(
+                                value: _filterUnread,
+                                activeColor: AppColors.primary,
+                                checkColor: Colors.white,
+                                title: Text('Unread', style: AppText.body),
+                                controlAffinity: ListTileControlAffinity.leading,
+                                contentPadding: EdgeInsets.zero,
+                                onChanged: (val) {
+                                  setState(() => _filterUnread = val ?? false);
+                                  setSheetState(() {});
+                                  _saveChapterFilters();
+                                },
+                              ),
+                              CheckboxListTile(
+                                value: _filterBookmarked,
+                                activeColor: AppColors.primary,
+                                checkColor: Colors.white,
+                                title: Text('Bookmarked', style: AppText.body),
+                                controlAffinity: ListTileControlAffinity.leading,
+                                contentPadding: EdgeInsets.zero,
+                                onChanged: (val) {
+                                  setState(() => _filterBookmarked = val ?? false);
+                                  setSheetState(() {});
+                                  _saveChapterFilters();
+                                },
+                              ),
+                              const Divider(color: AppColors.outline, height: 16),
+                              ListTile(
+                                contentPadding: EdgeInsets.zero,
+                                leading: const Icon(Icons.groups_outlined, color: AppColors.muted, size: 24),
+                                title: Text('Scanlator', style: AppText.body),
+                                subtitle: excludedCount > 0
+                                    ? Text('$excludedCount excluded', style: AppText.caption.copyWith(color: AppColors.primary))
+                                    : (scanlatorCount > 0
+                                        ? Text('$scanlatorCount available', style: AppText.caption)
+                                        : Text('None available', style: AppText.caption)),
+                                trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
+                                enabled: scanlatorCount > 0,
+                                onTap: () {
+                                  _showScanlatorDialog();
+                                  setSheetState(() {});
+                                },
+                              ),
+                            ],
+                          ),
+
+                          // 2. SORT TAB
+                          ListView(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            children: [
+                              RadioGroup<bool>(
+                                groupValue: _sortByUploadDate,
+                                onChanged: (val) {
+                                  if (val == null) return;
+                                  setState(() => _sortByUploadDate = val);
+                                  setSheetState(() {});
+                                  _saveChapterFilters();
+                                },
+                                child: Column(
+                                  children: [
+                                    RadioListTile<bool>(
+                                      value: false,
+                                      activeColor: AppColors.primary,
+                                      title: Text('By chapter number', style: AppText.body),
+                                      controlAffinity: ListTileControlAffinity.leading,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                    RadioListTile<bool>(
+                                      value: true,
+                                      activeColor: AppColors.primary,
+                                      title: Text('By upload date', style: AppText.body),
+                                      controlAffinity: ListTileControlAffinity.leading,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Divider(color: AppColors.outline, height: 16),
+                              RadioGroup<bool>(
+                                groupValue: _descending,
+                                onChanged: (val) {
+                                  if (val == null) return;
+                                  setState(() => _descending = val);
+                                  setSheetState(() {});
+                                  _saveChapterFilters();
+                                },
+                                child: Column(
+                                  children: [
+                                    RadioListTile<bool>(
+                                      value: true,
+                                      activeColor: AppColors.primary,
+                                      title: Text('Descending (latest first)', style: AppText.body),
+                                      controlAffinity: ListTileControlAffinity.leading,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                    RadioListTile<bool>(
+                                      value: false,
+                                      activeColor: AppColors.primary,
+                                      title: Text('Ascending (oldest first)', style: AppText.body),
+                                      controlAffinity: ListTileControlAffinity.leading,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+
+                          // 3. DISPLAY TAB
+                          ListView(
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            children: [
+                              RadioGroup<bool>(
+                                groupValue: _displayChapterNumberOnly,
+                                onChanged: (val) {
+                                  if (val == null) return;
+                                  setState(() => _displayChapterNumberOnly = val);
+                                  setSheetState(() {});
+                                  _saveChapterFilters();
+                                },
+                                child: Column(
+                                  children: [
+                                    RadioListTile<bool>(
+                                      value: false,
+                                      activeColor: AppColors.primary,
+                                      title: Text('Source title', style: AppText.body),
+                                      controlAffinity: ListTileControlAffinity.leading,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                    RadioListTile<bool>(
+                                      value: true,
+                                      activeColor: AppColors.primary,
+                                      title: Text('Chapter number only', style: AppText.body),
+                                      controlAffinity: ListTileControlAffinity.leading,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Widget _sectionTitle() {
-    final count = _apiChapters.length;
-    final readCount = _apiChapters.where((c) => _readChapterIds.contains(c.id)).length;
+    final filtered = _filteredChapters;
+    final totalCount = _apiChapters.length;
+    final count = filtered.length;
+    final readCount = filtered.where((c) => _readChapterIds.contains(c.id)).length;
+
+    final countLabel = _hasActiveFilters && count != totalCount
+        ? '$count of $totalCount Chapters'
+        : '$count Chapters';
 
     return Container(
       constraints: const BoxConstraints(minHeight: 48),
@@ -1219,7 +1747,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     children: [
                       Flexible(
                         child: Text(
-                          '$count Chapters',
+                          countLabel,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: AppText.cardTitle,
@@ -1242,10 +1770,14 @@ class _DetailScreenState extends State<DetailScreen> {
                     ],
                   ),
           ),
-          BarIcon(
-            Icons.sort_rounded,
-            label: _descending ? 'Descending' : 'Ascending',
-            onTap: () => setState(() => _descending = !_descending),
+          IconButton(
+            icon: Icon(
+              Icons.tune_rounded,
+              size: 20,
+              color: _hasActiveFilters ? AppColors.primary : AppColors.muted,
+            ),
+            tooltip: 'Filter & sort chapters',
+            onPressed: _showChapterFilterSheet,
           ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.download_rounded, size: 20, color: AppColors.muted),
@@ -1273,17 +1805,42 @@ class _DetailScreenState extends State<DetailScreen> {
             icon: const Icon(Icons.more_vert_rounded, size: 20, color: AppColors.muted),
             color: AppColors.surface,
             onSelected: (val) async {
-              if (val == 'mark_all_read') {
-                final allIds = _apiChapters.map((c) => c.id).toList();
+              if (val == 'open_webview') {
+                _openWebView();
+              } else if (val == 'edit_categories') {
+                _showCategorySheet();
+              } else if (val == 'mark_all_read') {
+                final allIds = _filteredChapters.map((c) => c.id).toList();
                 await ApiService.instance.markChaptersRead(_manga.id, allIds, read: true);
                 setState(() => _readChapterIds.addAll(allIds));
+                _syncTrackerProgressOnMarkRead();
               } else if (val == 'mark_all_unread') {
-                final allIds = _apiChapters.map((c) => c.id).toList();
+                final allIds = _filteredChapters.map((c) => c.id).toList();
                 await ApiService.instance.markChaptersRead(_manga.id, allIds, read: false);
                 setState(() => _readChapterIds.removeAll(allIds));
               }
             },
             itemBuilder: (_) => [
+              PopupMenuItem(
+                value: 'open_webview',
+                child: Row(
+                  children: [
+                    const Icon(Icons.public_rounded, size: 18, color: AppColors.muted),
+                    const SizedBox(width: 10),
+                    Text('Open in WebView', style: AppText.body),
+                  ],
+                ),
+              ),
+              PopupMenuItem(
+                value: 'edit_categories',
+                child: Row(
+                  children: [
+                    const Icon(Icons.label_outline_rounded, size: 18, color: AppColors.muted),
+                    const SizedBox(width: 10),
+                    Text('Edit categories', style: AppText.body),
+                  ],
+                ),
+              ),
               PopupMenuItem(
                 value: 'mark_all_read',
                 child: Text('Mark all as read', style: AppText.body),
@@ -1301,17 +1858,25 @@ class _DetailScreenState extends State<DetailScreen> {
 }
 
 class _Action extends StatelessWidget {
-  const _Action({required this.icon, required this.label, this.active = false, this.onTap});
+  const _Action({
+    required this.icon,
+    required this.label,
+    this.active = false,
+    this.onTap,
+    this.onLongPress,
+  });
   final IconData icon;
   final String label;
   final bool active;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
     return Expanded(
       child: InkWell(
         onTap: onTap ?? () {},
+        onLongPress: onLongPress,
         child: ConstrainedBox(
           constraints: const BoxConstraints(minHeight: 48),
           child: Padding(
@@ -1347,6 +1912,7 @@ class _ApiChapterTile extends StatelessWidget {
     required this.isBookmarked,
     required this.downloadStatus,
     required this.downloadProgress,
+    this.displayChapterNumberOnly = false,
     required this.onTap,
     required this.onToggleRead,
     required this.onToggleBookmark,
@@ -1359,6 +1925,7 @@ class _ApiChapterTile extends StatelessWidget {
   final bool isBookmarked;
   final DownloadStatus downloadStatus;
   final double downloadProgress;
+  final bool displayChapterNumberOnly;
   final VoidCallback onTap;
   final VoidCallback onToggleRead;
   final VoidCallback onToggleBookmark;
@@ -1443,7 +2010,9 @@ class _ApiChapterTile extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    chapter.displayTitle,
+                    (displayChapterNumberOnly && chapter.number != null && chapter.number!.isNotEmpty)
+                        ? 'Chapter ${chapter.number}'
+                        : chapter.displayTitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: AppText.body.copyWith(

@@ -168,57 +168,62 @@ class MangaCatalogService {
     final ext = ExtensionService.instance.getExtensionByPkg(pkg);
     final effectivePkg = ext != null ? '${ext.pkg}$selectorSuffix' : pkg;
 
-    try {
-      final hasQuery = query != null && query.trim().isNotEmpty;
-      final results = hasQuery
-          ? await ExtensionBridge.instance.searchManga(
-              pkg: effectivePkg,
-              query: query.trim(),
-              page: page,
-              type: type,
-            )
-          : (order == 'latest'
-                ? await ExtensionBridge.instance.fetchLatestUpdates(
-                    pkg: effectivePkg,
-                    page: page,
-                    type: type,
-                  )
-                : await ExtensionBridge.instance.fetchPopularManga(
-                    pkg: effectivePkg,
-                    page: page,
-                    type: type,
-                  ));
+    dynamic bridgeError;
+    if (ExtensionBridge.instance.isAndroidSupported) {
+      try {
+        final hasQuery = query != null && query.trim().isNotEmpty;
+        final results = hasQuery
+            ? await ExtensionBridge.instance.searchManga(
+                pkg: effectivePkg,
+                query: query.trim(),
+                page: page,
+                type: type,
+              )
+            : (order == 'latest'
+                  ? await ExtensionBridge.instance.fetchLatestUpdates(
+                      pkg: effectivePkg,
+                      page: page,
+                      type: type,
+                    )
+                  : await ExtensionBridge.instance.fetchPopularManga(
+                      pkg: effectivePkg,
+                      page: page,
+                      type: type,
+                    ));
 
-      if (results.isNotEmpty) return results;
-    } catch (e) {
-      debugPrint(
-        'ExtensionBridge native execution for $effectivePkg encountered: $e',
-      );
-      if (ext != null && ext.homeUrl.isNotEmpty) {
-        try {
-          final webResults = await webExtension.search(
-            ext,
-            sourcePkg: effectivePkg,
-            query: query,
-            order: order,
-            page: page,
-            limit: limit,
-          );
-          if (webResults.isNotEmpty) return webResults;
-        } catch (_) {}
+        if (results.isNotEmpty) {
+          return results;
+        }
+      } catch (e) {
+        bridgeError = e;
+        debugPrint(
+          'ExtensionBridge native execution for $effectivePkg encountered: $e',
+        );
       }
-      rethrow;
     }
 
     if (ext != null && ext.homeUrl.isNotEmpty) {
-      return webExtension.search(
-        ext,
-        sourcePkg: effectivePkg,
-        query: query,
-        order: order,
-        page: page,
-        limit: limit,
-      );
+      try {
+        final webResults = await webExtension.search(
+          ext,
+          sourcePkg: effectivePkg,
+          query: query,
+          type: type,
+          order: order,
+          page: page,
+          limit: limit,
+        );
+        if (webResults.isNotEmpty) return webResults;
+      } catch (webErr) {
+        debugPrint('webExtension.search fallback failed for $effectivePkg: $webErr');
+      }
+    }
+
+    if (bridgeError != null) {
+      if (query != null && query.trim().isNotEmpty) {
+        return [];
+      }
+      throw bridgeError;
     }
 
     return [];
@@ -242,23 +247,39 @@ class MangaCatalogService {
           ? id.substring(firstColon + 1, secondColon)
           : id.substring(firstColon + 1);
       final actualId = secondColon != -1 ? id.substring(secondColon + 1) : id;
-      final rawUrl = Uri.decodeComponent(actualId);
-
-      try {
-        return await ExtensionBridge.instance.fetchMangaDetails(
-          pkg: pkg,
-          url: rawUrl,
-        );
-      } catch (e) {
-        debugPrint(
-          'ExtensionBridge fetchMangaDetails failed for $pkg ($rawUrl): $e',
-        );
-        final ext = ExtensionService.instance.getExtensionByPkg(pkg);
-        if (ext != null && ext.homeUrl.isNotEmpty) {
-          return webExtension.getManga(pkg, actualId, ext: ext);
-        }
-        rethrow;
+      var rawUrl = Uri.decodeComponent(actualId);
+      if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://') && !rawUrl.startsWith('/')) {
+        rawUrl = '/$rawUrl';
       }
+
+      dynamic bridgeError;
+      if (ExtensionBridge.instance.isAndroidSupported) {
+        try {
+          return await ExtensionBridge.instance.fetchMangaDetails(
+            pkg: pkg,
+            url: rawUrl,
+          );
+        } catch (e) {
+          bridgeError = e;
+          debugPrint(
+            'ExtensionBridge fetchMangaDetails failed for $pkg ($rawUrl): $e',
+          );
+        }
+      }
+
+      final ext = ExtensionService.instance.getExtensionByPkg(pkg);
+      if (ext != null && ext.homeUrl.isNotEmpty) {
+        try {
+          return await webExtension.getManga(pkg, actualId, ext: ext);
+        } catch (webErr) {
+          debugPrint('webExtension.getManga fallback failed for $pkg ($actualId): $webErr');
+        }
+      }
+
+      if (bridgeError != null) {
+        throw bridgeError;
+      }
+      throw Exception('Failed to load manga details for $id');
     }
 
     if (id.startsWith('mangadex:')) {
@@ -306,35 +327,45 @@ class MangaCatalogService {
       final actualId = secondColon != -1
           ? mangaId.substring(secondColon + 1)
           : mangaId;
-      final rawUrl = Uri.decodeComponent(actualId);
+      var rawUrl = Uri.decodeComponent(actualId);
+      if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://') && !rawUrl.startsWith('/')) {
+        rawUrl = '/$rawUrl';
+      }
 
-      try {
-        final chapters = await ExtensionBridge.instance.fetchChapterList(
-          pkg: pkg,
-          url: rawUrl,
-        );
-        if (chapters.isNotEmpty) return chapters;
-      } catch (e) {
-        debugPrint(
-          'ExtensionBridge fetchChapterList failed for $pkg ($rawUrl): $e',
-        );
-        final ext = ExtensionService.instance.getExtensionByPkg(pkg);
-        if (ext != null && ext.homeUrl.isNotEmpty) {
-          try {
-            final webChapters = await webExtension.getChapters(
-              pkg,
-              actualId,
-              ext: ext,
-            );
-            if (webChapters.isNotEmpty) return webChapters;
-          } catch (_) {}
+      dynamic bridgeError;
+      if (ExtensionBridge.instance.isAndroidSupported) {
+        try {
+          final chapters = await ExtensionBridge.instance.fetchChapterList(
+            pkg: pkg,
+            url: rawUrl,
+          );
+          if (chapters.isNotEmpty) {
+            return chapters;
+          }
+        } catch (e) {
+          bridgeError = e;
+          debugPrint(
+            'ExtensionBridge fetchChapterList failed for $pkg ($rawUrl): $e',
+          );
         }
-        rethrow;
       }
 
       final ext = ExtensionService.instance.getExtensionByPkg(pkg);
       if (ext != null && ext.homeUrl.isNotEmpty) {
-        return webExtension.getChapters(pkg, actualId, ext: ext);
+        try {
+          final webChapters = await webExtension.getChapters(
+            pkg,
+            actualId,
+            ext: ext,
+          );
+          if (webChapters.isNotEmpty) return webChapters;
+        } catch (webErr) {
+          debugPrint('webExtension.getChapters fallback failed for $pkg ($actualId): $webErr');
+        }
+      }
+
+      if (bridgeError != null) {
+        throw bridgeError;
       }
 
       return [];
@@ -403,34 +434,47 @@ class MangaCatalogService {
       final actualChapterId = secondColon != -1
           ? chapterId.substring(secondColon + 1)
           : chapterId;
-      final rawUrl = Uri.decodeComponent(actualChapterId);
+      var rawUrl = Uri.decodeComponent(actualChapterId);
+      if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://') && !rawUrl.startsWith('/')) {
+        rawUrl = '/$rawUrl';
+      }
 
-      try {
-        final pageUrls = await ExtensionBridge.instance.fetchPageList(
-          pkg: pkg,
-          chapterUrl: rawUrl,
-        );
-        if (pageUrls.isNotEmpty) {
-          return ChapterPages(
-            chapterId: chapterId,
-            pages: pageUrls,
-            dataSaver: pageUrls,
+      dynamic bridgeError;
+      if (ExtensionBridge.instance.isAndroidSupported) {
+        try {
+          final pageUrls = await ExtensionBridge.instance.fetchPageList(
+            pkg: pkg,
+            chapterUrl: rawUrl,
+          );
+          if (pageUrls.isNotEmpty) {
+            return ChapterPages(
+              chapterId: chapterId,
+              pages: pageUrls,
+              dataSaver: pageUrls,
+            );
+          }
+        } catch (e) {
+          bridgeError = e;
+          debugPrint(
+            'ExtensionBridge fetchPageList failed for $pkg ($rawUrl): $e',
           );
         }
-      } catch (e) {
-        debugPrint(
-          'ExtensionBridge fetchPageList failed for $pkg ($rawUrl): $e',
-        );
-        final ext = ExtensionService.instance.getExtensionByPkg(pkg);
-        if (ext != null && ext.homeUrl.isNotEmpty) {
-          return webExtension.getChapterPages(pkg, actualChapterId, ext: ext);
-        }
-        rethrow;
       }
 
       final ext = ExtensionService.instance.getExtensionByPkg(pkg);
       if (ext != null && ext.homeUrl.isNotEmpty) {
-        return webExtension.getChapterPages(pkg, actualChapterId, ext: ext);
+        try {
+          final webPages = await webExtension.getChapterPages(pkg, actualChapterId, ext: ext);
+          if (webPages.pages.isNotEmpty) {
+            return webPages;
+          }
+        } catch (webErr) {
+          debugPrint('webExtension.getChapterPages fallback failed for $pkg ($actualChapterId): $webErr');
+        }
+      }
+
+      if (bridgeError != null) {
+        throw bridgeError;
       }
 
       throw Exception('Chapter reader not available for $pkg');

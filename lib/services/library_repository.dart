@@ -16,6 +16,7 @@ class LibraryRepository extends ChangeNotifier {
   final List<CategoryItem> _userCategories = [];
   final Map<String, List<String>> _mangaCategories = {};
   final Set<String> _deletedMangaIds = {};
+  final Set<String> _deletedCategoryIds = {};
 
   SharedPreferences? _cachedPrefs;
 
@@ -110,6 +111,18 @@ class LibraryRepository extends ChangeNotifier {
         AppLogger.warn('Failed to parse shiori_deleted_manga_ids', e);
       }
     }
+
+    // 5. Deleted Category IDs (Tombstones preventing cloud sync resurrection)
+    final deletedCatsJson = prefs.getString('shiori_deleted_category_ids');
+    if (deletedCatsJson != null && deletedCatsJson.isNotEmpty) {
+      try {
+        final list = jsonDecode(deletedCatsJson) as List<dynamic>;
+        _deletedCategoryIds.clear();
+        _deletedCategoryIds.addAll(list.map((e) => e.toString()));
+      } catch (e) {
+        AppLogger.warn('Failed to parse shiori_deleted_category_ids', e);
+      }
+    }
   }
 
   Future<void> _persistDeletedMangaIds() async {
@@ -118,6 +131,15 @@ class LibraryRepository extends ChangeNotifier {
       await prefs.setString('shiori_deleted_manga_ids', jsonEncode(_deletedMangaIds.toList()));
     } catch (e) {
       AppLogger.warn('Failed to persist deleted manga ids', e);
+    }
+  }
+
+  Future<void> _persistDeletedCategoryIds() async {
+    try {
+      final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
+      await prefs.setString('shiori_deleted_category_ids', jsonEncode(_deletedCategoryIds.toList()));
+    } catch (e) {
+      AppLogger.warn('Failed to persist deleted category ids', e);
     }
   }
 
@@ -305,6 +327,8 @@ class LibraryRepository extends ChangeNotifier {
     if (trimmed.isEmpty) throw Exception('Category name cannot be empty');
     final id = 'cat_${DateTime.now().millisecondsSinceEpoch}';
     final newCat = CategoryItem(id: id, name: trimmed, order: _userCategories.length);
+    _deletedCategoryIds.remove(id);
+    unawaited(_persistDeletedCategoryIds());
     _userCategories.add(newCat);
     await _persistUserCategories();
     notifyListeners();
@@ -336,6 +360,8 @@ class LibraryRepository extends ChangeNotifier {
     String? baseUrl,
     Map<String, String>? headers,
   }) async {
+    _deletedCategoryIds.add(id);
+    await _persistDeletedCategoryIds();
     _userCategories.removeWhere((c) => c.id == id);
     for (final key in _mangaCategories.keys.toList()) {
       _mangaCategories[key]?.remove(id);
@@ -519,11 +545,14 @@ class LibraryRepository extends ChangeNotifier {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final cloudCats = data['categories'] as List<dynamic>?;
         if (cloudCats != null) {
-          // Exactly replace local categories with cloud categories
+          // Cloud categories are the source of truth, filtered by local deletion tombstones
           _userCategories.clear();
           for (final c in cloudCats) {
             if (c is Map) {
-              _userCategories.add(CategoryItem.fromJson(Map<String, dynamic>.from(c)));
+              final cat = CategoryItem.fromJson(Map<String, dynamic>.from(c));
+              if (!_deletedCategoryIds.contains(cat.id)) {
+                _userCategories.add(cat);
+              }
             }
           }
           final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
@@ -719,11 +748,13 @@ class LibraryRepository extends ChangeNotifier {
     _userCategories.clear();
     _mangaCategories.clear();
     _deletedMangaIds.clear();
+    _deletedCategoryIds.clear();
     final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
     await prefs.remove('shiori_local_library');
     await prefs.remove('shiori_user_categories');
     await prefs.remove('shiori_manga_categories');
     await prefs.remove('shiori_deleted_manga_ids');
+    await prefs.remove('shiori_deleted_category_ids');
     await prefs.remove('shiori_categories_initialized');
     _userCategories.addAll(const [
       CategoryItem(id: 'reading', name: 'Reading', order: 0),

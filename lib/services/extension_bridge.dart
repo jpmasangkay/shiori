@@ -20,6 +20,7 @@ class ExtensionBridge {
   bool? forceAndroidForTesting;
 
   bool get _isAndroidSupported => forceAndroidForTesting ?? (!kIsWeb && Platform.isAndroid);
+  bool get isAndroidSupported => _isAndroidSupported;
 
   void evictSourceCache(String pkg) {
     final basePkg = pkg.split('@').first.trim();
@@ -436,7 +437,10 @@ class ExtensionBridge {
     String? fallbackTitle,
     String? requestedType,
   }) {
-    final url = raw['url']?.toString() ?? fallbackUrl ?? '';
+    var url = raw['url']?.toString() ?? fallbackUrl ?? '';
+    if (url.isNotEmpty && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('/')) {
+      url = '/$url';
+    }
     final title = raw['title']?.toString() ?? fallbackTitle ?? 'Untitled';
     final referer = (raw['referer']?.toString() ?? '').trim().isNotEmpty
         ? raw['referer']!.toString().trim()
@@ -480,11 +484,33 @@ class ExtensionBridge {
     if (statusInt == 6) statusStr = 'on_hiatus';
 
     // Intelligently infer comic type so Manhwa / Manhua are not mislabeled as Manga
-    final combinedMeta = '$genre $url $title ${tags.join(' ')}'.toLowerCase();
+    final combinedMeta = '$genre $url $title ${tags.join(' ')} $desc'.toLowerCase();
+    final pkgLower = pkg.toLowerCase();
     String detectedType = 'manga';
-    if (combinedMeta.contains('manhwa') || combinedMeta.contains('webtoon') || combinedMeta.contains('korean')) {
+    if (combinedMeta.contains('manhwa') ||
+        combinedMeta.contains('manwha') ||
+        combinedMeta.contains('webtoon') ||
+        combinedMeta.contains('korean') ||
+        pkgLower.contains('asura') ||
+        pkgLower.contains('flame') ||
+        pkgLower.contains('reaper') ||
+        pkgLower.contains('void') ||
+        pkgLower.contains('cosmic') ||
+        pkgLower.contains('nightcomic') ||
+        pkgLower.contains('drakescans') ||
+        pkgLower.contains('luminous') ||
+        pkgLower.contains('realm') ||
+        pkgLower.contains('manhwa') ||
+        pkgLower.contains('manwha') ||
+        pkgLower.contains('webtoon')) {
       detectedType = 'manhwa';
-    } else if (combinedMeta.contains('manhua') || combinedMeta.contains('chinese')) {
+    } else if (combinedMeta.contains('manhua') ||
+        combinedMeta.contains('chinese') ||
+        pkgLower.contains('manhua') ||
+        pkgLower.contains('bilibili') ||
+        pkgLower.contains('kuaikan') ||
+        pkgLower.contains('baozimh') ||
+        pkgLower.contains('colamanga')) {
       detectedType = 'manhua';
     } else if (requestedType != null && requestedType != 'all') {
       detectedType = requestedType;
@@ -504,7 +530,10 @@ class ExtensionBridge {
   }
 
   ChapterItem _mapToChapterItem(String pkg, Map raw) {
-    final url = raw['url']?.toString() ?? '';
+    var url = raw['url']?.toString() ?? '';
+    if (url.isNotEmpty && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('/')) {
+      url = '/$url';
+    }
     final name = raw['name']?.toString() ?? 'Chapter';
     final chapterNumVal = raw['chapter_number'];
     final double? chapterNum = chapterNumVal is num ? chapterNumVal.toDouble() : null;

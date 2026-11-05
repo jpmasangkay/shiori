@@ -734,6 +734,17 @@ class TachiyomiExtensionManager(private val context: Context) {
         val (apkPath, nativeLibPath) = stageReadOnlyDexAndLibs(basePkg, rawApkPath)
         Log.d(TAG, "Loading extension for $basePkg from $apkPath (nativeLibs=$nativeLibPath)")
 
+        if (basePkg.contains("comicklive", ignoreCase = true)) {
+            try {
+                val prePrefs = context.getSharedPreferences("source_4972933717624256217", Context.MODE_PRIVATE)
+                val curr = prePrefs.getString("preferred_mirror", null)
+                if (curr == null || curr == "0") {
+                    prePrefs.edit().putString("preferred_mirror", "1").apply()
+                    Log.i(TAG, "Pre-seeded preferred_mirror='1' for source_4972933717624256217")
+                }
+            } catch (_: Throwable) {}
+        }
+
         val classLoader = PathClassLoader(apkPath, nativeLibPath, context.classLoader)
 
         var manifestPkg = basePkg
@@ -835,10 +846,15 @@ class TachiyomiExtensionManager(private val context: Context) {
                 when {
                     SourceFactory::class.java.isAssignableFrom(loadedClass) -> {
                         val factory = loadedClass.getDeclaredConstructor().newInstance() as SourceFactory
-                        collectedSources.addAll(factory.createSources().filterIsInstance<CatalogueSource>())
+                        val sources = factory.createSources().filterIsInstance<CatalogueSource>()
+                        for (src in sources) {
+                            configureSourcePreferences(src, basePkg)
+                        }
+                        collectedSources.addAll(sources)
                     }
                     CatalogueSource::class.java.isAssignableFrom(loadedClass) -> {
                         val instance = loadedClass.getDeclaredConstructor().newInstance() as CatalogueSource
+                        configureSourcePreferences(instance, basePkg)
                         collectedSources.add(instance)
                     }
                 }
@@ -853,6 +869,36 @@ class TachiyomiExtensionManager(private val context: Context) {
 
         allSourcesCache[basePkg] = collectedSources
         return collectedSources
+    }
+
+    private fun configureSourcePreferences(source: CatalogueSource, basePkg: String) {
+        try {
+            val isComick = source.name.contains("Comick", ignoreCase = true) ||
+                basePkg.contains("comicklive", ignoreCase = true)
+            if (isComick) {
+                // Ensure preferred_mirror is set to "1" (https://comick.art) instead of "0" (https://comick.live)
+                // which is blocked by Cloudflare (403) for automated API requests.
+                val prefs = context.getSharedPreferences("source_${source.id}", Context.MODE_PRIVATE)
+                val currentMirror = prefs.getString("preferred_mirror", null)
+                if (currentMirror == null || currentMirror == "0") {
+                    prefs.edit().putString("preferred_mirror", "1").apply()
+                    Log.i(TAG, "Configured preferred_mirror='1' (comick.art) in SharedPreferences for ${source.name} (id=${source.id})")
+                }
+                try {
+                    val prefGetter = source.javaClass.methods.firstOrNull { it.name == "getPreferences" && it.parameterCount == 0 }
+                    val instPrefs = prefGetter?.invoke(source) as? SharedPreferences
+                    if (instPrefs != null) {
+                        val instMirror = instPrefs.getString("preferred_mirror", null)
+                        if (instMirror == null || instMirror == "0") {
+                            instPrefs.edit().putString("preferred_mirror", "1").apply()
+                            Log.i(TAG, "Configured preferred_mirror='1' (comick.art) on instance preferences for ${source.name}")
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed configuring source preferences for ${source.name}: ${e.message}")
+        }
     }
 
     @Synchronized
@@ -884,6 +930,7 @@ class TachiyomiExtensionManager(private val context: Context) {
                 ?: sources.first()
         }
 
+        configureSourcePreferences(chosen, basePkg)
         sourceCache[pkg] = chosen
         return chosen
     }
@@ -938,7 +985,14 @@ class TachiyomiExtensionManager(private val context: Context) {
     fun getSourceBaseUrl(pkg: String, hintPath: String? = null): String? {
         return try {
             val src = getOrLoadSource(pkg, hintPath)
-            if (src is HttpSource) src.baseUrl else null
+            if (src is HttpSource) {
+                var url = src.baseUrl
+                if ((src.name.contains("Comick", ignoreCase = true) || pkg.contains("comicklive", ignoreCase = true)) &&
+                    url.contains("comick.live", ignoreCase = true)) {
+                    url = "https://comick.art"
+                }
+                url
+            } else null
         } catch (_: Throwable) {
             null
         }
@@ -1023,7 +1077,7 @@ class TachiyomiExtensionManager(private val context: Context) {
                         nameLower.contains("country")) {
                         for (i in filter.values.indices) {
                             val valStr = filter.values[i]?.toString()?.lowercase() ?: ""
-                            if (target == "manhwa" && (valStr.contains("manhwa") || valStr.contains("korean"))) {
+                            if (target == "manhwa" && (valStr.contains("manhwa") || valStr.contains("manwha") || valStr.contains("webtoon") || valStr.contains("korean"))) {
                                 filter.state = i
                                 break
                             } else if (target == "manhua" && (valStr.contains("manhua") || valStr.contains("chinese"))) {
@@ -1040,20 +1094,20 @@ class TachiyomiExtensionManager(private val context: Context) {
                     for (item in filter.state) {
                         if (item is Filter.CheckBox) {
                             val itemLower = item.name.lowercase()
-                            if (target == "manhwa" && (itemLower.contains("manhwa") || itemLower.contains("webtoon"))) {
+                            if (target == "manhwa" && (itemLower.contains("manhwa") || itemLower.contains("manwha") || itemLower.contains("webtoon") || itemLower.contains("korean"))) {
                                 item.state = true
-                            } else if (target == "manhua" && itemLower.contains("manhua")) {
+                            } else if (target == "manhua" && (itemLower.contains("manhua") || itemLower.contains("chinese"))) {
                                 item.state = true
-                            } else if (target == "manga" && itemLower == "manga") {
+                            } else if (target == "manga" && (itemLower == "manga" || itemLower.contains("japanese"))) {
                                 item.state = true
                             }
                         } else if (item is Filter.TriState) {
                             val itemLower = item.name.lowercase()
-                            if (target == "manhwa" && (itemLower.contains("manhwa") || itemLower.contains("webtoon"))) {
+                            if (target == "manhwa" && (itemLower.contains("manhwa") || itemLower.contains("manwha") || itemLower.contains("webtoon") || itemLower.contains("korean"))) {
                                 item.state = Filter.TriState.STATE_INCLUDE
-                            } else if (target == "manhua" && itemLower.contains("manhua")) {
+                            } else if (target == "manhua" && (itemLower.contains("manhua") || itemLower.contains("chinese"))) {
                                 item.state = Filter.TriState.STATE_INCLUDE
-                            } else if (target == "manga" && itemLower == "manga") {
+                            } else if (target == "manga" && (itemLower == "manga" || itemLower.contains("japanese"))) {
                                 item.state = Filter.TriState.STATE_INCLUDE
                             }
                         }
@@ -1239,16 +1293,21 @@ class TachiyomiExtensionManager(private val context: Context) {
         if (items.isEmpty() || type.isNullOrBlank() || type.equals("all", ignoreCase = true)) {
             return items
         }
-        val target = type.lowercase()
+        val target = type.lowercase().trim()
         val filtered = items.filter { item ->
             val genre = (item["genre"] as? String)?.lowercase() ?: ""
             val title = (item["title"] as? String)?.lowercase() ?: ""
             val url = (item["url"] as? String)?.lowercase() ?: ""
-            val combined = "$genre $title $url"
+            val desc = (item["description"] as? String)?.lowercase() ?: ""
+            val pkg = (item["pkg"] as? String)?.lowercase() ?: ""
+            val combined = "$genre $title $url $desc $pkg"
             when (target) {
-                "manhwa" -> combined.contains("manhwa") || combined.contains("webtoon")
-                "manhua" -> combined.contains("manhua")
-                else -> !combined.contains("manhwa") && !combined.contains("manhua")
+                "manhwa" -> combined.contains("manhwa") || combined.contains("manwha") || combined.contains("webtoon") || combined.contains("korean") ||
+                    pkg.contains("asura") || pkg.contains("flame") || pkg.contains("reaper") || pkg.contains("void") || pkg.contains("cosmic") || pkg.contains("nightcomic")
+                "manhua" -> combined.contains("manhua") || combined.contains("chinese") ||
+                    pkg.contains("colamanga") || pkg.contains("bilibili") || pkg.contains("baozimh") || pkg.contains("kuaikan")
+                "manga" -> combined.contains("manga") || combined.contains("japanese")
+                else -> true
             }
         }
         return filtered.ifEmpty { items }
@@ -1449,55 +1508,97 @@ class TachiyomiExtensionManager(private val context: Context) {
             return@withContext fetchPopularManga(pkg, page, type, hintPath)
         }
 
+        val hasTypeFilter = !type.isNullOrBlank() && !type.equals("all", ignoreCase = true)
+        val sanitized = trimmed.replace(Regex("[:'\"’“”!?.,\\-_]"), " ").replace(Regex("\\s+"), " ").trim()
+        val compactSanitized = trimmed.replace(Regex("[:'\"’“”!?.,\\-_]"), "").replace(Regex("\\s+"), " ").trim()
+        val queryWithoutTypeWords = trimmed.replace(Regex("(?i)\\b(manhwa|manwha|manga|manhua|webtoon|comic|novel|scan|scans)\\b"), " ").replace(Regex("\\s+"), " ").trim()
+        val coreTitle = trimmed.substringBefore(':').substringBefore(" - ").substringBefore(" – ").trim()
+
         var mangasPage: MangasPage? = null
         var lastSearchError: Throwable? = null
 
-        try {
-            val filters = getSafeFilterList(source)
-            if (!type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
+        suspend fun trySearch(q: String, filters: FilterList): MangasPage? {
+            return try {
+                val res = try {
+                    source.getSearchManga(page, q, filters)
+                } catch (e: NoSuchMethodError) {
+                    source.fetchSearchManga(page, q, filters).toBlocking().first()
+                } catch (e: AbstractMethodError) {
+                    source.fetchSearchManga(page, q, filters).toBlocking().first()
+                }
+                if (res != null && res.mangas.isNotEmpty()) res else null
+            } catch (e: Throwable) {
+                lastSearchError = e
+                Log.d(TAG, "Search try failed for $pkg (q='$q', filters=${filters.size}): ${e.message}")
+                null
+            }
+        }
+
+        // Tier 1: Try exact query with requested type filter (if specified) or clean FilterList()
+        if (hasTypeFilter) {
+            try {
+                val filters = getSafeFilterList(source)
                 applyTypeFilter(filters, type)
+                mangasPage = trySearch(trimmed, filters)
+            } catch (e: Throwable) {
+                lastSearchError = e
             }
-            mangasPage = try {
-                source.getSearchManga(page, trimmed, filters)
-            } catch (e: NoSuchMethodError) {
-                source.fetchSearchManga(page, trimmed, filters).toBlocking().first()
-            } catch (e: AbstractMethodError) {
-                source.fetchSearchManga(page, trimmed, filters).toBlocking().first()
-            }
-        } catch (e: Throwable) {
-            lastSearchError = e
-            Log.w(TAG, "Search with filters failed for $pkg (query='$trimmed'): ${e.message}")
         }
 
-        if (mangasPage == null && !type.isNullOrBlank() && !type.equals("all", ignoreCase = true)) {
+        // Tier 2: Search with standard Tachiyomi empty FilterList() so conflicting filters don't break keyword search
+        if (mangasPage == null) {
+            mangasPage = trySearch(trimmed, FilterList())
+        }
+
+        // Tier 3: If clean FilterList() returned 0/null and no type filter was requested, try source default FilterList
+        if (mangasPage == null && !hasTypeFilter) {
             try {
-                val cleanFilters = getSafeFilterList(source)
-                mangasPage = try {
-                    source.getSearchManga(page, trimmed, cleanFilters)
-                } catch (inner: NoSuchMethodError) {
-                    source.fetchSearchManga(page, trimmed, cleanFilters).toBlocking().first()
-                } catch (inner: AbstractMethodError) {
-                    source.fetchSearchManga(page, trimmed, cleanFilters).toBlocking().first()
+                val defaultFilters = getSafeFilterList(source)
+                if (defaultFilters.isNotEmpty()) {
+                    mangasPage = trySearch(trimmed, defaultFilters)
                 }
-                lastSearchError = null
-            } catch (inner: Throwable) {
-                lastSearchError = inner
-                Log.w(TAG, "Search with clean filters failed for $pkg: ${inner.message}")
+            } catch (e: Throwable) {
+                lastSearchError = e
             }
         }
 
-        if (mangasPage == null && (trimmed.length < 3 || lastSearchError?.message?.contains("3 characters", ignoreCase = true) == true)) {
+        // Tier 4: Sanitized query (punctuation stripped: colons, dashes, apostrophes, commas replaced with space)
+        if (mangasPage == null && sanitized.isNotEmpty() && sanitized != trimmed && sanitized.length >= 2) {
+            mangasPage = trySearch(sanitized, FilterList())
+        }
+
+        // Tier 5: Compact sanitized query (punctuation completely stripped without spaces)
+        if (mangasPage == null && compactSanitized.isNotEmpty() && compactSanitized != trimmed && compactSanitized != sanitized && compactSanitized.length >= 2) {
+            mangasPage = trySearch(compactSanitized, FilterList())
+        }
+
+        // Tier 6: Query stripped of type keywords (e.g. "solo leveling manhwa" -> "solo leveling")
+        if (mangasPage == null && queryWithoutTypeWords.isNotEmpty() && queryWithoutTypeWords.length >= 2 && queryWithoutTypeWords != trimmed && queryWithoutTypeWords != sanitized) {
+            mangasPage = trySearch(queryWithoutTypeWords, FilterList())
+        }
+
+        // Tier 7: Core title (before colon or dash) if long enough
+        if (mangasPage == null && coreTitle.length >= 3 && coreTitle != trimmed && coreTitle != sanitized && coreTitle != queryWithoutTypeWords) {
+            mangasPage = trySearch(coreTitle, FilterList())
+        }
+
+        // Tier 8: Popular manga matching fallback (especially if source has 3-character min or query was short)
+        if (mangasPage == null) {
             try {
-                val popular = fetchPopularManga(pkg, 1, type, hintPath)
+                val popular = fetchPopularManga(pkg, 1, null, hintPath)
+                val lowerTrimmed = trimmed.lowercase()
+                val lowerSanitized = sanitized.lowercase()
+                val lowerQueryWithoutType = queryWithoutTypeWords.lowercase()
                 val filtered = popular.filter {
-                    (it["title"] as? String)?.contains(trimmed, ignoreCase = true) == true
+                    val t = (it["title"] as? String)?.lowercase() ?: ""
+                    t.contains(lowerTrimmed) ||
+                        (lowerSanitized.isNotEmpty() && t.contains(lowerSanitized)) ||
+                        (lowerQueryWithoutType.isNotEmpty() && t.contains(lowerQueryWithoutType))
                 }
-                if (filtered.isNotEmpty()) return@withContext filtered
+                if (filtered.isNotEmpty()) {
+                    return@withContext filtered
+                }
             } catch (_: Throwable) {}
-        }
-
-        if (mangasPage == null && lastSearchError != null) {
-            throw lastSearchError
         }
 
         val list = mangasPage?.mangas ?: emptyList()
@@ -1508,6 +1609,13 @@ class TachiyomiExtensionManager(private val context: Context) {
         enrichMissingThumbnails(pkg, source, list)
 
         list.map { sMangaToMap(it, source, pkg) }
+    }
+
+    private fun normalizeRelativeUrl(url: String): String {
+        val trimmed = url.trim()
+        if (trimmed.isEmpty()) return "/"
+        if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed
+        return if (trimmed.startsWith("/")) trimmed else "/$trimmed"
     }
 
     private fun computeLegacySlugUrl(url: String): String? {
@@ -1535,7 +1643,7 @@ class TachiyomiExtensionManager(private val context: Context) {
             val source = getOrLoadSource(pkg, hintPath)
             val legacySlug = computeLegacySlugUrl(url)
             val useLegacyFirst = basePkg.contains("comick", ignoreCase = true) && !legacySlug.isNullOrEmpty()
-            val primaryUrl = if (useLegacyFirst) legacySlug!! else url
+            val primaryUrl = if (useLegacyFirst) legacySlug!! else normalizeRelativeUrl(url)
 
             val sManga = (mangaCache["$pkg:$url"]
                 ?: mangaCache["$basePkg:$url"]
@@ -1546,10 +1654,15 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }).apply {
                     if (useLegacyFirst && !legacySlug.isNullOrEmpty() && (this.url.startsWith("/comic/") || this.url.contains("http://") || this.url.contains("https://"))) {
                         this.url = legacySlug
+                    } else if (!useLegacyFirst) {
+                        this.url = normalizeRelativeUrl(this.url)
                     }
                 }
 
             suspend fun tryResolveDetails(targetManga: SManga): Pair<SManga?, Throwable?> {
+                if (!basePkg.contains("comick", ignoreCase = true)) {
+                    targetManga.url = normalizeRelativeUrl(targetManga.url)
+                }
                 var resolved: SManga? = null
                 var err: Throwable? = null
 
@@ -1601,7 +1714,7 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }
                 if (altUrl != null) {
                     val altManga = SManga.create().apply {
-                        this.url = altUrl
+                        this.url = if (basePkg.contains("comick", ignoreCase = true)) altUrl else normalizeRelativeUrl(altUrl)
                         if (!title.isNullOrEmpty()) this.title = title
                         this.thumbnail_url = sManga.thumbnail_url
                     }
@@ -1616,7 +1729,10 @@ class TachiyomiExtensionManager(private val context: Context) {
                 throw (lastError ?: IllegalStateException("Failed to load details for $url"))
             }
 
-            if (details.url.isEmpty()) details.url = sManga.url.ifEmpty { url }
+            if (details.url.isEmpty()) details.url = sManga.url.ifEmpty { primaryUrl }
+            if (!basePkg.contains("comick", ignoreCase = true)) {
+                details.url = normalizeRelativeUrl(details.url)
+            }
             if (details.title.isEmpty() && !title.isNullOrEmpty()) details.title = title
             if (details.thumbnail_url.isNullOrEmpty() && !sManga.thumbnail_url.isNullOrEmpty()) {
                 details.thumbnail_url = sManga.thumbnail_url
@@ -1636,7 +1752,7 @@ class TachiyomiExtensionManager(private val context: Context) {
             val source = getOrLoadSource(pkg, hintPath)
             val legacySlug = computeLegacySlugUrl(url)
             val useLegacyFirst = basePkg.contains("comick", ignoreCase = true) && !legacySlug.isNullOrEmpty()
-            val primaryUrl = if (useLegacyFirst) legacySlug!! else url
+            val primaryUrl = if (useLegacyFirst) legacySlug!! else normalizeRelativeUrl(url)
 
             val sManga = (mangaCache["$pkg:$url"]
                 ?: mangaCache["$basePkg:$url"]
@@ -1647,10 +1763,15 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }).apply {
                     if (useLegacyFirst && !legacySlug.isNullOrEmpty() && (this.url.startsWith("/comic/") || this.url.contains("http://") || this.url.contains("https://"))) {
                         this.url = legacySlug
+                    } else if (!useLegacyFirst) {
+                        this.url = normalizeRelativeUrl(this.url)
                     }
                 }
 
             suspend fun tryResolveChapters(targetManga: SManga): Pair<List<SChapter>?, Throwable?> {
+                if (!basePkg.contains("comick", ignoreCase = true)) {
+                    targetManga.url = normalizeRelativeUrl(targetManga.url)
+                }
                 var resolved: List<SChapter>? = null
                 var err: Throwable? = null
 
@@ -1704,7 +1825,7 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }
                 if (altUrl != null) {
                     val altManga = SManga.create().apply {
-                        this.url = altUrl
+                        this.url = if (basePkg.contains("comick", ignoreCase = true)) altUrl else normalizeRelativeUrl(altUrl)
                         if (!title.isNullOrEmpty()) this.title = title
                     }
                     val (altChapters, _) = tryResolveChapters(altManga)
@@ -1731,8 +1852,11 @@ class TachiyomiExtensionManager(private val context: Context) {
                         put("slug", kotlinx.serialization.json.JsonPrimitive(mangaSlug))
                     }
                 }
+                val normChapterUrl = normalizeRelativeUrl(c.url)
                 chapterCache["$pkg:${c.url}"] = c
                 chapterCache["$basePkg:${c.url}"] = c
+                chapterCache["$pkg:$normChapterUrl"] = c
+                chapterCache["$basePkg:$normChapterUrl"] = c
                 if (source is HttpSource) {
                     val rel = source.getUrlWithoutDomain(c.url)
                     chapterCache["$pkg:$rel"] = c
@@ -1746,8 +1870,11 @@ class TachiyomiExtensionManager(private val context: Context) {
         withContext(Dispatchers.IO) {
             val (basePkg, _) = splitPkgSelector(pkg)
             val source = getOrLoadSource(pkg, hintPath)
+            val normalizedChapterUrl = normalizeRelativeUrl(chapterUrl)
             val sChapter = chapterCache["$pkg:$chapterUrl"]
                 ?: chapterCache["$basePkg:$chapterUrl"]
+                ?: chapterCache["$pkg:$normalizedChapterUrl"]
+                ?: chapterCache["$basePkg:$normalizedChapterUrl"]
                 ?: (if (source is HttpSource) {
                     val rel = source.getUrlWithoutDomain(chapterUrl)
                     chapterCache["$pkg:$rel"] ?: chapterCache["$basePkg:$rel"]
@@ -1756,9 +1883,12 @@ class TachiyomiExtensionManager(private val context: Context) {
                     this.url = if (source is HttpSource && chapterUrl.startsWith("http")) {
                         source.getUrlWithoutDomain(chapterUrl)
                     } else {
-                        chapterUrl
+                        normalizedChapterUrl
                     }
                 }
+            if (sChapter.url.isNotEmpty() && !sChapter.url.startsWith("http")) {
+                sChapter.url = normalizeRelativeUrl(sChapter.url)
+            }
 
             val pages = try {
                 try {
@@ -1772,8 +1902,8 @@ class TachiyomiExtensionManager(private val context: Context) {
                 try {
                     source.fetchPageList(sChapter).toBlocking().first()
                 } catch (_: Throwable) {
-                    if (sChapter.url != chapterUrl) {
-                        val altChapter = SChapter.create().apply { this.url = chapterUrl }
+                    if (sChapter.url != chapterUrl && sChapter.url != normalizedChapterUrl) {
+                        val altChapter = SChapter.create().apply { this.url = normalizedChapterUrl }
                         try {
                             source.getPageList(altChapter)
                         } catch (_: Throwable) {
@@ -1967,7 +2097,7 @@ class TachiyomiExtensionManager(private val context: Context) {
     }
 
     private fun sChapterToMap(sChapter: SChapter): Map<String, Any?> = mapOf(
-        "url" to sChapter.url,
+        "url" to normalizeRelativeUrl(sChapter.url),
         "name" to sChapter.name,
         "date_upload" to sChapter.date_upload,
         "chapter_number" to sChapter.chapter_number,
