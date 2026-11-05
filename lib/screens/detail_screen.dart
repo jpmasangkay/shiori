@@ -204,7 +204,12 @@ class _DetailScreenState extends State<DetailScreen> {
         if (result.action == DuplicateResolutionAction.copied ||
             result.action == DuplicateResolutionAction.migrated) {
           if (mounted) {
-            setState(() => _inLibrary = true);
+            setState(() {
+              _inLibrary = true;
+              final localRead = ApiService.instance.getReadChapterIds(m.id);
+              _readChapterIds = {..._readChapterIds, ...localRead};
+              _syncResumeButton();
+            });
             final actionWord =
                 result.action == DuplicateResolutionAction.migrated ? 'Migrated' : 'Copied';
             ScaffoldMessenger.of(context).showSnackBar(

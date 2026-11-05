@@ -1787,49 +1787,72 @@ class TachiyomiExtensionManager(private val context: Context) {
             } catch (_: Throwable) {}
         }
 
-        val page = cachedPage ?: Page(0, pageUrl ?: "", targetImgUrl)
+        val isCoverOrDirect = pageUrl.isNullOrBlank() || targetImgUrl.contains("/covers/") || targetImgUrl.contains("uploads.mangadex.org")
         var lastErr: Throwable? = null
 
-        try {
-            val response = try {
-                source.getImage(page)
-            } catch (_: NoSuchMethodError) {
-                source.fetchImage(page).toBlocking().first()
-            } catch (_: AbstractMethodError) {
-                source.fetchImage(page).toBlocking().first()
-            }
-            response.use { res ->
-                if (res.isSuccessful) {
-                    val bytes = res.body?.bytes()
-                    if (bytes != null && bytes.isNotEmpty()) {
-                        return@withContext bytes
-                    }
-                } else {
-                    lastErr = IllegalStateException("HTTP ${res.code} loading image from ${source.name}")
+        if (isCoverOrDirect) {
+            try {
+                val req = try {
+                    GET(targetImgUrl, source.headers)
+                } catch (_: Throwable) {
+                    Request.Builder().url(targetImgUrl).headers(source.headers).build()
                 }
+                source.client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val bytes = res.body?.bytes()
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            return@withContext bytes
+                        }
+                    } else {
+                        lastErr = IllegalStateException("HTTP ${res.code} loading direct image from ${source.name}")
+                    }
+                }
+            } catch (e: Throwable) {
+                lastErr = e
             }
-        } catch (e: Throwable) {
-            lastErr = e
-        }
+        } else {
+            val page = cachedPage ?: Page(0, pageUrl ?: "", targetImgUrl)
+            try {
+                val response = try {
+                    source.getImage(page)
+                } catch (_: NoSuchMethodError) {
+                    source.fetchImage(page).toBlocking().first()
+                } catch (_: AbstractMethodError) {
+                    source.fetchImage(page).toBlocking().first()
+                }
+                response.use { res ->
+                    if (res.isSuccessful) {
+                        val bytes = res.body?.bytes()
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            return@withContext bytes
+                        }
+                    } else {
+                        lastErr = IllegalStateException("HTTP ${res.code} loading image from ${source.name}")
+                    }
+                }
+            } catch (e: Throwable) {
+                lastErr = e
+            }
 
-        try {
-            val req = try {
-                GET(targetImgUrl, source.headers)
-            } catch (_: Throwable) {
-                Request.Builder().url(targetImgUrl).headers(source.headers).build()
-            }
-            source.client.newCall(req).execute().use { res ->
-                if (res.isSuccessful) {
-                    val bytes = res.body?.bytes()
-                    if (bytes != null && bytes.isNotEmpty()) {
-                        return@withContext bytes
-                    }
-                } else if (lastErr == null) {
-                    lastErr = IllegalStateException("HTTP ${res.code} loading image")
+            try {
+                val req = try {
+                    GET(targetImgUrl, source.headers)
+                } catch (_: Throwable) {
+                    Request.Builder().url(targetImgUrl).headers(source.headers).build()
                 }
+                source.client.newCall(req).execute().use { res ->
+                    if (res.isSuccessful) {
+                        val bytes = res.body?.bytes()
+                        if (bytes != null && bytes.isNotEmpty()) {
+                            return@withContext bytes
+                        }
+                    } else if (lastErr == null) {
+                        lastErr = IllegalStateException("HTTP ${res.code} loading image")
+                    }
+                }
+            } catch (e: Throwable) {
+                if (lastErr == null) lastErr = e
             }
-        } catch (e: Throwable) {
-            if (lastErr == null) lastErr = e
         }
 
         throw (lastErr ?: IllegalStateException("Empty image response for $targetImgUrl"))

@@ -177,6 +177,12 @@ class ApiService extends ChangeNotifier {
     };
 
     ImageReferers.nativeLoaderProvider = (String url, String? mangaId) {
+      final uri = Uri.tryParse(url);
+      final host = uri?.host.toLowerCase() ?? '';
+      // MangaDex uploads CDN works reliably over standard HTTP with Referer
+      if (host.contains('mangadex')) {
+        return null;
+      }
       if (mangaId != null && mangaId.startsWith('ext:')) {
         final pkg = mangaId.substring(4).split(':').first;
         return (targetUrl) => ExtensionBridge.instance.fetchImageBytes(pkg: pkg, url: targetUrl);
@@ -546,6 +552,7 @@ class ApiService extends ChangeNotifier {
     List<ChapterItem> targetChapters = const [],
   }) async {
     final sourceProgress = historyRepo.localProgress[sourceMangaId];
+    final sourceReadSet = historyRepo.readChapters[sourceMangaId];
 
     var chs = targetChapters;
     if (chs.isEmpty) {
@@ -554,37 +561,66 @@ class ApiService extends ChangeNotifier {
       } catch (_) {}
     }
 
+    double? parseNum(String? raw) {
+      if (raw == null) return null;
+      final trimmed = raw.trim();
+      final direct = double.tryParse(trimmed);
+      if (direct != null) return direct;
+      final match = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(trimmed);
+      if (match != null) return double.tryParse(match.group(1)!);
+      return null;
+    }
+
+    final readChapterNumbers = <String>{};
+    double? maxReadNum;
+
+    if (sourceProgress != null) {
+      final sNum = parseNum(sourceProgress.chapterNumber);
+      if (sNum != null) maxReadNum = sNum;
+      if (sourceProgress.chapterNumber.isNotEmpty) {
+        readChapterNumbers.add(sourceProgress.chapterNumber.trim());
+      }
+    }
+
+    for (final entry in historyRepo.localHistory) {
+      if (entry.mangaId == sourceMangaId) {
+        final numStr = entry.chapterNumber.trim();
+        if (numStr.isNotEmpty) {
+          readChapterNumbers.add(numStr);
+          final parsed = parseNum(numStr);
+          if (parsed != null && (maxReadNum == null || parsed > maxReadNum)) {
+            maxReadNum = parsed;
+          }
+        }
+      }
+    }
+
+    // Inspect source manga chapters if we have sourceReadSet, to map read chapter IDs to their chapter numbers!
+    if (sourceReadSet != null && sourceReadSet.isNotEmpty) {
+      try {
+        final srcChs = await getChapters(sourceMangaId);
+        for (final sc in srcChs) {
+          if (sourceReadSet.contains(sc.id)) {
+            final scNum = sc.number?.trim() ?? '';
+            if (scNum.isNotEmpty) {
+              readChapterNumbers.add(scNum);
+              final parsed = parseNum(scNum);
+              if (parsed != null && (maxReadNum == null || parsed > maxReadNum)) {
+                maxReadNum = parsed;
+              }
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
     if (chs.isNotEmpty) {
       final targetIdsToMark = <String>[];
       ChapterItem? bestMatchedProgressChapter;
 
-      final readChapterNumbers = <String>{};
-      double? maxReadNum;
-
-      if (sourceProgress != null) {
-        final sNum = double.tryParse(sourceProgress.chapterNumber);
-        if (sNum != null) maxReadNum = sNum;
-        if (sourceProgress.chapterNumber.isNotEmpty) {
-          readChapterNumbers.add(sourceProgress.chapterNumber.trim());
-        }
-      }
-
-      for (final entry in historyRepo.localHistory) {
-        if (entry.mangaId == sourceMangaId) {
-          final numStr = entry.chapterNumber.trim();
-          if (numStr.isNotEmpty) {
-            readChapterNumbers.add(numStr);
-            final parsed = double.tryParse(numStr);
-            if (parsed != null && (maxReadNum == null || parsed > maxReadNum)) {
-              maxReadNum = parsed;
-            }
-          }
-        }
-      }
-
       for (final ch in chs) {
         final chNum = ch.number?.trim() ?? '';
-        final curNum = double.tryParse(chNum);
+        final curNum = parseNum(chNum);
 
         final isRead = (curNum != null && maxReadNum != null && curNum <= maxReadNum) ||
             (chNum.isNotEmpty && readChapterNumbers.contains(chNum));
@@ -593,26 +629,50 @@ class ApiService extends ChangeNotifier {
           targetIdsToMark.add(ch.id);
         }
 
-        if (sourceProgress != null &&
-            (chNum == sourceProgress.chapterNumber ||
-                (curNum != null &&
-                    curNum == double.tryParse(sourceProgress.chapterNumber)))) {
-          bestMatchedProgressChapter = ch;
+        if (sourceProgress != null) {
+          final targetNum = parseNum(chNum);
+          final progNum = parseNum(sourceProgress.chapterNumber);
+          if (chNum == sourceProgress.chapterNumber ||
+              (targetNum != null && progNum != null && targetNum == progNum)) {
+            bestMatchedProgressChapter = ch;
+          }
         }
+      }
+
+      if (targetIdsToMark.isEmpty && sourceReadSet != null && sourceReadSet.isNotEmpty) {
+        targetIdsToMark.addAll(sourceReadSet);
       }
 
       if (targetIdsToMark.isNotEmpty) {
         await markChaptersRead(targetManga.id, targetIdsToMark, read: true);
       }
 
-      if (bestMatchedProgressChapter != null && sourceProgress != null) {
+      if (sourceProgress != null) {
+        final targetCh = bestMatchedProgressChapter;
         await saveProgress(
           mangaId: targetManga.id,
-          chapterId: bestMatchedProgressChapter.id,
+          chapterId: targetCh?.id ?? sourceProgress.chapterId,
           mangaTitle: targetManga.title,
           cover: targetManga.cover,
-          chapterNumber: bestMatchedProgressChapter.number,
-          chapterTitle: bestMatchedProgressChapter.title,
+          chapterNumber: targetCh?.number ?? sourceProgress.chapterNumber,
+          chapterTitle: targetCh?.title ?? sourceProgress.chapterTitle,
+          page: sourceProgress.page,
+          totalPages: sourceProgress.totalPages,
+          completed: sourceProgress.completed,
+        );
+      }
+    } else {
+      if (sourceReadSet != null && sourceReadSet.isNotEmpty) {
+        await markChaptersRead(targetManga.id, sourceReadSet.toList(), read: true);
+      }
+      if (sourceProgress != null) {
+        await saveProgress(
+          mangaId: targetManga.id,
+          chapterId: sourceProgress.chapterId,
+          mangaTitle: targetManga.title,
+          cover: targetManga.cover,
+          chapterNumber: sourceProgress.chapterNumber,
+          chapterTitle: sourceProgress.chapterTitle,
           page: sourceProgress.page,
           totalPages: sourceProgress.totalPages,
           completed: sourceProgress.completed,

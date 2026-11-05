@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/manga_models.dart';
@@ -436,10 +438,7 @@ class _SelectDataToIncludeSheetWidgetState
   Future<void> _applyDataTransfer({required bool isMigrate}) async {
     setState(() => _working = true);
     try {
-      // 1. Add target manga to library
-      await ApiService.instance.addToLibrary(widget.targetManga);
-
-      // 2. Transfer categories if selected
+      // 1. Transfer categories first if selected
       if (_includeCategories) {
         final existingCats =
             ApiService.instance.getMangaCategoryIds(widget.duplicateManga.id);
@@ -451,6 +450,9 @@ class _SelectDataToIncludeSheetWidgetState
           );
         }
       }
+
+      // 2. Add target manga to library (already carrying transferred categories)
+      await ApiService.instance.addToLibrary(widget.targetManga);
 
       // 3. Transfer reading progress & read chapters if selected
       if (_includeChapters) {
@@ -464,6 +466,15 @@ class _SelectDataToIncludeSheetWidgetState
       // 4. If migrating, remove the duplicate manga from library
       if (isMigrate) {
         await ApiService.instance.removeFromLibrary(widget.duplicateManga.id);
+      }
+
+      // 5. Instantly persist changes to the cloud
+      if (ApiService.instance.isLoggedIn) {
+        try {
+          await ApiService.instance
+              .syncAllCloudData()
+              .timeout(const Duration(seconds: 4));
+        } catch (_) {}
       }
 
       if (mounted) {

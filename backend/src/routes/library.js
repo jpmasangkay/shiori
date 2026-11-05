@@ -116,7 +116,11 @@ router.put('/categories', async (req, res) => {
         ops.push({
           updateOne: {
             filter: { user: req.user.id, mangaId: cleanId },
-            update: { $set: { categories: cleanCats } },
+            update: {
+              $set: { categories: cleanCats },
+              $setOnInsert: { title: cleanId, addedAt: new Date() },
+            },
+            upsert: true,
           },
         });
       }
@@ -132,8 +136,8 @@ router.put('/categories', async (req, res) => {
   }
 });
 
-// GET /api/library/check/:mangaId
-router.get('/check/:mangaId', async (req, res) => {
+// GET /api/library/check/:mangaId(*) - Supports IDs with slashes and colons
+router.get('/check/:mangaId(*)', async (req, res) => {
   try {
     const entry = await LibraryEntry.findOne({
       user: req.user.id,

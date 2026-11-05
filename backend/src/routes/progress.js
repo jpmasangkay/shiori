@@ -135,7 +135,7 @@ router.post('/batch', async (req, res) => {
         if (typeof chId !== 'string' || !chId.trim()) continue;
         const cleanChapterId = chId.trim();
         const existing = existingByChapter.get(cleanChapterId);
-        if (existing?.completed) continue;
+        if (existing?.completed && existing?.mangaId === cleanMangaId) continue;
         ops.push({
           updateOne: {
             filter: { user: req.user.id, chapterId: cleanChapterId },

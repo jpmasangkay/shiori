@@ -366,13 +366,18 @@ class WebExtensionScraper {
         (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
         ? '${parsedUri.scheme}://${parsedUri.host}'
         : (ext?.homeUrl ?? '');
+    final targetUrl = (seriesUrl.startsWith('/') && origin.isNotEmpty)
+        ? (origin.endsWith('/')
+            ? '${origin.substring(0, origin.length - 1)}$seriesUrl'
+            : '$origin$seriesUrl')
+        : seriesUrl;
     final referer = origin.isNotEmpty
         ? (origin.endsWith('/') ? origin : '$origin/')
         : null;
 
     try {
       final res = await _getCached(
-        Uri.parse(seriesUrl),
+        Uri.parse(targetUrl),
         headers: {
           'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -490,6 +495,12 @@ class WebExtensionScraper {
         (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
         ? '${parsedUri.scheme}://${parsedUri.host}'
         : (ext?.homeUrl ?? '');
+    final targetUrl = (seriesUrl.startsWith('/') && origin.isNotEmpty)
+        ? (origin.endsWith('/')
+            ? '${origin.substring(0, origin.length - 1)}$seriesUrl'
+            : '$origin$seriesUrl')
+        : seriesUrl;
+    final targetUri = Uri.tryParse(targetUrl);
     final referer = origin.isNotEmpty
         ? (origin.endsWith('/') ? origin : '$origin/')
         : null;
@@ -515,10 +526,14 @@ class WebExtensionScraper {
           continue;
         }
         if (!chUrl.startsWith('http')) {
-          final uri = Uri.parse(seriesUrl);
+          final effectiveHost = targetUri != null &&
+                  targetUri.hasScheme &&
+                  targetUri.host.isNotEmpty
+              ? '${targetUri.scheme}://${targetUri.host}'
+              : origin;
           chUrl = chUrl.startsWith('/')
-              ? '${uri.scheme}://${uri.host}$chUrl'
-              : '${uri.scheme}://${uri.host}/$chUrl';
+              ? '$effectiveHost$chUrl'
+              : '$effectiveHost/$chUrl';
         }
         if (!seen.add(chUrl)) continue;
         final numMatch =
@@ -548,7 +563,7 @@ class WebExtensionScraper {
 
     try {
       final res = await _getCached(
-        Uri.parse(seriesUrl),
+        Uri.parse(targetUrl),
         headers: {
           'User-Agent':
               'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -600,6 +615,11 @@ class WebExtensionScraper {
         (parsedUri != null && parsedUri.hasScheme && parsedUri.host.isNotEmpty)
         ? '${parsedUri.scheme}://${parsedUri.host}'
         : (ext?.homeUrl ?? '');
+    final targetChapterUrl = (chapterUrl.startsWith('/') && origin.isNotEmpty)
+        ? (origin.endsWith('/')
+            ? '${origin.substring(0, origin.length - 1)}$chapterUrl'
+            : '$origin$chapterUrl')
+        : chapterUrl;
     final referer = origin.isNotEmpty
         ? (origin.endsWith('/') ? origin : '$origin/')
         : null;
@@ -607,7 +627,7 @@ class WebExtensionScraper {
     try {
       final res = await _client
           .get(
-            Uri.parse(chapterUrl),
+            Uri.parse(targetChapterUrl),
             headers: {
               'User-Agent':
                   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',

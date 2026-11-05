@@ -520,10 +520,8 @@ class LibraryRepository extends ChangeNotifier {
             if (cats is List) {
               if (_deletedMangaIds.contains(mangaId)) return;
               final catList = cats.map((e) => e.toString()).toList();
-              // Only adopt cloud categories if local device has no record yet for this manga
-              if (!_mangaCategories.containsKey(mangaId)) {
-                _mangaCategories[mangaId] = catList;
-              }
+              final existing = _mangaCategories[mangaId] ?? <String>[];
+              _mangaCategories[mangaId] = {...existing, ...catList}.toList();
             }
           });
           await _persistMangaCategories();
