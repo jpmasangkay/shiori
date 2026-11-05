@@ -329,8 +329,12 @@ class TachiyomiExtensionManager(private val context: Context) {
             val libVersion = parseLibVersion(versionName)
             val compatible = isLibVersionCompatible(libVersion)
             val lang = deriveLangFromPkg(pkgName)
-            val nsfw = (meta?.getInt(METADATA_NSFW, 0) ?: 0) == 1 ||
-                meta?.getString(METADATA_NSFW) == "1"
+            val nsfw = when (val raw = meta?.get(METADATA_NSFW)) {
+                is Int -> raw == 1
+                is String -> raw == "1"
+                is Boolean -> raw
+                else -> false
+            }
 
             val cacheKey = "$pkgName:$versionCode"
             val iconBytes = iconCache[cacheKey] ?: try {
