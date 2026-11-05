@@ -13,6 +13,9 @@ import updatesRouter from './routes/updates.js';
 
 const app = express();
 
+// Trust reverse proxy (e.g. Render, Heroku) so express-rate-limit can accurately detect client IP
+app.set('trust proxy', 1);
+
 // Security and standard middlewares
 app.use(
   helmet({
