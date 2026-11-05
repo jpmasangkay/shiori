@@ -341,7 +341,16 @@ class _HistoryScreenState extends State<HistoryScreen> {
 
   Widget _buildHistoryRow(ReadHistoryEntry item) {
     final mangaId = item.mangaId;
-    final title = item.mangaTitle.isNotEmpty ? item.mangaTitle : 'Untitled';
+    final known = ApiService.instance.libraryRepo.knownManga[mangaId] ??
+        ApiService.instance.libraryRepo.localLibrary[mangaId];
+    String title = item.mangaTitle;
+    if (title.isEmpty || title == 'Untitled' || title.startsWith('ext:') || title == mangaId) {
+      if (known != null && known.displayTitle.isNotEmpty && known.displayTitle != 'Untitled') {
+        title = known.displayTitle;
+      } else {
+        title = MangaItem.cleanTitleFromIdOrSlug(mangaId.isNotEmpty ? mangaId : title);
+      }
+    }
     final cover = item.cover;
     final chNum = item.chapterNumber;
     final page = item.page;

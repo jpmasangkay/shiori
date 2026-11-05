@@ -137,16 +137,12 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      // Total target source queries for ALL must be 5 (from MangaDex subSources) + 1 (from Asura) = 6
+      // Deduplicates multi-language sub-sources for the same site to avoid duplicate search queries: MangaDex (EN @1) + Asura = 2
       expect(find.byType(BrowseScreen), findsOneWidget);
       final browseState = tester.state(find.byType(BrowseScreen)) as dynamic;
       final targetSources = browseState.resolveTargetSourceIdsForTesting() as List<String>;
-      expect(targetSources.length, 6);
+      expect(targetSources.length, 2);
       expect(targetSources, contains('eu.kanade.tachiyomi.extension.all.mangadex@1'));
-      expect(targetSources, contains('eu.kanade.tachiyomi.extension.all.mangadex@2'));
-      expect(targetSources, contains('eu.kanade.tachiyomi.extension.all.mangadex@3'));
-      expect(targetSources, contains('eu.kanade.tachiyomi.extension.all.mangadex@4'));
-      expect(targetSources, contains('eu.kanade.tachiyomi.extension.all.mangadex@5'));
       expect(targetSources, contains('eu.kanade.tachiyomi.extension.en.asura'));
     });
   });

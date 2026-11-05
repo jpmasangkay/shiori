@@ -200,6 +200,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
     return (n != null && n.isNotEmpty) ? 'Chapter $n' : (c.title.isNotEmpty ? c.title : 'Chapter');
   }
 
+  String get _effectiveMangaTitle {
+    final t = widget.mangaTitle.trim();
+    if (t.isNotEmpty && t != 'Untitled' && !t.startsWith('ext:') && t != widget.mangaId) {
+      return t;
+    }
+    final known = ApiService.instance.libraryRepo.knownManga[widget.mangaId] ??
+        ApiService.instance.libraryRepo.localLibrary[widget.mangaId];
+    if (known != null && known.displayTitle.isNotEmpty && known.displayTitle != 'Untitled') {
+      return known.displayTitle;
+    }
+    return MangaItem.cleanTitleFromIdOrSlug(widget.mangaId.isNotEmpty ? widget.mangaId : t);
+  }
+
   bool get _hasNextChapter => _currentChapterIndex + 1 < _chapters.length;
   bool get _hasPrevChapter => _currentChapterIndex - 1 >= 0;
 
@@ -613,7 +626,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       ApiService.instance.saveProgress(
         mangaId: widget.mangaId,
         chapterId: chapter.id,
-        mangaTitle: widget.mangaTitle,
+        mangaTitle: _effectiveMangaTitle,
         cover: widget.coverUrl,
         chapterNumber: chapter.number,
         chapterTitle: chapter.title,
@@ -643,7 +656,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ApiService.instance.saveProgress(
       mangaId: widget.mangaId,
       chapterId: chapter.id,
-      mangaTitle: widget.mangaTitle,
+      mangaTitle: _effectiveMangaTitle,
       cover: widget.coverUrl,
       chapterNumber: chapter.number,
       chapterTitle: chapter.title,
@@ -663,7 +676,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ApiService.instance.markChapterRead(widget.mangaId, finished.id, read: true);
     // Auto sync reading progress to AniList Tracker
     TrackerService.instance.onChapterFinished(
-      mangaTitle: widget.mangaTitle,
+      mangaTitle: _effectiveMangaTitle,
       chapterNumber: finished.number,
       mangaId: widget.mangaId,
     );
@@ -1585,7 +1598,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  widget.mangaTitle,
+                  _effectiveMangaTitle,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: AppText.bodyMedium,

@@ -680,7 +680,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    manga.title,
+                                    manga.displayTitle,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: AppText.cardTitle,
@@ -1126,7 +1126,7 @@ class _LibraryScreenState extends State<LibraryScreen>
         final unread = ApiService.instance.getUnreadCount(manga.id);
         return RepaintBoundary(
           child: CoverCard(
-            title: manga.title,
+            title: manga.displayTitle,
             imageUrl: manga.cover,
             mangaId: manga.id,
             mode: s.mode,
@@ -1183,7 +1183,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          manga.title,
+                          manga.displayTitle,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: AppText.bodyMedium,

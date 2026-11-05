@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'extension_bridge.dart';
 import 'source_manager.dart';
+import 'source_resolver.dart';
 
 class ExtensionSource {
   final String id;
@@ -451,6 +452,7 @@ class ExtensionService extends ChangeNotifier {
   static final ExtensionService instance = ExtensionService._();
   ExtensionService._() {
     _setupMethodCallListener();
+    SourceResolver.extensionNameLookup = (pkg) => getExtensionByPkg(pkg)?.name;
     _init();
   }
 

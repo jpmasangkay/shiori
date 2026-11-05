@@ -7,6 +7,7 @@ import '../services/api_service.dart';
 import '../services/download_service.dart';
 import '../services/extension_bridge.dart';
 import '../services/extension_service.dart';
+import '../services/source_resolver.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/duplicate_migration_sheet.dart';
@@ -103,6 +104,155 @@ class _DetailScreenState extends State<DetailScreen> {
     return sorted;
   }
 
+  int get _totalMissingChaptersCount {
+    if (_apiChapters.isEmpty) return 0;
+    final gaps = _calculateMissingGaps(_apiChapters);
+    int total = 0;
+    for (final g in gaps) {
+      total += g.count;
+    }
+    return total;
+  }
+
+  static List<MissingChapterGap> _calculateMissingGaps(List<ChapterItem> chapters) {
+    final numbers = <double>{};
+    for (final c in chapters) {
+      final parsed = double.tryParse(c.number ?? '');
+      if (parsed != null && parsed > 0) {
+        numbers.add(parsed);
+      }
+    }
+    final sortedNums = numbers.toList()..sort();
+    if (sortedNums.isEmpty) return const [];
+
+    final gaps = <MissingChapterGap>[];
+    if (sortedNums.first >= 2.0) {
+      final from = 1.0;
+      final to = (sortedNums.first - 1).floorToDouble();
+      if (from <= to) {
+        gaps.add(MissingChapterGap(
+          fromChapter: from,
+          toChapter: to,
+          count: (to - from + 1).toInt(),
+        ));
+      }
+    }
+
+    for (int i = 0; i < sortedNums.length - 1; i++) {
+      final curr = sortedNums[i];
+      final next = sortedNums[i + 1];
+      if (next - curr >= 2.0) {
+        final from = (curr.floor() + 1).toDouble();
+        final to = (next.ceil() - 1).toDouble();
+        if (from <= to) {
+          gaps.add(MissingChapterGap(
+            fromChapter: from,
+            toChapter: to,
+            count: (to - from + 1).toInt(),
+          ));
+        }
+      }
+    }
+    return gaps;
+  }
+
+  List<_ChapterListItem> _buildDisplayedChapterItems() {
+    final chapters = _filteredChapters;
+    if (chapters.isEmpty) return const [];
+
+    // Only inject gap warnings when viewing all chapters without filters
+    if (_filterDownloaded || _filterUnread || _filterBookmarked) {
+      return chapters.map<_ChapterListItem>((c) => _ChapterEntry(c)).toList();
+    }
+
+    final items = <_ChapterListItem>[];
+    for (int i = 0; i < chapters.length; i++) {
+      final c = chapters[i];
+      items.add(_ChapterEntry(c));
+
+      final nextChapter = (i + 1 < chapters.length) ? chapters[i + 1] : null;
+      if (nextChapter != null) {
+        final numA = double.tryParse(c.number ?? '');
+        final numB = double.tryParse(nextChapter.number ?? '');
+        if (numA != null && numB != null) {
+          final higher = numA > numB ? numA : numB;
+          final lower = numA > numB ? numB : numA;
+          if (higher - lower >= 2.0) {
+            final from = (lower.floor() + 1).toDouble();
+            final to = (higher.ceil() - 1).toDouble();
+            if (from <= to) {
+              items.add(_MissingGapEntry(MissingChapterGap(
+                fromChapter: from,
+                toChapter: to,
+                count: (to - from + 1).toInt(),
+              )));
+            }
+          }
+        }
+      } else {
+        // End of list: check if beginning chapters are missing
+        final numC = double.tryParse(c.number ?? '');
+        if (numC != null && _descending && numC >= 2.0) {
+          final from = 1.0;
+          final to = (numC.floor() - 1).toDouble();
+          if (from <= to) {
+            items.add(_MissingGapEntry(MissingChapterGap(
+              fromChapter: from,
+              toChapter: to,
+              count: (to - from + 1).toInt(),
+            )));
+          }
+        }
+      }
+    }
+
+    // If ascending, check beginning gap before index 0
+    if (!_descending && chapters.isNotEmpty) {
+      final firstNum = double.tryParse(chapters.first.number ?? '');
+      if (firstNum != null && firstNum >= 2.0) {
+        final from = 1.0;
+        final to = (firstNum.floor() - 1).toDouble();
+        if (from <= to) {
+          items.insert(0, _MissingGapEntry(MissingChapterGap(
+            fromChapter: from,
+            toChapter: to,
+            count: (to - from + 1).toInt(),
+          )));
+        }
+      }
+    }
+
+    return items;
+  }
+
+  Widget _buildMissingChapterWarning(MissingChapterGap gap) {
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: Colors.amber.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.amber.withValues(alpha: 0.35), width: 0.8),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: Colors.amber, size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              gap.label,
+              style: AppText.caption.copyWith(
+                color: Colors.amber.shade200,
+                fontWeight: FontWeight.w600,
+                fontSize: 11.5,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _loadChapterFilters() async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -182,9 +332,11 @@ class _DetailScreenState extends State<DetailScreen> {
   MangaItem _mergeManga(MangaItem base, MangaItem incoming) {
     return MangaItem(
       id: incoming.id.isNotEmpty ? incoming.id : base.id,
-      title: (incoming.title.isNotEmpty && incoming.title != 'Untitled')
+      title: (incoming.title.isNotEmpty && incoming.title != 'Untitled' && !incoming.title.startsWith('ext:'))
           ? incoming.title
-          : base.title,
+          : (base.title.isNotEmpty && base.title != 'Untitled' && !base.title.startsWith('ext:')
+              ? base.title
+              : MangaItem.cleanTitleFromIdOrSlug(incoming.id.isNotEmpty ? incoming.id : base.id)),
       description: incoming.description.isNotEmpty ? incoming.description : base.description,
       status: incoming.status.isNotEmpty ? incoming.status : base.status,
       year: incoming.year ?? base.year,
@@ -902,11 +1054,15 @@ class _DetailScreenState extends State<DetailScreen> {
           else
             Builder(
               builder: (context) {
-                final chaptersList = _filteredChapters;
+                final displayItems = _buildDisplayedChapterItems();
                 return SliverList.builder(
-                  itemCount: chaptersList.length,
+                  itemCount: displayItems.length,
                   itemBuilder: (_, i) {
-                    final c = chaptersList[i];
+                    final item = displayItems[i];
+                    if (item is _MissingGapEntry) {
+                      return _buildMissingChapterWarning(item.gap);
+                    }
+                    final c = (item as _ChapterEntry).chapter;
                     final isRead = _readChapterIds.contains(c.id);
                     final isBookmarked = ApiService.instance.isChapterBookmarked(c.id);
                     final downloadStatus = DownloadService.instance.getStatus(c.id);
@@ -1055,7 +1211,7 @@ class _DetailScreenState extends State<DetailScreen> {
       final parts = rawSpec.split(':');
       final pkgId = parts.length > 1 ? parts[1] : 'extension';
       final ext = ExtensionService.instance.getExtensionByPkg(pkgId);
-      String resolvedName = ext?.name ?? pkgId;
+      String resolvedName = ext?.name ?? SourceResolver.displayName(pkgId);
       if (pkgId.contains('@') && ext != null && ext.subSources.isNotEmpty) {
         final sel = pkgId.split('@').sublist(1).join('@').toUpperCase();
         final matchSub = ext.subSources.where((sub) =>
@@ -1148,7 +1304,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       ),
                       const SizedBox(height: 6),
                       Text(
-                        m.title,
+                        m.displayTitle,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: AppText.title.copyWith(fontSize: 18, height: 1.2),
@@ -1767,6 +1923,28 @@ class _DetailScreenState extends State<DetailScreen> {
                           ),
                         ),
                       ],
+                      if (_totalMissingChaptersCount > 0) ...[
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.amber.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: Colors.amber.withValues(alpha: 0.4), width: 0.8),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.warning_amber_rounded, size: 12, color: Colors.amber),
+                              const SizedBox(width: 3),
+                              Text(
+                                '$_totalMissingChaptersCount missing',
+                                style: AppText.badge.copyWith(color: Colors.amber.shade200),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ],
                   ),
           ),
@@ -2091,5 +2269,39 @@ class _ResumeFab extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+
+abstract class _ChapterListItem {}
+
+class _ChapterEntry extends _ChapterListItem {
+  final ChapterItem chapter;
+  _ChapterEntry(this.chapter);
+}
+
+class _MissingGapEntry extends _ChapterListItem {
+  final MissingChapterGap gap;
+  _MissingGapEntry(this.gap);
+}
+
+class MissingChapterGap {
+  final double fromChapter;
+  final double toChapter;
+  final int count;
+
+  const MissingChapterGap({
+    required this.fromChapter,
+    required this.toChapter,
+    required this.count,
+  });
+
+  String get label {
+    String formatNum(double n) =>
+        (n == n.roundToDouble()) ? n.toInt().toString() : n.toString();
+    if (fromChapter == toChapter) {
+      return 'Missing Chapter ${formatNum(fromChapter)}';
+    }
+    return 'Missing Chapters ${formatNum(fromChapter)} - ${formatNum(toChapter)} ($count chapters)';
   }
 }

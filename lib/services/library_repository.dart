@@ -270,7 +270,11 @@ class LibraryRepository extends ChangeNotifier {
     if (libExisting != null) {
       final merged = MangaItem(
         id: updated.id,
-        title: updated.title.isNotEmpty ? updated.title : libExisting.title,
+        title: (updated.title.isNotEmpty && updated.title != 'Untitled' && !updated.title.startsWith('ext:'))
+            ? updated.title
+            : (libExisting.title.isNotEmpty && !libExisting.title.startsWith('ext:') && libExisting.title != 'Untitled'
+                ? libExisting.title
+                : MangaItem.cleanTitleFromIdOrSlug(updated.id)),
         description: updated.description.isNotEmpty ? updated.description : libExisting.description,
         cover: updated.cover.isNotEmpty ? updated.cover : libExisting.cover,
         authors: updated.authors.isNotEmpty ? updated.authors : libExisting.authors,
@@ -286,7 +290,8 @@ class LibraryRepository extends ChangeNotifier {
       _knownManga[updated.id] = merged;
       if (merged.cover != libExisting.cover ||
           merged.status != libExisting.status ||
-          merged.lastChapter != libExisting.lastChapter) {
+          merged.lastChapter != libExisting.lastChapter ||
+          merged.title != libExisting.title) {
         _localLibrary[updated.id] = merged;
         await _persistLocalLibrary();
         changed = true;
@@ -402,7 +407,7 @@ class LibraryRepository extends ChangeNotifier {
         _knownManga[mangaId] ??
         MangaItem(
           id: mangaId,
-          title: mangaId,
+          title: MangaItem.cleanTitleFromIdOrSlug(mangaId),
           source: SourceResolver.resolve(mangaId),
         );
     await addToLibrary(resolved);
@@ -644,7 +649,16 @@ class LibraryRepository extends ChangeNotifier {
 
           final m = MangaItem(
             id: id,
-            title: e['title']?.toString() ?? 'Untitled',
+            title: () {
+              final rawT = e['title']?.toString() ?? '';
+              if (rawT.isNotEmpty && rawT != 'Untitled' && !rawT.startsWith('ext:') && rawT != id) {
+                return rawT;
+              }
+              if (existing != null && existing.displayTitle.isNotEmpty && existing.displayTitle != 'Untitled') {
+                return existing.displayTitle;
+              }
+              return MangaItem.cleanTitleFromIdOrSlug(id.isNotEmpty ? id : rawT);
+            }(),
             cover: effectiveCover,
             type: e['type']?.toString() ?? 'manga',
             status: e['status']?.toString() ?? '',

@@ -74,6 +74,7 @@ class _PossibleDuplicatesSheetWidget extends StatefulWidget {
 class _PossibleDuplicatesSheetWidgetState
     extends State<_PossibleDuplicatesSheetWidget> {
   final Map<String, int> _counts = {};
+  bool _working = false;
 
   @override
   void initState() {
@@ -117,6 +118,71 @@ class _PossibleDuplicatesSheetWidgetState
     }
   }
 
+  Future<void> _applyDirectTransfer({
+    required MangaItem duplicateManga,
+    required bool isMigrate,
+    bool includeChapters = true,
+    bool includeCategories = true,
+  }) async {
+    setState(() => _working = true);
+    try {
+      if (includeCategories) {
+        final existingCats =
+            ApiService.instance.getMangaCategoryIds(duplicateManga.id);
+        if (existingCats.isNotEmpty) {
+          await ApiService.instance.setMangaCategories(
+            widget.targetManga.id,
+            existingCats,
+            manga: widget.targetManga,
+          );
+        }
+      }
+
+      await ApiService.instance.addToLibrary(widget.targetManga);
+
+      if (includeChapters) {
+        await ApiService.instance.migrateOrCopyReadingProgress(
+          sourceMangaId: duplicateManga.id,
+          targetManga: widget.targetManga,
+          targetChapters: widget.targetChapters,
+        );
+      }
+
+      if (isMigrate) {
+        await ApiService.instance.removeFromLibrary(duplicateManga.id);
+      }
+
+      if (ApiService.instance.isLoggedIn) {
+        try {
+          await ApiService.instance
+              .syncAllCloudData()
+              .timeout(const Duration(seconds: 4));
+        } catch (_) {}
+      }
+
+      if (mounted) {
+        Navigator.of(context).pop(
+          DuplicateResolutionResult(
+            action: isMigrate
+                ? DuplicateResolutionAction.migrated
+                : DuplicateResolutionAction.copied,
+            targetManga: widget.targetManga,
+            duplicateManga: duplicateManga,
+            includeChapters: includeChapters,
+            includeCategories: includeCategories,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _working = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Operation failed: $e')),
+        );
+      }
+    }
+    }
+
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -158,7 +224,7 @@ class _PossibleDuplicatesSheetWidgetState
             ),
             const SizedBox(height: 20),
             SizedBox(
-              height: 320,
+              height: 380,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 clipBehavior: Clip.none,
@@ -181,7 +247,7 @@ class _PossibleDuplicatesSheetWidgetState
                       onTap: () => _onSelectDuplicate(dup),
                       borderRadius: BorderRadius.circular(16),
                       child: Container(
-                        width: 175,
+                        width: 185,
                         decoration: BoxDecoration(
                           color: const Color(0xFF24242A),
                           borderRadius: BorderRadius.circular(16),
@@ -239,7 +305,7 @@ class _PossibleDuplicatesSheetWidgetState
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    dup.title,
+                                    dup.displayTitle,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
@@ -306,6 +372,46 @@ class _PossibleDuplicatesSheetWidgetState
                                     ),
                                   ),
                                 ],
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(10, 2, 10, 10),
+                              child: SizedBox(
+                                height: 36,
+                                width: double.infinity,
+                                child: FilledButton.icon(
+                                  onPressed: _working
+                                      ? null
+                                      : () => _applyDirectTransfer(
+                                            duplicateManga: dup,
+                                            isMigrate: true,
+                                          ),
+                                  icon: _working
+                                      ? const SizedBox(
+                                          width: 14,
+                                          height: 14,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
+                                            color: Colors.white,
+                                          ),
+                                        )
+                                      : const Icon(Icons.swap_horiz_rounded, size: 16),
+                                  label: const Text(
+                                    'Migrate',
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                  style: FilledButton.styleFrom(
+                                    backgroundColor: AppColors.primary,
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(10),
+                                    ),
+                                  ),
+                                ),
                               ),
                             ),
                           ],

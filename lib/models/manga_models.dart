@@ -35,9 +35,16 @@ class MangaItem {
         !cover.contains('.256.jpg')) {
       cover = '.512.jpg';
     }
+    final rawTitle = json['title'] as String? ?? '';
+    final title = (rawTitle.isNotEmpty &&
+            rawTitle != 'Untitled' &&
+            !rawTitle.startsWith('ext:') &&
+            rawTitle != id)
+        ? rawTitle
+        : cleanTitleFromIdOrSlug(id.isNotEmpty ? id : rawTitle);
     return MangaItem(
       id: id,
-      title: json['title'] as String? ?? 'Untitled',
+      title: title,
       description: json['description'] as String? ?? '',
       cover: cover,
       authors: (json['authors'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? const [],
@@ -90,6 +97,61 @@ class MangaItem {
       lastChapter: lastChapter ?? this.lastChapter,
       source: source ?? this.source,
     );
+  }
+
+  /// Returns a clean display title, healing any corrupted IDs or "Untitled" placeholders.
+  String get displayTitle {
+    final t = title.trim();
+    if (t.isNotEmpty && t != 'Untitled' && !t.startsWith('ext:') && t != id) {
+      return t;
+    }
+    return cleanTitleFromIdOrSlug(id.isNotEmpty ? id : t);
+  }
+
+  /// Safely extracts a clean human-readable title from an ID, URL, or slug
+  static String cleanTitleFromIdOrSlug(String idOrTitle) {
+    if (idOrTitle.isEmpty) return 'Untitled';
+    var raw = idOrTitle.trim();
+    if (raw.startsWith('ext:')) {
+      final parts = raw.split(':');
+      if (parts.length > 2) {
+        raw = parts.sublist(2).join(':');
+      } else if (parts.length == 2) {
+        raw = parts[1];
+      }
+    } else if (raw.contains(':') && !raw.startsWith('http://') && !raw.startsWith('https://')) {
+      final parts = raw.split(':');
+      if (parts.length > 1 && parts.last.isNotEmpty) {
+        raw = parts.last;
+      }
+    }
+
+    try {
+      raw = Uri.decodeComponent(raw).trim();
+    } catch (_) {}
+
+    if (raw.contains('/')) {
+      final segments = raw.split('/').where((s) => s.trim().isNotEmpty).toList();
+      if (segments.isNotEmpty) {
+        if (segments.length > 1 &&
+            (segments.first == 'comic' || segments.first == 'manga' || segments.first == 'series')) {
+          raw = segments[1];
+        } else {
+          raw = segments.last;
+        }
+      }
+    }
+
+    raw = raw.split('?').first.split('#').first;
+    raw = raw.replaceAll(RegExp(r'[-_]+'), ' ').trim();
+    if (raw.isEmpty) return 'Untitled';
+
+    final words = raw.split(RegExp(r'\s+'));
+    return words.map((w) {
+      if (w.isEmpty) return '';
+      if (w.length == 1) return w.toUpperCase();
+      return w[0].toUpperCase() + w.substring(1).toLowerCase();
+    }).join(' ');
   }
 }
 

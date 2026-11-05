@@ -7,6 +7,7 @@ import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/extension_service.dart';
 import '../services/source_manager.dart';
+import '../services/source_resolver.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/skeleton.dart';
@@ -103,13 +104,33 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       final targets = <String>[];
       for (final ext in _extService.installedExtensions) {
         if (ext.subSources.isNotEmpty) {
-          for (final sub in ext.subSources) {
-            final subId = (sub['id'] ?? '').trim();
-            final subName = (sub['name'] ?? '').trim();
-            if (subId.isNotEmpty) {
-              targets.add('${ext.pkg}@$subId');
-            } else if (subName.isNotEmpty) {
-              targets.add('${ext.pkg}@$subName');
+          final allSubsSameName = ext.subSources.every((s) {
+            final sName = (s['name'] ?? '').trim().toLowerCase();
+            final eName = ext.name.trim().toLowerCase();
+            return sName == eName ||
+                sName.isEmpty ||
+                DuplicateDetector.normalize(sName) == DuplicateDetector.normalize(eName);
+          });
+
+          if (allSubsSameName) {
+            final enSub = ext.subSources.where((s) => (s['lang'] ?? '').toUpperCase() == 'EN').firstOrNull;
+            if (enSub != null && (enSub['id'] ?? '').trim().isNotEmpty) {
+              targets.add('${ext.pkg}@${(enSub['id'] ?? '').trim()}');
+            } else {
+              targets.add(ext.pkg);
+            }
+          } else {
+            final seenNames = <String>{};
+            for (final sub in ext.subSources) {
+              final subId = (sub['id'] ?? '').trim();
+              final subName = (sub['name'] ?? '').trim();
+              if (seenNames.add(subName.toLowerCase())) {
+                if (subId.isNotEmpty) {
+                  targets.add('${ext.pkg}@$subId');
+                } else if (subName.isNotEmpty) {
+                  targets.add('${ext.pkg}@$subName');
+                }
+              }
             }
           }
         } else {
@@ -653,8 +674,41 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     );
   }
 
+  String _resolveSourceName(String sourceId) {
+    final ds = _sourceManager.getDirectSource(sourceId) ??
+        SourceManager.allDirectSources.where((s) => s.id == sourceId).firstOrNull;
+    final ext = _extService.getExtensionByPkg(sourceId);
+    String sourceName = ds?.name ?? ext?.name ?? SourceResolver.displayName(sourceId);
+    if (sourceId.contains('@') && ext != null && ext.subSources.isNotEmpty) {
+      final subSelector = sourceId.split('@').last.toLowerCase();
+      final matchSub = ext.subSources.where((s) =>
+        (s['id'] ?? '').toLowerCase() == subSelector ||
+        (s['name'] ?? '').toLowerCase() == subSelector
+      ).firstOrNull;
+      if (matchSub != null && (matchSub['name'] ?? '').isNotEmpty) {
+        final subName = matchSub['name']!.trim();
+        if (subName.toLowerCase() != ext.name.toLowerCase()) {
+          sourceName = '${ext.name} ($subName)';
+        } else if ((matchSub['lang'] ?? '').isNotEmpty && matchSub['lang']!.toUpperCase() != 'ALL') {
+          sourceName = '${ext.name} (${matchSub['lang']!.toUpperCase()})';
+        } else {
+          sourceName = ext.name;
+        }
+      }
+    }
+    return sourceName;
+  }
+
   Widget _buildSearchResults() {
-    final entriesWithResults = _searchResults.entries.where((e) => e.value.isNotEmpty).toList();
+    final entriesWithResults = <MapEntry<String, List<MangaItem>>>[];
+    final seenDisplayNames = <String>{};
+    for (final e in _searchResults.entries) {
+      if (e.value.isEmpty) continue;
+      final name = _resolveSourceName(e.key).toLowerCase();
+      if (seenDisplayNames.add(name)) {
+        entriesWithResults.add(e);
+      }
+    }
     final stillSearching = _searching || _pendingSourcesCount > 0;
 
     if (entriesWithResults.isEmpty && stillSearching) {
@@ -792,18 +846,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   }) {
     final ds = _sourceManager.getDirectSource(sourceId) ??
         SourceManager.allDirectSources.where((s) => s.id == sourceId).firstOrNull;
-    final ext = _extService.getExtensionByPkg(sourceId);
-    String sourceName = ds?.name ?? ext?.name ?? sourceId;
-    if (sourceId.contains('@') && ext != null && ext.subSources.isNotEmpty) {
-      final subSelector = sourceId.split('@').last.toLowerCase();
-      final matchSub = ext.subSources.where((s) =>
-        (s['id'] ?? '').toLowerCase() == subSelector ||
-        (s['name'] ?? '').toLowerCase() == subSelector
-      ).firstOrNull;
-      if (matchSub != null && (matchSub['name'] ?? '').isNotEmpty) {
-        sourceName = '${ext.name} (${matchSub['name']})';
-      }
-    }
+    final sourceName = _resolveSourceName(sourceId);
     final badgeColor = ds != null ? Color(ds.colorValue) : const Color(0xFF10B981);
 
     return Column(
@@ -883,7 +926,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        manga.title,
+                        manga.displayTitle,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: AppText.caption.copyWith(
