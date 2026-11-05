@@ -339,7 +339,7 @@ void main() {
       expect(calls[2]['read'], isFalse);
     });
 
-    test('syncCategoriesWithCloud downloads and preserves cloud custom categories', () async {
+    test('syncCategoriesWithCloud adopts cloud categories as single source of truth without resurrecting premade', () async {
       var uploadedCategories = <dynamic>[];
 
       ApiService.instance.setMockClient(
@@ -349,8 +349,7 @@ void main() {
               return http.Response(
                 jsonEncode({
                   'categories': [
-                    {'id': 'reading', 'name': 'Reading', 'order': 0},
-                    {'id': 'cat_cloud_custom', 'name': 'Sci-Fi Cloud', 'order': 1},
+                    {'id': 'cat_cloud_custom', 'name': 'Sci-Fi Cloud', 'order': 0},
                   ],
                   'mangaCategories': {
                     'manga_1': ['cat_cloud_custom'],
@@ -379,9 +378,6 @@ void main() {
         ),
       );
 
-      // Create a local custom category
-      await ApiService.instance.addCategory('Local Shonen');
-
       // Sync categories with cloud
       await ApiService.instance.libraryRepo.syncCategoriesWithCloud(
         ApiService.instance.httpManager.client,
@@ -392,15 +388,18 @@ void main() {
       final currentCats = ApiService.instance.getCategories();
       final catNames = currentCats.map((c) => c.name).toSet();
 
-      // Cloud category must be merged
-      expect(catNames, contains('Sci-Fi Cloud'));
-      // Local category must be preserved
-      expect(catNames, contains('Local Shonen'));
+      // Cloud categories are the ONLY categories (premade reading, completed, etc. are gone!)
+      expect(catNames, equals({'Sci-Fi Cloud'}));
+      expect(catNames, isNot(contains('Reading')));
+      expect(catNames, isNot(contains('Completed')));
 
-      // Both must have been uploaded to cloud
-      final uploadedNames = uploadedCategories.map((c) => (c as Map)['name']).toSet();
-      expect(uploadedNames, contains('Sci-Fi Cloud'));
-      expect(uploadedNames, contains('Local Shonen'));
+      // Manga assignment reflects synced category
+      expect(ApiService.instance.getMangaCategoryIds('manga_1'), equals(['cat_cloud_custom']));
+
+      // Deleting category cleans up manga assignment dynamically
+      await ApiService.instance.deleteCategory('cat_cloud_custom');
+      expect(ApiService.instance.getCategories(), isEmpty);
+      expect(ApiService.instance.getMangaCategoryIds('manga_1'), isEmpty);
     });
 
     test('downloadLibraryBookmarks does not overwrite valid covers with empty string or file URI', () async {

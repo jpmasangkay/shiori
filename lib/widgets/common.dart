@@ -353,12 +353,12 @@ Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
 
   String referer = 'https://$host/';
   if (host.contains('comick') || host.contains('meo')) {
-    referer = 'https://comick.art/';
+    referer = 'https://comick.io/';
   } else if (host.contains('mangadex')) {
     referer = 'https://mangadex.org/';
-  } else if (host.contains('asurascans')) {
-    referer = 'https://asurascans.com/';
-  } else if (host.contains('asura')) {
+  } else if (host.contains('mangafire')) {
+    referer = 'https://mangafire.to/';
+  } else if (host.contains('asurascans') || host.contains('asura')) {
     referer = 'https://asuracomic.net/';
   } else if (host.contains('flame')) {
     referer = 'https://flamecomics.xyz/';
@@ -372,10 +372,16 @@ Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
     referer = 'https://www.webtoons.com/';
   } else if (host.contains('bato') ||
       host.contains('battwo') ||
-      host.contains('batotoo')) {
-    referer = 'https://bato.to/';
+      host.contains('batotoo') ||
+      host.contains('batcache') ||
+      host.contains('mangatoto')) {
+    referer = 'https://mangatoto.com/';
   } else if (host.contains('mangapark')) {
     referer = 'https://mangapark.net/';
+  } else if (host.contains('tcbscans') || host.contains('onepiecechapters')) {
+    referer = 'https://tcbscans.me/';
+  } else if (host.contains('reaperscans')) {
+    referer = 'https://reaperscans.com/';
   } else if (host.contains('fanfox') || host.contains('mangafox') || host.contains('mfcdn')) {
     referer = 'https://fanfox.net/';
   } else if (host.contains('readdetectiveconan') ||
@@ -387,8 +393,18 @@ Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
     referer = 'https://www.mangaread.org/';
   } else if (host.contains('manganato') || host.contains('chapmanganato')) {
     referer = 'https://chapmanganato.to/';
-  } else if (host.contains('mangakakalot')) {
+  } else if (host.contains('mangakakalot') || host.contains('mkklcdn')) {
     referer = 'https://mangakakalot.com/';
+  } else if (host.contains('manhuaus')) {
+    referer = 'https://manhuaus.com/';
+  } else if (host.contains('mangaclash') || host.contains('mmclash')) {
+    referer = 'https://mangaclash.com/';
+  } else if (host.contains('readm')) {
+    referer = 'https://readm.org/';
+  } else if (host.contains('1stkiss') || host.contains('firstkiss')) {
+    referer = 'https://1stkissmanga.me/';
+  } else if (host.contains('novelcool')) {
+    referer = 'https://www.novelcool.com/';
   } else if (host.contains('mpcdn') ||
       host.contains('kakacdn') ||
       host.contains('natocdn') ||
@@ -406,6 +422,38 @@ Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
       referer = 'https://asuracomic.net/';
     } else if (pkg.contains('flame')) {
       referer = 'https://flamecomics.xyz/';
+    } else if (pkg.contains('mangafire')) {
+      referer = 'https://mangafire.to/';
+    } else if (pkg.contains('batoto') || pkg.contains('bato')) {
+      referer = 'https://mangatoto.com/';
+    } else if (pkg.contains('mangapark')) {
+      referer = 'https://mangapark.net/';
+    } else if (pkg.contains('mangakakalot')) {
+      referer = 'https://mangakakalot.com/';
+    } else if (pkg.contains('tcbscans')) {
+      referer = 'https://tcbscans.me/';
+    } else if (pkg.contains('reaperscans')) {
+      referer = 'https://reaperscans.com/';
+    } else if (pkg.contains('comick')) {
+      referer = 'https://comick.io/';
+    } else if (pkg.contains('weebcentral')) {
+      referer = 'https://weebcentral.com/';
+    } else if (pkg.contains('webtoons')) {
+      referer = 'https://www.webtoons.com/';
+    } else if (pkg.contains('mangakatana')) {
+      referer = 'https://mangakatana.com/';
+    } else if (pkg.contains('mangapill')) {
+      referer = 'https://mangapill.com/';
+    } else if (pkg.contains('novelcool')) {
+      referer = 'https://www.novelcool.com/';
+    } else if (pkg.contains('manhuaus')) {
+      referer = 'https://manhuaus.com/';
+    } else if (pkg.contains('mangaclash')) {
+      referer = 'https://mangaclash.com/';
+    } else if (pkg.contains('readm')) {
+      referer = 'https://readm.org/';
+    } else if (pkg.contains('firstkiss') || pkg.contains('1stkiss')) {
+      referer = 'https://1stkissmanga.me/';
     }
   }
 

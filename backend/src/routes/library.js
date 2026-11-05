@@ -44,10 +44,14 @@ router.get('/categories', async (req, res) => {
         'mangaId categories',
       ),
     ]);
+    const validCategoryIds = new Set(categories.map((c) => c.categoryId));
     const mangaCategories = {};
     for (const entry of entries) {
       if (Array.isArray(entry.categories) && entry.categories.length > 0) {
-        mangaCategories[entry.mangaId] = entry.categories;
+        const filtered = entry.categories.filter((c) => validCategoryIds.has(c));
+        if (filtered.length > 0) {
+          mangaCategories[entry.mangaId] = filtered;
+        }
       }
     }
     res.json({
@@ -68,6 +72,7 @@ router.get('/categories', async (req, res) => {
 router.put('/categories', async (req, res) => {
   try {
     const { categories, mangaCategories } = req.body || {};
+    let keepIds = null;
 
     if (Array.isArray(categories)) {
       const sanitized = categories
@@ -86,12 +91,25 @@ router.put('/categories', async (req, res) => {
           order: typeof c.order === 'number' ? c.order : idx,
         }));
 
-      const defaultIds = ['reading', 'completed', 'plan_to_read', 'favorites'];
-      const keepIds = [...new Set([...sanitized.map((c) => c.categoryId), ...defaultIds])];
+      keepIds = sanitized.map((c) => c.categoryId);
+      // Strictly remove any category not in keepIds (user deleted categories must not resurrect)
       await UserCategory.deleteMany({
         user: req.user.id,
         categoryId: { $nin: keepIds },
       });
+
+      // Remove deleted categories from all manga library entries as well
+      if (keepIds.length > 0) {
+        await LibraryEntry.updateMany(
+          { user: req.user.id },
+          { $pull: { categories: { $nin: keepIds } } }
+        );
+      } else {
+        await LibraryEntry.updateMany(
+          { user: req.user.id },
+          { $set: { categories: [] } }
+        );
+      }
 
       if (sanitized.length > 0) {
         await UserCategory.bulkWrite(
@@ -109,10 +127,14 @@ router.put('/categories', async (req, res) => {
     if (mangaCategories && typeof mangaCategories === 'object' && !Array.isArray(mangaCategories)) {
       const entries = Object.entries(mangaCategories).slice(0, 500);
       const ops = [];
+      const validSet = keepIds ? new Set(keepIds) : null;
       for (const [mangaId, catList] of entries) {
         const cleanId = String(mangaId).trim();
-        const cleanCats = sanitizeCategories(catList);
+        let cleanCats = sanitizeCategories(catList);
         if (!cleanId || !cleanCats) continue;
+        if (validSet) {
+          cleanCats = cleanCats.filter((c) => validSet.has(c));
+        }
         ops.push({
           updateOne: {
             filter: { user: req.user.id, mangaId: cleanId },

@@ -72,13 +72,16 @@ class LibraryRepository extends ChangeNotifier {
         AppLogger.warn('Failed to parse shiori_user_categories', e);
       }
     }
-    if (_userCategories.isEmpty) {
+    final catsInitialized = prefs.getBool('shiori_categories_initialized') ?? false;
+    if (!catsInitialized && _userCategories.isEmpty && catsJson == null) {
       _userCategories.addAll(const [
         CategoryItem(id: 'reading', name: 'Reading', order: 0),
         CategoryItem(id: 'completed', name: 'Completed', order: 1),
         CategoryItem(id: 'plan_to_read', name: 'Plan to Read', order: 2),
         CategoryItem(id: 'favorites', name: 'Favorites', order: 3),
       ]);
+      unawaited(prefs.setBool('shiori_categories_initialized', true));
+      unawaited(_persistUserCategories());
     }
 
     // 3. Manga Category Assignments
@@ -334,8 +337,11 @@ class LibraryRepository extends ChangeNotifier {
     Map<String, String>? headers,
   }) async {
     _userCategories.removeWhere((c) => c.id == id);
-    for (final key in _mangaCategories.keys) {
+    for (final key in _mangaCategories.keys.toList()) {
       _mangaCategories[key]?.remove(id);
+      if (_mangaCategories[key]?.isEmpty ?? false) {
+        _mangaCategories.remove(key);
+      }
     }
     await _persistUserCategories();
     await _persistMangaCategories();
@@ -344,7 +350,19 @@ class LibraryRepository extends ChangeNotifier {
   }
 
   List<String> getMangaCategoryIds(String mangaId) {
-    return List<String>.from(_mangaCategories[mangaId] ?? const <String>[]);
+    final validIds = _userCategories.map((c) => c.id).toSet();
+    final list = _mangaCategories[mangaId];
+    if (list == null || list.isEmpty) return const <String>[];
+    final valid = list.where(validIds.contains).toList();
+    if (valid.length != list.length) {
+      if (valid.isEmpty) {
+        _mangaCategories.remove(mangaId);
+      } else {
+        _mangaCategories[mangaId] = valid;
+      }
+      unawaited(_persistMangaCategories());
+    }
+    return valid;
   }
 
   Future<void> ensureInLibraryWhenCategorizing(String mangaId, {MangaItem? manga}) async {
@@ -493,7 +511,7 @@ class LibraryRepository extends ChangeNotifier {
     Map<String, String> headers,
   ) async {
     try {
-      // 1. Download existing cloud categories first to prevent wiping cloud data
+      // 1. Download existing cloud categories (cloud is the single source of truth)
       final res = await client
           .get(Uri.parse('$baseUrl/library/categories'), headers: headers)
           .timeout(const Duration(seconds: 6));
@@ -501,34 +519,37 @@ class LibraryRepository extends ChangeNotifier {
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final cloudCats = data['categories'] as List<dynamic>?;
         if (cloudCats != null) {
-          final existingIds = _userCategories.map((c) => c.id).toSet();
+          // Exactly replace local categories with cloud categories
+          _userCategories.clear();
           for (final c in cloudCats) {
             if (c is Map) {
-              final item = CategoryItem.fromJson(Map<String, dynamic>.from(c));
-              if (!existingIds.contains(item.id)) {
-                _userCategories.add(item);
-                existingIds.add(item.id);
-              }
+              _userCategories.add(CategoryItem.fromJson(Map<String, dynamic>.from(c)));
             }
           }
+          final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
+          await prefs.setBool('shiori_categories_initialized', true);
           await _persistUserCategories();
         }
 
         final cloudMangaCats = data['mangaCategories'] as Map<String, dynamic>?;
         if (cloudMangaCats != null) {
+          final validCatIds = _userCategories.map((c) => c.id).toSet();
+          _mangaCategories.clear();
           cloudMangaCats.forEach((mangaId, cats) {
             if (cats is List) {
               if (_deletedMangaIds.contains(mangaId)) return;
-              final catList = cats.map((e) => e.toString()).toList();
-              final existing = _mangaCategories[mangaId] ?? <String>[];
-              _mangaCategories[mangaId] = {...existing, ...catList}.toList();
+              final catList = cats.map((e) => e.toString()).where(validCatIds.contains).toList();
+              if (catList.isNotEmpty) {
+                _mangaCategories[mangaId] = catList;
+              }
             }
           });
           await _persistMangaCategories();
         }
+        notifyListeners();
       }
 
-      // 2. Upload combined categories and manga mappings to ensure cloud is fully synced (#35)
+      // 2. Upload current categories and manga mappings to ensure cloud is in sync (#35)
       await client
           .put(
             Uri.parse('$baseUrl/library/categories'),
@@ -611,11 +632,17 @@ class LibraryRepository extends ChangeNotifier {
           }
 
           if (e['categories'] is List) {
-            final cats = (e['categories'] as List).map((c) => c.toString()).toList();
+            final validCatIds = _userCategories.map((c) => c.id).toSet();
+            final cats = (e['categories'] as List)
+                .map((c) => c.toString())
+                .where(validCatIds.contains)
+                .toList();
             if (cats.isNotEmpty) {
               final existingCats = _mangaCategories[m.id] ?? <String>[];
-              final mergedCats = {...existingCats, ...cats}.toList();
-              _mangaCategories[m.id] = mergedCats;
+              final mergedCats = {...existingCats, ...cats}.where(validCatIds.contains).toList();
+              if (mergedCats.isNotEmpty) {
+                _mangaCategories[m.id] = mergedCats;
+              }
             }
           }
         }
@@ -697,6 +724,13 @@ class LibraryRepository extends ChangeNotifier {
     await prefs.remove('shiori_user_categories');
     await prefs.remove('shiori_manga_categories');
     await prefs.remove('shiori_deleted_manga_ids');
+    await prefs.remove('shiori_categories_initialized');
+    _userCategories.addAll(const [
+      CategoryItem(id: 'reading', name: 'Reading', order: 0),
+      CategoryItem(id: 'completed', name: 'Completed', order: 1),
+      CategoryItem(id: 'plan_to_read', name: 'Plan to Read', order: 2),
+      CategoryItem(id: 'favorites', name: 'Favorites', order: 3),
+    ]);
     notifyListeners();
   }
 }

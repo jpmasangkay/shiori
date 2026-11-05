@@ -167,6 +167,14 @@ class ExtensionBridge {
   }) async {
     if (!_isAndroidSupported || url.trim().isEmpty) return null;
     try {
+      final basePkg = pkg.split('@').first.trim();
+      final lowerBase = basePkg.toLowerCase();
+      final hasLocal = ExtensionService.instance.deviceExtensionsMap.containsKey(lowerBase) ||
+          _findApkPath(pkg) != null;
+      // Do not auto-download heavy extension APKs solely for cover thumbnails if uninstalled/not cached
+      if (pageUrl == null && !hasLocal) {
+        return null;
+      }
       final apkPath = await _ensureApkPath(pkg);
       final bytes = await _channel.invokeMethod<Uint8List>('fetchImageBytes', {
         'pkg': pkg,
