@@ -321,3 +321,4 @@ class MangaFoxScraper {
     return clean;
   }
 }
+
