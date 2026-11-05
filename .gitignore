@@ -51,3 +51,8 @@ backend/.env
 backend/.env.*
 backend/node_modules/
 
+
+# Signing keys & Keystores
+**/android/key.properties
+**/*.keystore
+**/*.jks

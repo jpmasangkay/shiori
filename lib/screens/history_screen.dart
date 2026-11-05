@@ -84,7 +84,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
         }
       }
       if (_selectedSource != null && _selectedSource!.isNotEmpty) {
-        if (item.source.toLowerCase() != _selectedSource!.toLowerCase()) {
+        final itemSrc = SourceResolver.displayName(item.source).toLowerCase();
+        final selSrc = SourceResolver.displayName(_selectedSource!).toLowerCase();
+        if (itemSrc != selSrc && item.source.toLowerCase() != _selectedSource!.toLowerCase()) {
           return false;
         }
       }
@@ -92,8 +94,17 @@ class _HistoryScreenState extends State<HistoryScreen> {
     }).toList();
   }
 
-  Set<String> get _availableSources {
-    return _history.map((e) => e.source).where((s) => s.isNotEmpty).toSet();
+  List<String> get _availableSources {
+    final seen = <String>{};
+    final list = <String>[];
+    for (final e in _history) {
+      if (e.source.trim().isEmpty) continue;
+      final name = SourceResolver.displayName(e.source);
+      if (seen.add(name.toLowerCase())) {
+        list.add(e.source);
+      }
+    }
+    return list;
   }
 
   Future<void> _confirmClearAll() async {
@@ -318,6 +329,8 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               child: ListView.builder(
                                 padding: const EdgeInsets.symmetric(vertical: 8),
                                 itemCount: filtered.length,
+                                addRepaintBoundaries: true,
+                                addAutomaticKeepAlives: false,
                                 itemBuilder: (_, i) => _buildHistoryRow(filtered[i]),
                               ),
                             ),
@@ -414,7 +427,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   height: 56,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(4),
-                    child: CoverImage(imageUrl: cover, mangaId: mangaId, saturation: .7),
+                    child: CoverImage(
+                      imageUrl: cover,
+                      mangaId: mangaId,
+                      memCacheWidth: 90,
+                      memCacheHeight: 120,
+                    ),
                   ),
                 ),
               ),

@@ -279,7 +279,8 @@ class _ApiUpdateRow extends StatelessWidget {
                   child: CoverImage(
                     imageUrl: item['cover']?.toString(),
                     mangaId: item['mangaId']?.toString(),
-                    saturation: .6,
+                    memCacheWidth: 90,
+                    memCacheHeight: 120,
                   ),
                 ),
               ),

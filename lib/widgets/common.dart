@@ -559,7 +559,7 @@ class RetryingNetworkImage extends StatefulWidget {
     this.placeholder,
     this.progressBuilder,
     this.errorBuilder,
-    this.fadeInDuration = const Duration(milliseconds: 280),
+    this.fadeInDuration = const Duration(milliseconds: 140),
     this.attemptTimeout = const Duration(seconds: 10),
   });
 
@@ -864,8 +864,8 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
       height: widget.height,
       memCacheWidth: widget.memCacheWidth,
       memCacheHeight: widget.memCacheHeight,
-      maxWidthDiskCache: 1200,
-      maxHeightDiskCache: 1800,
+      maxWidthDiskCache: 600,
+      maxHeightDiskCache: 900,
       fadeInDuration: widget.fadeInDuration,
       fadeOutDuration: const Duration(milliseconds: 120),
       placeholder: progressBuilder == null
@@ -904,10 +904,10 @@ class CoverImage extends StatefulWidget {
     super.key,
     this.imageUrl,
     this.mangaId,
-    this.saturation = .7,
+    this.saturation = 1.0,
     this.fit,
-    this.memCacheWidth = 360,
-    this.memCacheHeight,
+    this.memCacheWidth = 240,
+    this.memCacheHeight = 360,
   });
 
   final String? imageUrl;

@@ -137,10 +137,8 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           targets.add(ext.pkg);
         }
       }
-      if (targets.isEmpty) {
-        for (final ds in SourceManager.allDirectSources) {
-          targets.add(ds.id);
-        }
+      for (final ds in SourceManager.directSources) {
+        targets.add(ds.id);
       }
       return targets.where((s) => s.trim().isNotEmpty).toSet().toList();
     } else {
@@ -203,7 +201,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       _searchResults = {};
     });
 
-    _searchDebounce = Timer(const Duration(milliseconds: 120), () {
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
       if (mounted) {
         _runGlobalSearch(q, bypassCache: false);
       }
@@ -251,7 +249,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     for (final sourceId in targetIds) {
       ApiService.instance
           .searchManga(query: q, source: sourceId)
-          .timeout(const Duration(seconds: 15), onTimeout: () => <MangaItem>[])
+          .timeout(const Duration(seconds: 25), onTimeout: () => <MangaItem>[])
           .then((res) {
             if (!mounted || token != _searchToken) return;
             if (res.isNotEmpty) {
@@ -272,7 +270,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 if (accumulated.isNotEmpty) {
                   _queryCache[cacheKey] = (
                     results: Map<String, List<MangaItem>>.from(accumulated),
-                    expiresAt: DateTime.now().add(const Duration(minutes: 2)),
+                    expiresAt: DateTime.now().add(const Duration(seconds: 30)),
                   );
                 }
               }
@@ -464,6 +462,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           const SizedBox(height: 8),
           SingleChildScrollView(
             scrollDirection: Axis.horizontal,
+
             child: Row(
               children: [
                 _buildSourceFilterChip('ALL', 'All Sources'),
@@ -567,6 +566,11 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               controller: _searchController,
               onChanged: _onSearchChanged,
               style: AppText.body,
+              textInputAction: TextInputAction.search,
+              onSubmitted: (val) {
+                _searchDebounce?.cancel();
+                _runGlobalSearch(val.trim(), bypassCache: true);
+              },
               decoration: InputDecoration(
                 hintText: () {
                   if (_selectedSourceFilter != 'ALL') {
@@ -700,15 +704,27 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   }
 
   Widget _buildSearchResults() {
-    final entriesWithResults = <MapEntry<String, List<MangaItem>>>[];
-    final seenDisplayNames = <String>{};
+    final Map<String, List<MangaItem>> mergedResults = {};
+    final Map<String, String> primarySourceIdForName = {};
     for (final e in _searchResults.entries) {
       if (e.value.isEmpty) continue;
-      final name = _resolveSourceName(e.key).toLowerCase();
-      if (seenDisplayNames.add(name)) {
-        entriesWithResults.add(e);
+      final name = _resolveSourceName(e.key);
+      if (!mergedResults.containsKey(name)) {
+        mergedResults[name] = [...e.value];
+        primarySourceIdForName[name] = e.key;
+      } else {
+        final existing = mergedResults[name]!;
+        for (final item in e.value) {
+          if (!existing.any((m) => m.id == item.id)) {
+            existing.add(item);
+          }
+        }
       }
     }
+    final entriesWithResults = [
+      for (final entry in mergedResults.entries)
+        MapEntry(primarySourceIdForName[entry.key] ?? entry.key, entry.value),
+    ];
     final stillSearching = _searching || _pendingSourcesCount > 0;
 
     if (entriesWithResults.isEmpty && stillSearching) {
@@ -881,6 +897,9 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           height: 194,
           child: ListView.separated(
             scrollDirection: Axis.horizontal,
+
+            addRepaintBoundaries: true,
+            addAutomaticKeepAlives: false,
             itemCount: items.length,
             separatorBuilder: (_, _) => const SizedBox(width: 8),
             itemBuilder: (_, i) {
@@ -903,7 +922,12 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                           child: Stack(
                             fit: StackFit.expand,
                             children: [
-                              CoverImage(imageUrl: manga.cover, mangaId: manga.id, saturation: .75),
+                              CoverImage(
+                                imageUrl: manga.cover,
+                                mangaId: manga.id,
+                                memCacheWidth: 160,
+                                memCacheHeight: 240,
+                              ),
                               if (manga.lastChapter != null && manga.lastChapter!.isNotEmpty)
                                 Positioned(
                                   bottom: 4,

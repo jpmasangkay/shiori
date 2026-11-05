@@ -102,7 +102,14 @@ class MangaItem {
   /// Returns a clean display title, healing any corrupted IDs or "Untitled" placeholders.
   String get displayTitle {
     final t = title.trim();
-    if (t.isNotEmpty && t != 'Untitled' && !t.startsWith('ext:') && t != id) {
+    if (t.isNotEmpty &&
+        t != 'Untitled' &&
+        !t.startsWith('ext:') &&
+        !t.contains('.extension.') &&
+        !t.startsWith('eu.kanade.') &&
+        !t.contains('%2F') &&
+        !t.contains('%2f') &&
+        t != id) {
       return t;
     }
     return cleanTitleFromIdOrSlug(id.isNotEmpty ? id : t);
@@ -129,6 +136,10 @@ class MangaItem {
     try {
       raw = Uri.decodeComponent(raw).trim();
     } catch (_) {}
+
+    if (raw.contains('.extension.') || raw.startsWith('eu.kanade.')) {
+      raw = SourceResolver.displayName(raw);
+    }
 
     if (raw.contains('/')) {
       final segments = raw.split('/').where((s) => s.trim().isNotEmpty).toList();

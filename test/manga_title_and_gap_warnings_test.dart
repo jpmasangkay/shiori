@@ -33,6 +33,12 @@ void main() {
         title: 'Blue Lock',
       );
       expect(itemNormal.displayTitle, 'Blue Lock');
+
+      final itemPackageTitle = MangaItem(
+        id: 'ext:eu.kanade.tachiyomi.extension.all.comicklive:%2FA_Story_About_Treating_A_Female_Knight',
+        title: 'eu.kanade.tachiyomi.extension.all.comicklive:%2FA_Story_About_Treating_A_Female_Knight',
+      );
+      expect(itemPackageTitle.displayTitle, 'A Story About Treating A Female Knight');
     });
   });
 

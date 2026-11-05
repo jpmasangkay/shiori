@@ -68,7 +68,20 @@ class _DetailScreenState extends State<DetailScreen> {
     return set;
   }
 
+  List<ChapterItem> _cachedFilteredChapters = const [];
+  List<_ChapterListItem> _cachedDisplayItems = const [];
+  int _cachedMissingChaptersCount = 0;
+
   List<ChapterItem> get _filteredChapters {
+    if (_cachedFilteredChapters.isEmpty && _apiChapters.isNotEmpty) {
+      _recomputeChapterDisplayList();
+    }
+    return _cachedFilteredChapters;
+  }
+
+  int get _totalMissingChaptersCount => _cachedMissingChaptersCount;
+
+  void _recomputeChapterDisplayList() {
     var list = _apiChapters;
     if (_excludedScanlators.isNotEmpty) {
       list = list.where((c) {
@@ -101,17 +114,16 @@ class _DetailScreenState extends State<DetailScreen> {
         return _descending ? -cmp : cmp;
       });
     }
-    return sorted;
-  }
+    _cachedFilteredChapters = sorted;
 
-  int get _totalMissingChaptersCount {
-    if (_apiChapters.isEmpty) return 0;
     final gaps = _calculateMissingGaps(_apiChapters);
     int total = 0;
     for (final g in gaps) {
       total += g.count;
     }
-    return total;
+    _cachedMissingChaptersCount = total;
+
+    _cachedDisplayItems = _buildDisplayedChapterItems(sorted);
   }
 
   static List<MissingChapterGap> _calculateMissingGaps(List<ChapterItem> chapters) {
@@ -156,11 +168,9 @@ class _DetailScreenState extends State<DetailScreen> {
     return gaps;
   }
 
-  List<_ChapterListItem> _buildDisplayedChapterItems() {
-    final chapters = _filteredChapters;
+  List<_ChapterListItem> _buildDisplayedChapterItems(List<ChapterItem> chapters) {
     if (chapters.isEmpty) return const [];
 
-    // Only inject gap warnings when viewing all chapters without filters
     if (_filterDownloaded || _filterUnread || _filterBookmarked) {
       return chapters.map<_ChapterListItem>((c) => _ChapterEntry(c)).toList();
     }
@@ -190,7 +200,6 @@ class _DetailScreenState extends State<DetailScreen> {
           }
         }
       } else {
-        // End of list: check if beginning chapters are missing
         final numC = double.tryParse(c.number ?? '');
         if (numC != null && _descending && numC >= 2.0) {
           final from = 1.0;
@@ -206,7 +215,6 @@ class _DetailScreenState extends State<DetailScreen> {
       }
     }
 
-    // If ascending, check beginning gap before index 0
     if (!_descending && chapters.isNotEmpty) {
       final firstNum = double.tryParse(chapters.first.number ?? '');
       if (firstNum != null && firstNum >= 2.0) {
@@ -273,6 +281,7 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Future<void> _saveChapterFilters() async {
+    _recomputeChapterDisplayList();
     try {
       final prefs = await SharedPreferences.getInstance();
       final mangaPrefix = 'manga_filter_${_manga.id}';
@@ -431,6 +440,7 @@ class _DetailScreenState extends State<DetailScreen> {
           _chaptersError = null;
           _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, chapters);
           _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
+          _recomputeChapterDisplayList();
           _syncResumeButton();
         });
       } catch (err) {
@@ -1054,9 +1064,11 @@ class _DetailScreenState extends State<DetailScreen> {
           else
             Builder(
               builder: (context) {
-                final displayItems = _buildDisplayedChapterItems();
+                final displayItems = _cachedDisplayItems;
                 return SliverList.builder(
                   itemCount: displayItems.length,
+                  addRepaintBoundaries: true,
+                  addAutomaticKeepAlives: false,
                   itemBuilder: (_, i) {
                     final item = displayItems[i];
                     if (item is _MissingGapEntry) {
@@ -1069,6 +1081,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     final downloadProgress = DownloadService.instance.getProgress(c.id);
 
                     return _ApiChapterTile(
+                      key: ValueKey('ch_${c.id}'),
                       chapter: c,
                       displayChapterNumberOnly: _displayChapterNumberOnly,
                       isRead: isRead,
@@ -1083,19 +1096,28 @@ class _DetailScreenState extends State<DetailScreen> {
                       ),
                       onToggleRead: () async {
                         final nextState = !isRead;
-                        await ApiService.instance.markChapterRead(_manga.id, c.id, read: nextState);
                         setState(() {
                           if (nextState) {
                             _readChapterIds.add(c.id);
-                            _syncTrackerProgressOnMarkRead();
                           } else {
                             _readChapterIds.remove(c.id);
                           }
+                          if (_filterUnread) {
+                            _recomputeChapterDisplayList();
+                          }
                         });
+                        await ApiService.instance.markChapterRead(_manga.id, c.id, read: nextState);
+                        if (nextState) {
+                          _syncTrackerProgressOnMarkRead();
+                        }
                       },
                       onToggleBookmark: () async {
                         await ApiService.instance.toggleChapterBookmark(c.id);
-                        setState(() {});
+                        setState(() {
+                          if (_filterBookmarked) {
+                            _recomputeChapterDisplayList();
+                          }
+                        });
                       },
                       onLongPress: () => _showChapterOptions(c, isRead, isBookmarked),
                     );
@@ -1241,7 +1263,7 @@ class _DetailScreenState extends State<DetailScreen> {
             // Background cover with blur
             RepaintBoundary(
               child: ImageFiltered(
-                imageFilter: ImageFilter.blur(sigmaX: 25, sigmaY: 25),
+                imageFilter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
                 child: CoverImage(imageUrl: m.cover, mangaId: m.id, saturation: .5),
               ),
             ),
@@ -1983,42 +2005,24 @@ class _DetailScreenState extends State<DetailScreen> {
             icon: const Icon(Icons.more_vert_rounded, size: 20, color: AppColors.muted),
             color: AppColors.surface,
             onSelected: (val) async {
-              if (val == 'open_webview') {
-                _openWebView();
-              } else if (val == 'edit_categories') {
-                _showCategorySheet();
-              } else if (val == 'mark_all_read') {
+              if (val == 'mark_all_read') {
                 final allIds = _filteredChapters.map((c) => c.id).toList();
+                setState(() {
+                  _readChapterIds.addAll(allIds);
+                  if (_filterUnread) _recomputeChapterDisplayList();
+                });
                 await ApiService.instance.markChaptersRead(_manga.id, allIds, read: true);
-                setState(() => _readChapterIds.addAll(allIds));
                 _syncTrackerProgressOnMarkRead();
               } else if (val == 'mark_all_unread') {
                 final allIds = _filteredChapters.map((c) => c.id).toList();
+                setState(() {
+                  _readChapterIds.removeAll(allIds);
+                  if (_filterUnread) _recomputeChapterDisplayList();
+                });
                 await ApiService.instance.markChaptersRead(_manga.id, allIds, read: false);
-                setState(() => _readChapterIds.removeAll(allIds));
               }
             },
             itemBuilder: (_) => [
-              PopupMenuItem(
-                value: 'open_webview',
-                child: Row(
-                  children: [
-                    const Icon(Icons.public_rounded, size: 18, color: AppColors.muted),
-                    const SizedBox(width: 10),
-                    Text('Open in WebView', style: AppText.body),
-                  ],
-                ),
-              ),
-              PopupMenuItem(
-                value: 'edit_categories',
-                child: Row(
-                  children: [
-                    const Icon(Icons.label_outline_rounded, size: 18, color: AppColors.muted),
-                    const SizedBox(width: 10),
-                    Text('Edit categories', style: AppText.body),
-                  ],
-                ),
-              ),
               PopupMenuItem(
                 value: 'mark_all_read',
                 child: Text('Mark all as read', style: AppText.body),
@@ -2085,6 +2089,7 @@ class _Action extends StatelessWidget {
 
 class _ApiChapterTile extends StatelessWidget {
   const _ApiChapterTile({
+    super.key,
     required this.chapter,
     required this.isRead,
     required this.isBookmarked,

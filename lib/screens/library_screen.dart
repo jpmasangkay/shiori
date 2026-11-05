@@ -77,6 +77,7 @@ class _LibraryScreenState extends State<LibraryScreen>
       if (mounted) {
         setState(() {
           _userLibrary = items;
+          _cachedDuplicateGroups = null;
           _loading = false;
         });
       }
@@ -418,7 +419,10 @@ class _LibraryScreenState extends State<LibraryScreen>
     }
   }
 
+  Map<String, List<MangaItem>>? _cachedDuplicateGroups;
+
   Map<String, List<MangaItem>> _findDuplicateGroups() {
+    if (_cachedDuplicateGroups != null) return _cachedDuplicateGroups!;
     final groups = <String, List<MangaItem>>{};
     for (int i = 0; i < _userLibrary.length; i++) {
       for (int j = i + 1; j < _userLibrary.length; j++) {
@@ -439,6 +443,7 @@ class _LibraryScreenState extends State<LibraryScreen>
         result[key] = unique;
       }
     });
+    _cachedDuplicateGroups = result;
     return result;
   }
 
@@ -1114,6 +1119,8 @@ class _LibraryScreenState extends State<LibraryScreen>
     return GridView.builder(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
+      addRepaintBoundaries: true,
+      addAutomaticKeepAlives: false,
       gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: s.columns,
         mainAxisSpacing: 8,
@@ -1143,6 +1150,8 @@ class _LibraryScreenState extends State<LibraryScreen>
     return ListView.builder(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(0, 4, 0, 16),
+      addRepaintBoundaries: true,
+      addAutomaticKeepAlives: false,
       itemCount: items.length,
       itemBuilder: (_, i) {
         final manga = items[i];
@@ -1402,7 +1411,7 @@ class CoverCard extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           const ColoredBox(color: AppColors.surfaceHigh),
-          CoverImage(imageUrl: imageUrl, mangaId: mangaId, saturation: .62),
+          CoverImage(imageUrl: imageUrl, mangaId: mangaId),
           if (!comfortable && !coverOnly)
             const Align(
               alignment: Alignment.bottomCenter,
