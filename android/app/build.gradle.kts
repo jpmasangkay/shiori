@@ -45,10 +45,25 @@ android {
 
     buildTypes {
         release {
+            isMinifyEnabled = false
+            isShrinkResources = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
             signingConfig = if (keystorePropertiesFile.exists() && keystoreProperties.isNotEmpty()) {
                 signingConfigs.getByName("release")
             } else {
                 signingConfigs.getByName("debug")
+            }
+        }
+    }
+
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            if (variant.buildType.name == "release") {
+                (this as? com.android.build.gradle.api.ApkVariantOutput)?.outputFileName = "shiori.apk"
             }
         }
     }
@@ -77,4 +92,27 @@ dependencies {
 
 flutter {
     source = "../.."
+}
+
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    doLast {
+        val flutterApkDir = file("${rootProject.projectDir}/../build/app/outputs/flutter-apk")
+        val gradleApkDir = file("${layout.buildDirectory.get().asFile}/outputs/apk/release")
+
+        val gradleShiori = file("$gradleApkDir/shiori.apk")
+        val gradleRelease = file("$gradleApkDir/app-release.apk")
+        if (gradleRelease.exists() && !gradleShiori.exists()) {
+            gradleRelease.copyTo(gradleShiori, overwrite = true)
+        }
+
+        if (flutterApkDir.exists()) {
+            val flutterRelease = file("$flutterApkDir/app-release.apk")
+            val flutterShiori = file("$flutterApkDir/shiori.apk")
+            if (gradleShiori.exists()) {
+                gradleShiori.copyTo(flutterShiori, overwrite = true)
+            } else if (flutterRelease.exists()) {
+                flutterRelease.copyTo(flutterShiori, overwrite = true)
+            }
+        }
+    }
 }

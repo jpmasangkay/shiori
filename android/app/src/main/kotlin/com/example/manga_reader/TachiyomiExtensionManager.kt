@@ -826,6 +826,7 @@ class TachiyomiExtensionManager(private val context: Context) {
 
         val collectedSources = mutableListOf<CatalogueSource>()
         val classTokens = rawClassField.split(";").map { it.trim() }.filter { it.isNotEmpty() }
+        var lastInstError: Throwable? = null
 
         for (token in classTokens) {
             val candidates = if (token.startsWith(".")) {
@@ -843,28 +844,46 @@ class TachiyomiExtensionManager(private val context: Context) {
             if (loadedClass == null) continue
 
             try {
-                when {
-                    SourceFactory::class.java.isAssignableFrom(loadedClass) -> {
-                        val factory = loadedClass.getDeclaredConstructor().newInstance() as SourceFactory
-                        val sources = factory.createSources().filterIsInstance<CatalogueSource>()
-                        for (src in sources) {
-                            configureSourcePreferences(src, basePkg)
-                        }
-                        collectedSources.addAll(sources)
+                var handled = false
+                if (SourceFactory::class.java.isAssignableFrom(loadedClass)) {
+                    val factory = loadedClass.getDeclaredConstructor().newInstance() as SourceFactory
+                    val sources = factory.createSources().filterIsInstance<CatalogueSource>()
+                    for (src in sources) {
+                        configureSourcePreferences(src, basePkg)
                     }
-                    CatalogueSource::class.java.isAssignableFrom(loadedClass) -> {
+                    collectedSources.addAll(sources)
+                    handled = true
+                } else if (loadedClass.interfaces.any { it.name == "eu.kanade.tachiyomi.source.SourceFactory" } ||
+                    loadedClass.methods.any { it.name == "createSources" && it.parameterCount == 0 }) {
+                    val factory = loadedClass.getDeclaredConstructor().newInstance()
+                    val method = loadedClass.getMethod("createSources")
+                    @Suppress("UNCHECKED_CAST")
+                    val rawSources = method.invoke(factory) as? List<*> ?: emptyList<Any>()
+                    for (rawSrc in rawSources) {
+                        if (rawSrc is CatalogueSource) {
+                            configureSourcePreferences(rawSrc, basePkg)
+                            collectedSources.add(rawSrc)
+                        }
+                    }
+                    handled = true
+                }
+
+                if (!handled) {
+                    if (CatalogueSource::class.java.isAssignableFrom(loadedClass)) {
                         val instance = loadedClass.getDeclaredConstructor().newInstance() as CatalogueSource
                         configureSourcePreferences(instance, basePkg)
                         collectedSources.add(instance)
                     }
                 }
             } catch (e: Throwable) {
+                lastInstError = e
                 Log.w(TAG, "Error instantiating $loadedClass for $basePkg: ${e.message}", e)
             }
         }
 
         if (collectedSources.isEmpty()) {
-            throw IllegalStateException("Extension $basePkg ($rawClassField) produced no CatalogueSources")
+            val errDetail = if (lastInstError != null) " (caused by: ${lastInstError.javaClass.simpleName}: ${lastInstError.message})" else ""
+            throw IllegalStateException("Extension $basePkg ($rawClassField) produced no CatalogueSources$errDetail", lastInstError)
         }
 
         allSourcesCache[basePkg] = collectedSources

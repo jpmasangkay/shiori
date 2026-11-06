@@ -92,6 +92,10 @@ class WebExtensionScraper {
         ]);
       } else if (order == 'latest') {
         candidateUrls.addAll([
+          if (type != null && type.isNotEmpty && type != 'all') ...[
+            '$base/genres/$type/page/$page/?m_orderby=latest',
+            '$base/genre/$type/page/$page/?m_orderby=latest',
+          ],
           '$base/manga/?page=$page&order=update',
           if (page > 1)
             '$base/page/$page/?s=&post_type=wp-manga&m_orderby=latest'
@@ -101,6 +105,10 @@ class WebExtensionScraper {
         ]);
       } else {
         candidateUrls.addAll([
+          if (type != null && type.isNotEmpty && type != 'all') ...[
+            '$base/genres/$type/page/$page/?m_orderby=views',
+            '$base/genre/$type/page/$page/?m_orderby=views',
+          ],
           '$base/manga/?page=$page&order=popular',
           if (page > 1)
             '$base/page/$page/?s=&post_type=wp-manga&m_orderby=views'
@@ -401,6 +409,7 @@ class WebExtensionScraper {
                       id: m.id,
                       title: m.title,
                       cover: detailed.cover,
+                      type: m.type,
                       source: m.source,
                     );
                   }

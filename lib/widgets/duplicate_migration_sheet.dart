@@ -9,12 +9,7 @@ import '../services/source_resolver.dart';
 import '../theme.dart';
 import 'common.dart';
 
-enum DuplicateResolutionAction {
-  cancel,
-  addAnyway,
-  copied,
-  migrated,
-}
+enum DuplicateResolutionAction { cancel, addAnyway, copied, migrated }
 
 class DuplicateResolutionResult {
   final DuplicateResolutionAction action;
@@ -74,7 +69,6 @@ class _PossibleDuplicatesSheetWidget extends StatefulWidget {
 class _PossibleDuplicatesSheetWidgetState
     extends State<_PossibleDuplicatesSheetWidget> {
   final Map<String, int> _counts = {};
-  bool _working = false;
 
   @override
   void initState() {
@@ -118,71 +112,6 @@ class _PossibleDuplicatesSheetWidgetState
     }
   }
 
-  Future<void> _applyDirectTransfer({
-    required MangaItem duplicateManga,
-    required bool isMigrate,
-    bool includeChapters = true,
-    bool includeCategories = true,
-  }) async {
-    setState(() => _working = true);
-    try {
-      if (includeCategories) {
-        final existingCats =
-            ApiService.instance.getMangaCategoryIds(duplicateManga.id);
-        if (existingCats.isNotEmpty) {
-          await ApiService.instance.setMangaCategories(
-            widget.targetManga.id,
-            existingCats,
-            manga: widget.targetManga,
-          );
-        }
-      }
-
-      await ApiService.instance.addToLibrary(widget.targetManga);
-
-      if (includeChapters) {
-        await ApiService.instance.migrateOrCopyReadingProgress(
-          sourceMangaId: duplicateManga.id,
-          targetManga: widget.targetManga,
-          targetChapters: widget.targetChapters,
-        );
-      }
-
-      if (isMigrate) {
-        await ApiService.instance.removeFromLibrary(duplicateManga.id);
-      }
-
-      if (ApiService.instance.isLoggedIn) {
-        try {
-          await ApiService.instance
-              .syncAllCloudData()
-              .timeout(const Duration(seconds: 4));
-        } catch (_) {}
-      }
-
-      if (mounted) {
-        Navigator.of(context).pop(
-          DuplicateResolutionResult(
-            action: isMigrate
-                ? DuplicateResolutionAction.migrated
-                : DuplicateResolutionAction.copied,
-            targetManga: widget.targetManga,
-            duplicateManga: duplicateManga,
-            includeChapters: includeChapters,
-            includeCategories: includeCategories,
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() => _working = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Operation failed: $e')),
-        );
-      }
-    }
-    }
-
   @override
   Widget build(BuildContext context) {
     return SafeArea(
@@ -224,7 +153,7 @@ class _PossibleDuplicatesSheetWidgetState
             ),
             const SizedBox(height: 20),
             SizedBox(
-              height: 380,
+              height: 320,
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 clipBehavior: Clip.none,
@@ -233,10 +162,12 @@ class _PossibleDuplicatesSheetWidgetState
                 itemBuilder: (ctx, index) {
                   final dup = widget.duplicates[index];
                   final count = _counts[dup.id] ?? 0;
-                  final authorText =
-                      dup.authors.isNotEmpty ? dup.authors.first : 'Unknown';
-                  final statusText =
-                      dup.status.isNotEmpty ? dup.status : 'Unknown';
+                  final authorText = dup.authors.isNotEmpty
+                      ? dup.authors.first
+                      : 'Unknown';
+                  final statusText = dup.status.isNotEmpty
+                      ? dup.status
+                      : 'Unknown';
                   final sourceName = SourceResolver.displayName(
                     SourceResolver.resolve(dup.id, dup.source),
                   );
@@ -247,7 +178,7 @@ class _PossibleDuplicatesSheetWidgetState
                       onTap: () => _onSelectDuplicate(dup),
                       borderRadius: BorderRadius.circular(16),
                       child: Container(
-                        width: 185,
+                        width: 175,
                         decoration: BoxDecoration(
                           color: const Color(0xFF24242A),
                           borderRadius: BorderRadius.circular(16),
@@ -305,7 +236,7 @@ class _PossibleDuplicatesSheetWidgetState
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    dup.displayTitle,
+                                    dup.title,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(
@@ -372,46 +303,6 @@ class _PossibleDuplicatesSheetWidgetState
                                     ),
                                   ),
                                 ],
-                              ),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(10, 2, 10, 10),
-                              child: SizedBox(
-                                height: 36,
-                                width: double.infinity,
-                                child: FilledButton.icon(
-                                  onPressed: _working
-                                      ? null
-                                      : () => _applyDirectTransfer(
-                                            duplicateManga: dup,
-                                            isMigrate: true,
-                                          ),
-                                  icon: _working
-                                      ? const SizedBox(
-                                          width: 14,
-                                          height: 14,
-                                          child: CircularProgressIndicator(
-                                            strokeWidth: 2,
-                                            color: Colors.white,
-                                          ),
-                                        )
-                                      : const Icon(Icons.swap_horiz_rounded, size: 16),
-                                  label: const Text(
-                                    'Migrate',
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  style: FilledButton.styleFrom(
-                                    backgroundColor: AppColors.primary,
-                                    foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(10),
-                                    ),
-                                  ),
-                                ),
                               ),
                             ),
                           ],
@@ -546,8 +437,9 @@ class _SelectDataToIncludeSheetWidgetState
     try {
       // 1. Transfer categories first if selected
       if (_includeCategories) {
-        final existingCats =
-            ApiService.instance.getMangaCategoryIds(widget.duplicateManga.id);
+        final existingCats = ApiService.instance.getMangaCategoryIds(
+          widget.duplicateManga.id,
+        );
         if (existingCats.isNotEmpty) {
           await ApiService.instance.setMangaCategories(
             widget.targetManga.id,
@@ -577,9 +469,9 @@ class _SelectDataToIncludeSheetWidgetState
       // 5. Instantly persist changes to the cloud
       if (ApiService.instance.isLoggedIn) {
         try {
-          await ApiService.instance
-              .syncAllCloudData()
-              .timeout(const Duration(seconds: 4));
+          await ApiService.instance.syncAllCloudData().timeout(
+            const Duration(seconds: 4),
+          );
         } catch (_) {}
       }
 
@@ -599,9 +491,9 @@ class _SelectDataToIncludeSheetWidgetState
     } catch (e) {
       if (mounted) {
         setState(() => _working = false);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Operation failed: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Operation failed: $e')));
       }
     }
   }
@@ -754,7 +646,8 @@ class _LibraryDuplicatesSheetWidgetState
   }
 
   void _refreshGroups() {
-    final library = ApiService.instance.libraryRepo.localLibrary.values.toList();
+    final library = ApiService.instance.libraryRepo.localLibrary.values
+        .toList();
     final newGroups = <String, List<MangaItem>>{};
     for (int i = 0; i < library.length; i++) {
       for (int j = i + 1; j < library.length; j++) {
@@ -763,7 +656,10 @@ class _LibraryDuplicatesSheetWidgetState
           library[j].title,
         )) {
           final norm = DuplicateDetector.normalize(library[i].title);
-          newGroups.putIfAbsent(norm, () => []).addAll([library[i], library[j]]);
+          newGroups.putIfAbsent(norm, () => []).addAll([
+            library[i],
+            library[j],
+          ]);
         }
       }
     }
@@ -856,14 +752,21 @@ class _LibraryDuplicatesSheetWidgetState
                   ),
                   Text(
                     '${groupList.length} groups',
-                    style: const TextStyle(fontSize: 13, color: AppColors.muted),
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.muted,
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 8),
               const Text(
                 'Select an entry to migrate reading progress and categories into, or remove redundant versions.',
-                style: TextStyle(fontSize: 13.5, color: Colors.white70, height: 1.35),
+                style: TextStyle(
+                  fontSize: 13.5,
+                  color: Colors.white70,
+                  height: 1.35,
+                ),
               ),
               const SizedBox(height: 14),
               const Divider(color: Colors.white12, height: 1),
