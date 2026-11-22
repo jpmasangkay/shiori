@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/connectivity_service.dart';
 import '../services/source_resolver.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -30,12 +31,17 @@ class _UpdatesScreenState extends State<UpdatesScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _fetch();
+    // Hydrate cached updates immediately in 0ms for offline/slow internet
+    final cached = ApiService.instance.getCachedUpdates();
+    if (cached['groups'] is Map<String, dynamic>) {
+      _groups = Map<String, dynamic>.from(cached['groups'] as Map<String, dynamic>);
+    }
+    _fetch(silent: _groups.values.any((list) => (list as List).isNotEmpty));
     ApiService.instance.addListener(_onServiceChanged);
-    // Real-time silent background refresh every 45 seconds when visible
     _realtimeTimer = Timer.periodic(
-      const Duration(seconds: 45),
+      const Duration(seconds: 60),
       (_) {
+        if (ConnectivityService.instance.isOffline) return;
         if (widget.isActive) {
           _fetch(silent: true);
         } else {
@@ -72,13 +78,14 @@ class _UpdatesScreenState extends State<UpdatesScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
+    if (state == AppLifecycleState.resumed && !ConnectivityService.instance.isOffline) {
       _fetch(silent: true);
     }
   }
 
   Future<void> _fetch({bool silent = false}) async {
-    if (!silent && _groups.isEmpty) {
+    final hasCurrent = _groups.values.any((list) => (list as List).isNotEmpty);
+    if (!silent && !hasCurrent) {
       setState(() => _loading = true);
     }
     try {
@@ -156,6 +163,7 @@ class _UpdatesScreenState extends State<UpdatesScreen>
                                       final effTitle = (rawT.isNotEmpty && rawT != 'Untitled' && !rawT.startsWith('ext:') && rawT != mId)
                                           ? rawT
                                           : (known?.displayTitle ?? MangaItem.cleanTitleFromIdOrSlug(mId));
+                                      final cachedChapters = ApiService.instance.getCachedChapters(mId);
                                       Navigator.of(context).push(
                                         smoothRoute(
                                           ReaderScreen(
@@ -165,6 +173,7 @@ class _UpdatesScreenState extends State<UpdatesScreen>
                                             chapterTitle: item['chapterTitle'],
                                             coverUrl: item['cover'],
                                             chapterNumber: item['chapterNumber']?.toString(),
+                                            chapters: cachedChapters,
                                             mangaType: known?.type ?? item['type']?.toString(),
                                             tags: known?.tags,
                                           ),

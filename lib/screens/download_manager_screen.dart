@@ -37,6 +37,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
     final totalBytes = ds.getTotalDownloadSizeBytes();
     final downloaded = ds.downloadedChapters.values.toList();
     final active = ds.activeTasks;
+    final failed = ds.failedTasks;
 
     // Group downloaded chapters by mangaId
     final Map<String, List<DownloadedChapterInfo>> grouped = {};
@@ -54,6 +55,21 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
           style: AppText.title,
         ),
         actions: [
+          if (active.isNotEmpty)
+            IconButton(
+              icon: Icon(
+                ds.isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                color: AppColors.primary,
+              ),
+              tooltip: ds.isPaused ? 'Resume downloads' : 'Pause downloads',
+              onPressed: () {
+                if (ds.isPaused) {
+                  ds.resumeQueue();
+                } else {
+                  ds.pauseQueue();
+                }
+              },
+            ),
           if (downloaded.isNotEmpty)
             IconButton(
               icon: const Icon(Icons.delete_sweep_rounded, color: AppColors.muted),
@@ -65,7 +81,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
       body: ListView(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         children: [
-          // Storage Summary Card
+          // Storage Summary & Policy Card
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -73,37 +89,54 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
               borderRadius: BorderRadius.circular(16),
               border: Border.all(color: AppColors.outline),
             ),
-            child: Row(
+            child: Column(
               children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppColors.active.withValues(alpha: .5),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(Icons.offline_pin_rounded, color: AppColors.primary, size: 26),
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppColors.active.withValues(alpha: .5),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: const Icon(Icons.offline_pin_rounded, color: AppColors.primary, size: 26),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Total Offline Storage',
+                            style: AppText.caption.copyWith(color: AppColors.muted),
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            ds.formatBytes(totalBytes),
+                            style: AppText.title,
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${downloaded.length} chapters across ${grouped.length} titles',
+                            style: AppText.caption.copyWith(color: AppColors.muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Total Offline Storage',
-                        style: AppText.caption.copyWith(color: AppColors.muted),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        ds.formatBytes(totalBytes),
-                        style: AppText.title,
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        '${downloaded.length} chapters across ${grouped.length} titles',
-                        style: AppText.caption.copyWith(color: AppColors.muted),
-                      ),
-                    ],
+                const SizedBox(height: 12),
+                const Divider(color: AppColors.outline, height: 1),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('Auto-delete after reading', style: AppText.bodyMedium),
+                  subtitle: Text(
+                    'Automatically delete downloaded chapter once finished to free storage',
+                    style: AppText.caption,
                   ),
+                  activeThumbColor: AppColors.primary,
+                  value: ds.autoDeleteReadChapters,
+                  onChanged: (val) => ds.setAutoDeleteReadChapters(val),
                 ),
               ],
             ),
@@ -112,15 +145,84 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
           // Active Downloads Queue (if any)
           if (active.isNotEmpty) ...[
             const SizedBox(height: 24),
-            _sectionHeader('ACTIVE DOWNLOADS (${active.length})'),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                _sectionHeader(
+                  ds.isPaused
+                      ? 'PAUSED QUEUE (${active.length})'
+                      : 'ACTIVE DOWNLOADS (${active.length})',
+                ),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextButton.icon(
+                      onPressed: () {
+                        if (ds.isPaused) {
+                          ds.resumeQueue();
+                        } else {
+                          ds.pauseQueue();
+                        }
+                      },
+                      icon: Icon(
+                        ds.isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                        size: 16,
+                      ),
+                      label: Text(ds.isPaused ? 'Resume' : 'Pause'),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColors.primary,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    TextButton(
+                      onPressed: ds.cancelAllActiveDownloads,
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.redAccent,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: const Text('Cancel All'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
             for (final task in active)
+              _buildActiveTaskCard(task),
+          ],
+
+          // Failed Downloads (if any)
+          if (failed.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                _sectionHeader('FAILED DOWNLOADS (${failed.length})'),
+                TextButton.icon(
+                  onPressed: ds.retryFailedDownloads,
+                  icon: const Icon(Icons.refresh_rounded, size: 16),
+                  label: const Text('Retry All'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    minimumSize: Size.zero,
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                ),
+              ],
+            ),
+            for (final task in failed)
               _buildActiveTaskCard(task),
           ],
 
           const SizedBox(height: 24),
           _sectionHeader('DOWNLOADED TITLES (${grouped.length})'),
 
-          if (grouped.isEmpty && active.isEmpty)
+          if (grouped.isEmpty && active.isEmpty && failed.isEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 48),
               child: Center(
@@ -162,13 +264,14 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
 
   Widget _buildActiveTaskCard(DownloadTask task) {
     final ds = DownloadService.instance;
+    final isFailed = task.status == DownloadStatus.failed;
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.surface,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.outline),
+        border: Border.all(color: isFailed ? Colors.redAccent.withValues(alpha: .4) : AppColors.outline),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -208,6 +311,13 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                   ],
                 ),
               ),
+              if (isFailed)
+                IconButton(
+                  constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                  icon: const Icon(Icons.refresh_rounded, size: 18, color: AppColors.primary),
+                  tooltip: 'Retry download',
+                  onPressed: () => ds.downloadChapter(task.manga, task.chapter),
+                ),
               IconButton(
                 constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                 icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
@@ -216,26 +326,36 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
             ],
           ),
           const SizedBox(height: 8),
-          LinearProgressIndicator(
-            value: task.status == DownloadStatus.queued ? null : task.progress,
-            backgroundColor: AppColors.surfaceHigh,
-            color: AppColors.primary,
-            borderRadius: BorderRadius.circular(4),
-          ),
+          if (!isFailed)
+            LinearProgressIndicator(
+              value: task.status == DownloadStatus.queued ? null : task.progress,
+              backgroundColor: AppColors.surfaceHigh,
+              color: AppColors.primary,
+              borderRadius: BorderRadius.circular(4),
+            ),
           const SizedBox(height: 6),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                task.status == DownloadStatus.queued
-                    ? 'Queued...'
-                    : 'Page ${task.downloadedPages} of ${task.totalPages}',
-                style: AppText.badge.copyWith(color: AppColors.muted),
+              Expanded(
+                child: Text(
+                  isFailed
+                      ? (task.error ?? 'Download failed')
+                      : (ds.isPaused
+                          ? 'Paused'
+                          : (task.status == DownloadStatus.queued
+                              ? 'Queued...'
+                              : 'Page ${task.downloadedPages} of ${task.totalPages}')),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.badge.copyWith(color: isFailed ? Colors.redAccent : AppColors.muted),
+                ),
               ),
-              Text(
-                '${(task.progress * 100).toInt()}%',
-                style: AppText.badge.copyWith(color: AppColors.primary),
-              ),
+              if (!isFailed)
+                Text(
+                  '${(task.progress * 100).toInt()}%',
+                  style: AppText.badge.copyWith(color: AppColors.primary),
+                ),
             ],
           ),
         ],

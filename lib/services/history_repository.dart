@@ -12,22 +12,28 @@ class HistoryRepository extends ChangeNotifier {
   final List<ReadHistoryEntry> _localHistory = [];
   final Map<String, ReadProgress> _localProgress = {};
   final Map<String, Set<String>> _readChapters = {};
+  final Map<String, Set<String>> _pendingUnreadChapters = {};
   final Set<String> _bookmarkedChapterIds = {};
+  final Set<String> _deletedChapterBookmarks = {};
   final Map<String, int> _mangaChapterCounts = {};
 
   SharedPreferences? _cachedPrefs;
 
   List<ReadHistoryEntry> get localHistory => List.unmodifiable(_localHistory);
-  Map<String, ReadProgress> get localProgress => Map.unmodifiable(_localProgress);
+  Map<String, ReadProgress> get localProgress =>
+      Map.unmodifiable(_localProgress);
   Map<String, Set<String>> get readChapters => Map.unmodifiable(_readChapters);
-  Set<String> get bookmarkedChapterIds => Set.unmodifiable(_bookmarkedChapterIds);
+  Set<String> get bookmarkedChapterIds =>
+      Set.unmodifiable(_bookmarkedChapterIds);
 
   Future<void> init(SharedPreferences prefs) async {
     _cachedPrefs = prefs;
     _localHistory.clear();
     _localProgress.clear();
     _readChapters.clear();
+    _pendingUnreadChapters.clear();
     _bookmarkedChapterIds.clear();
+    _deletedChapterBookmarks.clear();
 
     // 1. Local History
     final localHistJson = prefs.getString('shiori_local_history');
@@ -37,7 +43,9 @@ class HistoryRepository extends ChangeNotifier {
         _localHistory.clear();
         for (final item in list) {
           if (item is Map) {
-            _localHistory.add(ReadHistoryEntry.fromMap(Map<String, dynamic>.from(item)));
+            _localHistory.add(
+              ReadHistoryEntry.fromMap(Map<String, dynamic>.from(item)),
+            );
           }
         }
       } catch (e) {
@@ -53,7 +61,9 @@ class HistoryRepository extends ChangeNotifier {
         _localProgress.clear();
         map.forEach((k, v) {
           if (v is Map) {
-            _localProgress[k] = ReadProgress.fromMap(Map<String, dynamic>.from(v));
+            _localProgress[k] = ReadProgress.fromMap(
+              Map<String, dynamic>.from(v),
+            );
           }
         });
       } catch (e) {
@@ -102,6 +112,59 @@ class HistoryRepository extends ChangeNotifier {
         AppLogger.warn('Failed to parse shiori_manga_chapter_counts', e);
       }
     }
+
+    // 6. Pending Unread Chapter Tombstones (offline mark-as-unread resilience)
+    final pendingUnreadJson = prefs.getString('shiori_pending_unread_chapters');
+    if (pendingUnreadJson != null && pendingUnreadJson.isNotEmpty) {
+      try {
+        final Map<String, dynamic> map = jsonDecode(pendingUnreadJson);
+        _pendingUnreadChapters.clear();
+        map.forEach((k, v) {
+          if (v is List) {
+            _pendingUnreadChapters[k] = v.map((e) => e.toString()).toSet();
+          }
+        });
+      } catch (e) {
+        AppLogger.warn('Failed to parse shiori_pending_unread_chapters', e);
+      }
+    }
+
+    // 7. Deleted Chapter Bookmark Tombstones (offline unbookmark resilience)
+    final deletedBmJson = prefs.getString('shiori_deleted_chapter_bookmarks');
+    if (deletedBmJson != null && deletedBmJson.isNotEmpty) {
+      try {
+        final List<dynamic> list = jsonDecode(deletedBmJson);
+        _deletedChapterBookmarks.clear();
+        _deletedChapterBookmarks.addAll(list.map((e) => e.toString()));
+      } catch (e) {
+        AppLogger.warn('Failed to parse shiori_deleted_chapter_bookmarks', e);
+      }
+    }
+  }
+
+  Future<void> _persistPendingUnreadChapters() async {
+    try {
+      final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
+      final map = <String, List<String>>{
+        for (final entry in _pendingUnreadChapters.entries)
+          if (entry.value.isNotEmpty) entry.key: entry.value.toList(),
+      };
+      await prefs.setString('shiori_pending_unread_chapters', jsonEncode(map));
+    } catch (e) {
+      AppLogger.warn('Failed to persist pending unread chapters', e);
+    }
+  }
+
+  Future<void> _persistDeletedChapterBookmarks() async {
+    try {
+      final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
+      await prefs.setString(
+        'shiori_deleted_chapter_bookmarks',
+        jsonEncode(_deletedChapterBookmarks.toList()),
+      );
+    } catch (e) {
+      AppLogger.warn('Failed to persist deleted chapter bookmarks', e);
+    }
   }
 
   Future<void> _persistLocalHistory() async {
@@ -118,7 +181,8 @@ class HistoryRepository extends ChangeNotifier {
     try {
       final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
       final map = <String, Map<String, dynamic>>{
-        for (final entry in _localProgress.entries) entry.key: entry.value.toMap(),
+        for (final entry in _localProgress.entries)
+          entry.key: entry.value.toMap(),
       };
       await prefs.setString('shiori_local_progress', jsonEncode(map));
     } catch (e) {
@@ -130,7 +194,8 @@ class HistoryRepository extends ChangeNotifier {
     try {
       final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
       final map = <String, List<String>>{
-        for (final entry in _readChapters.entries) entry.key: entry.value.toList(),
+        for (final entry in _readChapters.entries)
+          entry.key: entry.value.toList(),
       };
       await prefs.setString('shiori_read_chapters', jsonEncode(map));
     } catch (e) {
@@ -141,7 +206,10 @@ class HistoryRepository extends ChangeNotifier {
   Future<void> _persistChapterBookmarks() async {
     try {
       final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
-      await prefs.setString('shiori_chapter_bookmarks', jsonEncode(_bookmarkedChapterIds.toList()));
+      await prefs.setString(
+        'shiori_chapter_bookmarks',
+        jsonEncode(_bookmarkedChapterIds.toList()),
+      );
     } catch (e) {
       AppLogger.warn('Failed to persist chapter bookmarks', e);
     }
@@ -150,7 +218,10 @@ class HistoryRepository extends ChangeNotifier {
   Future<void> _persistChapterCounts() async {
     try {
       final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
-      await prefs.setString('shiori_manga_chapter_counts', jsonEncode(_mangaChapterCounts));
+      await prefs.setString(
+        'shiori_manga_chapter_counts',
+        jsonEncode(_mangaChapterCounts),
+      );
     } catch (e) {
       AppLogger.warn('Failed to persist chapter counts', e);
     }
@@ -265,16 +336,21 @@ class HistoryRepository extends ChangeNotifier {
     final set = _readChapters.putIfAbsent(mangaId, () => <String>{});
     if (read) {
       set.add(chapterId);
+      _pendingUnreadChapters[mangaId]?.remove(chapterId);
     } else {
       set.remove(chapterId);
+      _pendingUnreadChapters
+          .putIfAbsent(mangaId, () => <String>{})
+          .add(chapterId);
     }
     await _persistReadChapters();
+    await _persistPendingUnreadChapters();
     notifyListeners();
 
     // Silent background cloud sync for read status update (#34)
     if (client != null && baseUrl != null && headers != null) {
       try {
-        await client
+        final res = await client
             .post(
               Uri.parse('$baseUrl/progress/read-status'),
               headers: headers,
@@ -285,6 +361,10 @@ class HistoryRepository extends ChangeNotifier {
               }),
             )
             .timeout(const Duration(seconds: 6));
+        if (!read && (res.statusCode == 200 || res.statusCode == 201)) {
+          _pendingUnreadChapters[mangaId]?.remove(chapterId);
+          unawaited(_persistPendingUnreadChapters());
+        }
       } catch (e) {
         AppLogger.warn('Cloud markChapterRead failed for $chapterId', e);
       }
@@ -302,16 +382,24 @@ class HistoryRepository extends ChangeNotifier {
     final set = _readChapters.putIfAbsent(mangaId, () => <String>{});
     if (read) {
       set.addAll(chapterIds);
+      _pendingUnreadChapters[mangaId]?.removeAll(chapterIds);
     } else {
       set.removeAll(chapterIds);
+      _pendingUnreadChapters
+          .putIfAbsent(mangaId, () => <String>{})
+          .addAll(chapterIds);
     }
     await _persistReadChapters();
+    await _persistPendingUnreadChapters();
     notifyListeners();
 
     // Silent background cloud sync for batch read status update (#34)
-    if (client != null && baseUrl != null && headers != null && chapterIds.isNotEmpty) {
+    if (client != null &&
+        baseUrl != null &&
+        headers != null &&
+        chapterIds.isNotEmpty) {
       try {
-        await client
+        final res = await client
             .post(
               Uri.parse('$baseUrl/progress/read-status'),
               headers: headers,
@@ -322,8 +410,15 @@ class HistoryRepository extends ChangeNotifier {
               }),
             )
             .timeout(const Duration(seconds: 8));
+        if (!read && (res.statusCode == 200 || res.statusCode == 201)) {
+          _pendingUnreadChapters[mangaId]?.removeAll(chapterIds);
+          unawaited(_persistPendingUnreadChapters());
+        }
       } catch (e) {
-        AppLogger.warn('Cloud markChaptersRead failed for ${chapterIds.length} chapters', e);
+        AppLogger.warn(
+          'Cloud markChaptersRead failed for ${chapterIds.length} chapters',
+          e,
+        );
       }
     }
   }
@@ -360,10 +455,13 @@ class HistoryRepository extends ChangeNotifier {
     final has = _bookmarkedChapterIds.contains(chapterId);
     if (has) {
       _bookmarkedChapterIds.remove(chapterId);
+      _deletedChapterBookmarks.add(chapterId);
     } else {
       _bookmarkedChapterIds.add(chapterId);
+      _deletedChapterBookmarks.remove(chapterId);
     }
     await _persistChapterBookmarks();
+    await _persistDeletedChapterBookmarks();
     notifyListeners();
 
     // Silent background cloud sync for real-time chapter bookmark update
@@ -376,7 +474,14 @@ class HistoryRepository extends ChangeNotifier {
                 headers: headers,
                 body: jsonEncode({'chapterId': chapterId}),
               )
-              .timeout(const Duration(seconds: 5)),
+              .timeout(const Duration(seconds: 5))
+              .then((res) {
+                if (has && (res.statusCode == 200 || res.statusCode == 201)) {
+                  _deletedChapterBookmarks.remove(chapterId);
+                  unawaited(_persistDeletedChapterBookmarks());
+                }
+              })
+              .catchError((_) {}),
         );
       } catch (e) {
         AppLogger.warn('Cloud chapter bookmark toggle failed', e);
@@ -396,14 +501,20 @@ class HistoryRepository extends ChangeNotifier {
     final has = _bookmarkedChapterIds.contains(chapterId);
     if (bookmarked) {
       _bookmarkedChapterIds.add(chapterId);
+      _deletedChapterBookmarks.remove(chapterId);
     } else {
       _bookmarkedChapterIds.remove(chapterId);
+      _deletedChapterBookmarks.add(chapterId);
     }
     await _persistChapterBookmarks();
+    await _persistDeletedChapterBookmarks();
     notifyListeners();
 
     // Silent background cloud sync for real-time chapter bookmark update
-    if (has != bookmarked && client != null && baseUrl != null && headers != null) {
+    if (has != bookmarked &&
+        client != null &&
+        baseUrl != null &&
+        headers != null) {
       try {
         unawaited(
           client
@@ -412,7 +523,15 @@ class HistoryRepository extends ChangeNotifier {
                 headers: headers,
                 body: jsonEncode({'chapterId': chapterId}),
               )
-              .timeout(const Duration(seconds: 5)),
+              .timeout(const Duration(seconds: 5))
+              .then((res) {
+                if (!bookmarked &&
+                    (res.statusCode == 200 || res.statusCode == 201)) {
+                  _deletedChapterBookmarks.remove(chapterId);
+                  unawaited(_persistDeletedChapterBookmarks());
+                }
+              })
+              .catchError((_) {}),
         );
       } catch (e) {
         AppLogger.warn('Cloud setChapterBookmarked failed', e);
@@ -449,7 +568,10 @@ class HistoryRepository extends ChangeNotifier {
     if (client != null && baseUrl != null && headers != null) {
       try {
         await client
-            .delete(Uri.parse('$baseUrl/progress/history/$chapterId'), headers: headers)
+            .delete(
+              Uri.parse('$baseUrl/progress/history/$chapterId'),
+              headers: headers,
+            )
             .timeout(const Duration(seconds: 8));
       } catch (e) {
         AppLogger.warn('Cloud removeHistoryEntry failed for $chapterId', e);
@@ -481,15 +603,46 @@ class HistoryRepository extends ChangeNotifier {
 
   // ---- Timestamp-Based Cloud Merge & Full Upload (#31, #33, #34) ----
 
+  final Map<String, Set<String>> _recentlyFlushedUnreadChapters = {};
+  final Set<String> _recentlyFlushedDeletedBookmarks = {};
+
   Future<void> uploadProgressAndHistory(
     http.Client client,
     String baseUrl,
     Map<String, String> headers,
   ) async {
+    // 0. Flush any pending offline "mark as unread" mutations first
+    if (_pendingUnreadChapters.isNotEmpty) {
+      for (final entry in _pendingUnreadChapters.entries.toList()) {
+        if (entry.value.isEmpty) continue;
+        try {
+          final res = await client
+              .post(
+                Uri.parse('$baseUrl/progress/read-status'),
+                headers: headers,
+                body: jsonEncode({
+                  'mangaId': entry.key,
+                  'chapterIds': entry.value.toList(),
+                  'read': false,
+                }),
+              )
+              .timeout(const Duration(seconds: 6));
+          if (res.statusCode == 200 || res.statusCode == 201) {
+            _recentlyFlushedUnreadChapters
+                .putIfAbsent(entry.key, () => <String>{})
+                .addAll(entry.value);
+            _pendingUnreadChapters.remove(entry.key);
+          }
+        } catch (_) {}
+      }
+      await _persistPendingUnreadChapters();
+    }
+
     if (_localProgress.isEmpty &&
         _localHistory.isEmpty &&
         _readChapters.isEmpty &&
-        _bookmarkedChapterIds.isEmpty) {
+        _bookmarkedChapterIds.isEmpty &&
+        _deletedChapterBookmarks.isEmpty) {
       return;
     }
 
@@ -524,15 +677,23 @@ class HistoryRepository extends ChangeNotifier {
           )
           .timeout(const Duration(seconds: 10));
 
-      if (_bookmarkedChapterIds.isNotEmpty) {
+      if (_bookmarkedChapterIds.isNotEmpty ||
+          _deletedChapterBookmarks.isNotEmpty) {
         try {
-          await client
+          final res = await client
               .put(
                 Uri.parse('$baseUrl/progress/chapter-bookmarks'),
                 headers: headers,
-                body: jsonEncode({'chapterBookmarks': _bookmarkedChapterIds.toList()}),
+                body: jsonEncode({
+                  'chapterBookmarks': _bookmarkedChapterIds.toList(),
+                }),
               )
               .timeout(const Duration(seconds: 6));
+          if (res.statusCode == 200 || res.statusCode == 201) {
+            _recentlyFlushedDeletedBookmarks.addAll(_deletedChapterBookmarks);
+            _deletedChapterBookmarks.clear();
+            await _persistDeletedChapterBookmarks();
+          }
         } catch (_) {}
       }
     } catch (e) {
@@ -578,7 +739,9 @@ class HistoryRepository extends ChangeNotifier {
         final list = data['items'] as List<dynamic>? ?? [];
         for (final item in list) {
           if (item is Map) {
-            final cloudEntry = ReadHistoryEntry.fromMap(Map<String, dynamic>.from(item));
+            final cloudEntry = ReadHistoryEntry.fromMap(
+              Map<String, dynamic>.from(item),
+            );
             if (cloudEntry.mangaId.isEmpty) continue;
             _mergeHistoryEntryWithTimestamp(cloudEntry);
           }
@@ -593,7 +756,10 @@ class HistoryRepository extends ChangeNotifier {
     // 3. Fallback check for chapter bookmarks if sync endpoint did not deliver them
     try {
       final bmRes = await client
-          .get(Uri.parse('$baseUrl/progress/chapter-bookmarks'), headers: headers)
+          .get(
+            Uri.parse('$baseUrl/progress/chapter-bookmarks'),
+            headers: headers,
+          )
           .timeout(const Duration(seconds: 6));
       if (bmRes.statusCode == 200) {
         final data = jsonDecode(bmRes.body) as Map<String, dynamic>;
@@ -618,7 +784,9 @@ class HistoryRepository extends ChangeNotifier {
     final historyList = data['history'] as List<dynamic>? ?? [];
     for (final item in historyList) {
       if (item is Map) {
-        final cloudEntry = ReadHistoryEntry.fromMap(Map<String, dynamic>.from(item));
+        final cloudEntry = ReadHistoryEntry.fromMap(
+          Map<String, dynamic>.from(item),
+        );
         if (cloudEntry.mangaId.isNotEmpty) {
           _mergeHistoryEntryWithTimestamp(cloudEntry);
         }
@@ -629,7 +797,9 @@ class HistoryRepository extends ChangeNotifier {
     final progressMap = data['progressByManga'] as Map<String, dynamic>? ?? {};
     progressMap.forEach((mangaId, pData) {
       if (pData is Map) {
-        final cloudProg = ReadProgress.fromMap(Map<String, dynamic>.from(pData));
+        final cloudProg = ReadProgress.fromMap(
+          Map<String, dynamic>.from(pData),
+        );
         final localProg = _localProgress[mangaId];
         if (localProg == null ||
             (cloudProg.updatedAt != null &&
@@ -641,30 +811,48 @@ class HistoryRepository extends ChangeNotifier {
     });
 
     // 3. Read chapter sets (Unread badges cross-device) (#34)
-    final readChaptersMap = data['readChaptersByManga'] as Map<String, dynamic>? ?? {};
+    final readChaptersMap =
+        data['readChaptersByManga'] as Map<String, dynamic>? ?? {};
     readChaptersMap.forEach((mangaId, list) {
       if (list is List) {
+        final pendingUnread =
+            _pendingUnreadChapters[mangaId] ?? const <String>{};
+        final recentlyFlushed =
+            _recentlyFlushedUnreadChapters[mangaId] ?? const <String>{};
         final localSet = _readChapters.putIfAbsent(mangaId, () => <String>{});
-        localSet.addAll(list.map((e) => e.toString()));
+        for (final e in list) {
+          final chId = e.toString();
+          if (!pendingUnread.contains(chId) &&
+              !recentlyFlushed.contains(chId)) {
+            localSet.add(chId);
+          }
+        }
       }
     });
+    _recentlyFlushedUnreadChapters.clear();
 
     // 4. Chapter ribbon favorites cross-device cloud sync
     final chapterBookmarksList = data['chapterBookmarks'] as List<dynamic>?;
     if (chapterBookmarksList != null) {
       for (final b in chapterBookmarksList) {
         final bStr = b?.toString().trim();
-        if (bStr != null && bStr.isNotEmpty) {
+        if (bStr != null &&
+            bStr.isNotEmpty &&
+            !_deletedChapterBookmarks.contains(bStr) &&
+            !_recentlyFlushedDeletedBookmarks.contains(bStr)) {
           _bookmarkedChapterIds.add(bStr);
         }
       }
     }
+    _recentlyFlushedDeletedBookmarks.clear();
   }
 
   void mergeRemoteHistory(List<dynamic> remoteItems) {
     for (final item in remoteItems) {
       if (item is Map) {
-        final cloudEntry = ReadHistoryEntry.fromMap(Map<String, dynamic>.from(item));
+        final cloudEntry = ReadHistoryEntry.fromMap(
+          Map<String, dynamic>.from(item),
+        );
         if (cloudEntry.mangaId.isNotEmpty) {
           _mergeHistoryEntryWithTimestamp(cloudEntry);
         }
@@ -677,13 +865,17 @@ class HistoryRepository extends ChangeNotifier {
 
   /// Timestamp-based merge (#31): compares `updatedAt` and keeps whichever is newer
   void _mergeHistoryEntryWithTimestamp(ReadHistoryEntry cloudEntry) {
-    final idx = _localHistory.indexWhere((h) => h.mangaId == cloudEntry.mangaId);
+    final idx = _localHistory.indexWhere(
+      (h) => h.mangaId == cloudEntry.mangaId,
+    );
     if (idx == -1) {
       _localHistory.add(cloudEntry);
     } else {
       final local = _localHistory[idx];
-      final localDate = local.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final cloudDate = cloudEntry.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final localDate =
+          local.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final cloudDate =
+          cloudEntry.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
       if (cloudDate.isAfter(localDate)) {
         _localHistory[idx] = cloudEntry;
       }
@@ -705,8 +897,10 @@ class HistoryRepository extends ChangeNotifier {
         updatedAt: cloudEntry.updatedAt,
       );
     } else {
-      final localDate = localProg.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final cloudDate = cloudEntry.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final localDate =
+          localProg.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final cloudDate =
+          cloudEntry.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
       if (cloudDate.isAfter(localDate)) {
         _localProgress[cloudEntry.mangaId] = localProg.copyWith(
           chapterId: cloudEntry.chapterId,
@@ -726,14 +920,18 @@ class HistoryRepository extends ChangeNotifier {
     _localHistory.clear();
     _localProgress.clear();
     _readChapters.clear();
+    _pendingUnreadChapters.clear();
     _bookmarkedChapterIds.clear();
+    _deletedChapterBookmarks.clear();
     _mangaChapterCounts.clear();
 
     final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
     await prefs.remove('shiori_local_history');
     await prefs.remove('shiori_local_progress');
     await prefs.remove('shiori_read_chapters');
+    await prefs.remove('shiori_pending_unread_chapters');
     await prefs.remove('shiori_chapter_bookmarks');
+    await prefs.remove('shiori_deleted_chapter_bookmarks');
     await prefs.remove('shiori_manga_chapter_counts');
     notifyListeners();
   }

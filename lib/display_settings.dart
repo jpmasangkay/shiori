@@ -33,11 +33,36 @@ class DisplaySettings extends ChangeNotifier {
   static const _keyColumns = 'library_display_columns';
   static const _keyCategoryTabs = 'library_display_category_tabs';
   static const _keySort = 'library_display_sort';
+  static const _keyFilterDownloaded = 'library_filter_downloaded';
+  static const _keyFilterUnread = 'library_filter_unread';
+  static const _keyFilterCompleted = 'library_filter_completed';
+  static const _keyFilterTracked = 'library_filter_tracked';
+  static const _keyShowDownloadBadges = 'library_show_download_badges';
+  static const _keyShowEmptyCategories = 'library_show_empty_categories';
 
   DisplayMode mode = DisplayMode.compactGrid;
   int columns = 3;
   bool categoryTabs = true;
   LibrarySort sort = LibrarySort.dateAdded;
+
+  bool filterDownloaded = false;
+  bool filterUnread = false;
+  bool filterCompleted = false;
+  bool filterTracked = false;
+  bool showDownloadBadges = true;
+  bool showEmptyCategories = false;
+
+  bool get hasActiveFilters =>
+      filterDownloaded || filterUnread || filterCompleted || filterTracked;
+
+  void clearFilters() {
+    update(() {
+      filterDownloaded = false;
+      filterUnread = false;
+      filterCompleted = false;
+      filterTracked = false;
+    });
+  }
 
   LibrarySort get librarySort => sort;
   set librarySort(LibrarySort val) => update(() => sort = val);
@@ -77,6 +102,12 @@ class DisplaySettings extends ChangeNotifier {
               orElse: () => null,
             ) ?? sort;
       }
+      filterDownloaded = _prefs?.getBool(_keyFilterDownloaded) ?? false;
+      filterUnread = _prefs?.getBool(_keyFilterUnread) ?? false;
+      filterCompleted = _prefs?.getBool(_keyFilterCompleted) ?? false;
+      filterTracked = _prefs?.getBool(_keyFilterTracked) ?? false;
+      showDownloadBadges = _prefs?.getBool(_keyShowDownloadBadges) ?? true;
+      showEmptyCategories = _prefs?.getBool(_keyShowEmptyCategories) ?? false;
       notifyListeners();
     } catch (_) {}
   }
@@ -88,6 +119,12 @@ class DisplaySettings extends ChangeNotifier {
       await _prefs?.setInt(_keyColumns, columns);
       await _prefs?.setBool(_keyCategoryTabs, categoryTabs);
       await _prefs?.setString(_keySort, sort.name);
+      await _prefs?.setBool(_keyFilterDownloaded, filterDownloaded);
+      await _prefs?.setBool(_keyFilterUnread, filterUnread);
+      await _prefs?.setBool(_keyFilterCompleted, filterCompleted);
+      await _prefs?.setBool(_keyFilterTracked, filterTracked);
+      await _prefs?.setBool(_keyShowDownloadBadges, showDownloadBadges);
+      await _prefs?.setBool(_keyShowEmptyCategories, showEmptyCategories);
     } catch (_) {}
   }
 

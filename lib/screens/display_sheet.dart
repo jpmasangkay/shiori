@@ -31,45 +31,51 @@ class _DisplaySheet extends StatelessWidget {
     return SafeArea(
       top: false,
       child: DefaultTabController(
-        length: 2,
-        initialIndex: 1,
+        length: 3,
+        initialIndex: 2,
         child: SizedBox(
           height: sheetHeight,
           child: Column(
-
-          children: [
-            Container(
-              width: 32,
-              height: 4,
-              margin: const EdgeInsets.only(top: 10, bottom: 6),
-              decoration: BoxDecoration(
-                color: AppColors.read,
-                borderRadius: BorderRadius.circular(3),
+            children: [
+              Container(
+                width: 32,
+                height: 4,
+                margin: const EdgeInsets.only(top: 10, bottom: 6),
+                decoration: BoxDecoration(
+                  color: AppColors.read,
+                  borderRadius: BorderRadius.circular(3),
+                ),
               ),
-            ),
-            TabBar(
-              dividerColor: AppColors.outline,
-              indicatorColor: AppColors.primary,
-              indicatorSize: TabBarIndicatorSize.label,
-              labelColor: AppColors.primary,
-              unselectedLabelColor: AppColors.muted,
-              labelStyle: AppText.bodySemiBold,
-              unselectedLabelStyle: AppText.body,
-              overlayColor: const WidgetStatePropertyAll(Colors.transparent),
-              tabs: const [Tab(text: 'Sort'), Tab(text: 'Display')],
-            ),
-            Expanded(
-              child: TabBarView(
-                children: [_SortTab(), _DisplayTab(onManageCategories: onManageCategories)],
+              TabBar(
+                dividerColor: AppColors.outline,
+                indicatorColor: AppColors.primary,
+                indicatorSize: TabBarIndicatorSize.label,
+                labelColor: AppColors.primary,
+                unselectedLabelColor: AppColors.muted,
+                labelStyle: AppText.bodySemiBold,
+                unselectedLabelStyle: AppText.body,
+                overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+                tabs: const [
+                  Tab(text: 'Filter'),
+                  Tab(text: 'Sort'),
+                  Tab(text: 'Display'),
+                ],
               ),
-            ),
-          ],
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    const _FilterTab(),
+                    const _SortTab(),
+                    _DisplayTab(onManageCategories: onManageCategories),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-  );
-}
-
+    );
+  }
 }
 
 class _Heading extends StatelessWidget {
@@ -83,6 +89,67 @@ class _Heading extends StatelessWidget {
           style: AppText.sectionHeader,
         ),
       );
+}
+
+class _FilterTab extends StatelessWidget {
+  const _FilterTab();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: displaySettings,
+      builder: (context, _) {
+        final s = displaySettings;
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const _Heading('Filter library'),
+                if (s.hasActiveFilters)
+                  TextButton(
+                    onPressed: s.clearFilters,
+                    style: TextButton.styleFrom(
+                      minimumSize: Size.zero,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
+                      'Reset',
+                      style: AppText.caption.copyWith(
+                        color: AppColors.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            _ToggleRow(
+              'Downloaded only',
+              s.filterDownloaded,
+              (v) => s.update(() => s.filterDownloaded = v),
+            ),
+            _ToggleRow(
+              'Unread chapters',
+              s.filterUnread,
+              (v) => s.update(() => s.filterUnread = v),
+            ),
+            _ToggleRow(
+              'Completed series',
+              s.filterCompleted,
+              (v) => s.update(() => s.filterCompleted = v),
+            ),
+            _ToggleRow(
+              'Tracked series',
+              s.filterTracked,
+              (v) => s.update(() => s.filterTracked = v),
+            ),
+          ],
+        );
+      },
+    );
+  }
 }
 
 class _DisplayTab extends StatelessWidget {
@@ -168,6 +235,8 @@ class _DisplayTab extends StatelessWidget {
             const SizedBox(height: 18),
             const _Heading('Library'),
             _ToggleRow('Category tabs', s.categoryTabs, (v) => s.update(() => s.categoryTabs = v)),
+            _ToggleRow('Show empty categories', s.showEmptyCategories, (v) => s.update(() => s.showEmptyCategories = v)),
+            _ToggleRow('Download count badges', s.showDownloadBadges, (v) => s.update(() => s.showDownloadBadges = v)),
             if (onManageCategories != null) ...[
               const SizedBox(height: 8),
               InkWell(

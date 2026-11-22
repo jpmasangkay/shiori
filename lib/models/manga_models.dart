@@ -201,6 +201,17 @@ class ChapterItem {
     );
   }
 
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'number': number,
+        'volume': volume,
+        'title': title,
+        'pages': pages,
+        'group': group,
+        'publishAt': publishAt,
+        'source': source,
+      };
+
   String get displayTitle {
     final cleanTitle = title.trim();
     final cleanNum = number?.trim();

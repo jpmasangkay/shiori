@@ -20,7 +20,7 @@ class HistoryScreen extends StatefulWidget {
 
 class _HistoryScreenState extends State<HistoryScreen> {
   List<ReadHistoryEntry> _history = [];
-  bool _loading = true;
+  bool _loading = false;
   bool _dirty = false;
   String _searchQuery = '';
   String? _selectedSource;
@@ -29,7 +29,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
   @override
   void initState() {
     super.initState();
-    _fetch();
+    // Instant synchronous local hydration (0ms load time on slow/offline networks)
+    _history = ApiService.instance.getHistoryEntries();
+    _loading = _history.isEmpty;
+    _fetch(silent: _history.isNotEmpty);
     ApiService.instance.addListener(_onServiceChanged);
   }
 
@@ -54,7 +57,12 @@ class _HistoryScreenState extends State<HistoryScreen> {
       _dirty = true;
       return;
     }
-    _fetch(silent: true);
+    if (mounted) {
+      setState(() {
+        _history = ApiService.instance.getHistoryEntries();
+        _loading = false;
+      });
+    }
   }
 
   Future<void> _fetch({bool silent = false}) async {
@@ -384,6 +392,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         onTap: () {
           final known = ApiService.instance.libraryRepo.knownManga[mangaId] ??
               ApiService.instance.libraryRepo.localLibrary[mangaId];
+          final cachedChapters = ApiService.instance.getCachedChapters(mangaId);
           Navigator.of(context).push(
             smoothRoute(
               ReaderScreen(
@@ -392,6 +401,9 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 mangaTitle: title,
                 coverUrl: cover,
                 chapterNumber: chNum,
+                chapterTitle: item.chapterTitle,
+                chapters: cachedChapters,
+                initialPage: item.completed ? 1 : item.page,
                 mangaType: known?.type,
                 tags: known?.tags,
               ),
@@ -411,12 +423,13 @@ class _HistoryScreenState extends State<HistoryScreen> {
                             .push(
                               smoothRoute(
                                 DetailScreen(
-                                  manga: MangaItem(
-                                    id: mangaId,
-                                    title: title,
-                                    cover: cover,
-                                    source: item.source,
-                                  ),
+                                  manga: known ??
+                                      MangaItem(
+                                        id: mangaId,
+                                        title: title,
+                                        cover: cover,
+                                        source: item.source,
+                                      ),
                                 ),
                               ),
                             )

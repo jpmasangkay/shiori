@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
@@ -13,6 +14,7 @@ import '../widgets/common.dart';
 import '../widgets/duplicate_migration_sheet.dart';
 import '../widgets/skeleton.dart';
 import 'reader_screen.dart';
+import 'source_catalog_screen.dart';
 import 'tracking_screen.dart';
 import '../services/smart_update_service.dart';
 import '../services/tracker_service.dart';
@@ -46,16 +48,21 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _displayChapterNumberOnly = false;
   Set<String> _excludedScanlators = {};
   String? _resumeChapterId;
+  int? _resumePage;
   String _resumeLabel = 'Start Reading';
   Set<String> _readChapterIds = {};
   SmartUpdateResult? _smartUpdateResult;
   bool _isMangaTracked = false;
+  bool _searchingChapters = false;
+  String _chapterSearchQuery = '';
+  final TextEditingController _chapterSearchController = TextEditingController();
 
   bool get _hasActiveFilters =>
       _filterDownloaded ||
       _filterUnread ||
       _filterBookmarked ||
-      _excludedScanlators.isNotEmpty;
+      _excludedScanlators.isNotEmpty ||
+      _chapterSearchQuery.isNotEmpty;
 
   Set<String> get _availableScanlators {
     final set = <String>{};
@@ -97,6 +104,16 @@ class _DetailScreenState extends State<DetailScreen> {
     }
     if (_filterBookmarked) {
       list = list.where((c) => ApiService.instance.isChapterBookmarked(c.id)).toList();
+    }
+    if (_chapterSearchQuery.isNotEmpty) {
+      final q = _chapterSearchQuery.toLowerCase();
+      list = list.where((c) {
+        if ((c.number ?? '').toLowerCase().contains(q)) return true;
+        if (c.title.toLowerCase().contains(q)) return true;
+        if (c.displayTitle.toLowerCase().contains(q)) return true;
+        if (c.group.toLowerCase().contains(q)) return true;
+        return false;
+      }).toList();
     }
 
     final sorted = [...list];
@@ -298,9 +315,34 @@ class _DetailScreenState extends State<DetailScreen> {
   @override
   void initState() {
     super.initState();
-    _manga = widget.manga;
+    final cachedManga = ApiService.instance.libraryRepo.localLibrary[widget.manga.id] ??
+        ApiService.instance.libraryRepo.knownManga[widget.manga.id];
+    _manga = cachedManga != null ? _mergeManga(cachedManga, widget.manga) : widget.manga;
     _inLibrary = ApiService.instance.isInLibrary(_manga.id);
     ApiService.instance.cacheKnownManga(_manga);
+
+    // Instant 0ms local hydration for saved chapters & reading progress (works offline & on slow internet!)
+    _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
+    final localProg = ApiService.instance.historyRepo.localProgress[_manga.id];
+    if (localProg != null && localProg.chapterId.isNotEmpty) {
+      _resumeChapterId = localProg.chapterId;
+      _resumePage = localProg.completed ? 1 : localProg.page;
+      final num = localProg.chapterNumber;
+      _resumeLabel = num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
+    }
+
+    final cachedChs = ApiService.instance.getCachedChapters(_manga.id);
+    if (cachedChs.isNotEmpty) {
+      _apiChapters = cachedChs;
+      _loadingChapters = false;
+      _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, cachedChs);
+      _recomputeChapterDisplayList();
+      _syncResumeButton();
+    }
+    if (_manga.description.isNotEmpty) {
+      _loadingDetails = false;
+    }
+
     ApiService.instance.addListener(_onApiChanged);
     DownloadService.instance.addListener(_onDownloadsChanged);
     TrackerService.instance.addListener(_onTrackerChanged);
@@ -311,6 +353,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
   @override
   void dispose() {
+    _chapterSearchController.dispose();
     ApiService.instance.removeListener(_onApiChanged);
     DownloadService.instance.removeListener(_onDownloadsChanged);
     TrackerService.instance.removeListener(_onTrackerChanged);
@@ -328,9 +371,16 @@ class _DetailScreenState extends State<DetailScreen> {
     if (!mounted) return;
     final inLib = ApiService.instance.isInLibrary(_manga.id);
     final localRead = ApiService.instance.getReadChapterIds(_manga.id);
+    final localProg = ApiService.instance.historyRepo.localProgress[_manga.id];
     setState(() {
       _inLibrary = inLib;
       _readChapterIds = {..._readChapterIds, ...localRead};
+      if (localProg != null && localProg.chapterId.isNotEmpty) {
+        _resumeChapterId = localProg.chapterId;
+        _resumePage = localProg.completed ? 1 : localProg.page;
+        final chNum = localProg.chapterNumber;
+        _resumeLabel = chNum.isNotEmpty ? 'Resume Ch. $chNum' : 'Resume Reading';
+      }
     });
   }
 
@@ -417,8 +467,10 @@ class _DetailScreenState extends State<DetailScreen> {
           _readChapterIds = localRead;
           if (lastRead != null) {
             _resumeChapterId = lastRead['chapterId'] as String?;
-            final num = lastRead['chapterNumber'] ?? '';
-            _resumeLabel = num.toString().isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
+            final completed = lastRead['completed'] == true;
+            _resumePage = completed ? 1 : ((lastRead['page'] as num?)?.toInt() ?? 1);
+            final chNum = lastRead['chapterNumber'] ?? '';
+            _resumeLabel = chNum.toString().isNotEmpty ? 'Resume Ch. $chNum' : 'Resume Reading';
           } else {
             _syncResumeButton();
           }
@@ -435,10 +487,12 @@ class _DetailScreenState extends State<DetailScreen> {
         final chapters = await ApiService.instance.getChapters(m.id);
         if (!mounted) return;
         setState(() {
-          _apiChapters = chapters;
+          if (chapters.isNotEmpty || _apiChapters.isEmpty) {
+            _apiChapters = chapters;
+          }
           _loadingChapters = false;
           _chaptersError = null;
-          _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, chapters);
+          _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, _apiChapters);
           _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
           _recomputeChapterDisplayList();
           _syncResumeButton();
@@ -446,7 +500,10 @@ class _DetailScreenState extends State<DetailScreen> {
       } catch (err) {
         if (!mounted) return;
         setState(() {
-          _chaptersError = err.toString().replaceFirst('Exception: ', '');
+          // Only show error screen if we have no cached/downloaded chapters locally
+          if (_apiChapters.isEmpty) {
+            _chaptersError = err.toString().replaceFirst('Exception: ', '');
+          }
           _loadingChapters = false;
         });
       }
@@ -626,7 +683,12 @@ class _DetailScreenState extends State<DetailScreen> {
     }
   }
 
-  void _openReader({String? chapterId, String? chapterNumber, String? title}) {
+  void _openReader({
+    String? chapterId,
+    String? chapterNumber,
+    String? title,
+    int? initialPage,
+  }) {
     final chapters = _filteredChapters;
     if (chapterId == null && chapters.isNotEmpty) {
       chapterId = _descending ? chapters.last.id : chapters.first.id;
@@ -635,6 +697,14 @@ class _DetailScreenState extends State<DetailScreen> {
     }
 
     if (chapterId == null) return;
+
+    int? effectiveInitialPage = initialPage;
+    if (effectiveInitialPage == null) {
+      final prog = ApiService.instance.historyRepo.localProgress[_manga.id];
+      if (prog != null && prog.chapterId == chapterId && !prog.completed && prog.page > 1) {
+        effectiveInitialPage = prog.page;
+      }
+    }
 
     // Build reading chapters in chronological ascending order
     double? parseChapterNum(ChapterItem c) {
@@ -679,6 +749,7 @@ class _DetailScreenState extends State<DetailScreen> {
           chapterTitle: title,
           chapters: readingChapters,
           initialIndex: idx,
+          initialPage: effectiveInitialPage,
           mangaType: _manga.type,
           tags: _manga.tags,
         ),
@@ -974,7 +1045,10 @@ class _DetailScreenState extends State<DetailScreen> {
               key: const ValueKey('resume_fab'),
               child: _ResumeFab(
                 label: _resumeLabel,
-                onTap: () => _openReader(chapterId: _resumeChapterId),
+                onTap: () => _openReader(
+                  chapterId: _resumeChapterId,
+                  initialPage: _resumePage,
+                ),
               ),
             )
           : null,
@@ -985,6 +1059,50 @@ class _DetailScreenState extends State<DetailScreen> {
           SliverToBoxAdapter(child: _synopsisBlock()),
           if (_manga.tags.isNotEmpty) SliverToBoxAdapter(child: _chips()),
           SliverToBoxAdapter(child: _sectionTitle()),
+          if (_searchingChapters)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                child: SizedBox(
+                  height: 40,
+                  child: TextField(
+                    controller: _chapterSearchController,
+                    autofocus: true,
+                    style: AppText.body,
+                    decoration: InputDecoration(
+                      hintText: 'Jump to chapter number or title...',
+                      hintStyle: AppText.caption,
+                      prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.muted),
+                      suffixIcon: _chapterSearchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.muted),
+                              onPressed: () {
+                                _chapterSearchController.clear();
+                                setState(() {
+                                  _chapterSearchQuery = '';
+                                  _recomputeChapterDisplayList();
+                                });
+                              },
+                            )
+                          : null,
+                      filled: true,
+                      fillColor: AppColors.surfaceHigh,
+                      contentPadding: EdgeInsets.zero,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onChanged: (val) {
+                      setState(() {
+                        _chapterSearchQuery = val.trim();
+                        _recomputeChapterDisplayList();
+                      });
+                    },
+                  ),
+                ),
+              ),
+            ),
           if (_loadingChapters)
             SliverList.builder(
               itemCount: 8,
@@ -1079,6 +1197,11 @@ class _DetailScreenState extends State<DetailScreen> {
                     final isBookmarked = ApiService.instance.isChapterBookmarked(c.id);
                     final downloadStatus = DownloadService.instance.getStatus(c.id);
                     final downloadProgress = DownloadService.instance.getProgress(c.id);
+                    final prog = ApiService.instance.historyRepo.localProgress[_manga.id];
+                    final partialPage = (!isRead && prog != null && prog.chapterId == c.id && !prog.completed && prog.page > 1)
+                        ? prog.page
+                        : null;
+                    final partialTotal = partialPage != null ? prog?.totalPages : null;
 
                     return _ApiChapterTile(
                       key: ValueKey('ch_${c.id}'),
@@ -1086,6 +1209,8 @@ class _DetailScreenState extends State<DetailScreen> {
                       displayChapterNumberOnly: _displayChapterNumberOnly,
                       isRead: isRead,
                       isBookmarked: isBookmarked,
+                      partialPage: partialPage,
+                      partialTotalPages: partialTotal,
                       downloadStatus: downloadStatus,
                       downloadProgress: downloadProgress,
                       onToggleDownload: () => _handleChapterDownload(c),
@@ -1093,6 +1218,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         chapterId: c.id,
                         chapterNumber: c.number,
                         title: c.title,
+                        initialPage: partialPage,
                       ),
                       onToggleRead: () async {
                         final nextState = !isRead;
@@ -1383,9 +1509,17 @@ class _DetailScreenState extends State<DetailScreen> {
             child: AppTopBar(
               title: '',
               onBack: () => Navigator.of(context).maybePop(),
-              actions: const [
-                BarIcon(Icons.share_outlined, label: 'Share'),
-                BarIcon(Icons.more_vert_rounded, label: 'More'),
+              actions: [
+                BarIcon(
+                  Icons.share_outlined,
+                  label: 'Share',
+                  onTap: _shareManga,
+                ),
+                BarIcon(
+                  Icons.more_vert_rounded,
+                  label: 'More',
+                  onTap: _showMoreDetailOptions,
+                ),
               ],
             ),
           ),
@@ -1516,8 +1650,91 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  Future<void> _shareManga() async {
+    final sourceName = SourceResolver.displayName(SourceResolver.resolve(_manga.id, _manga.source));
+    final text = '${_manga.displayTitle} ($sourceName) — Read on Shiori';
+    await Clipboard.setData(ClipboardData(text: text));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Copied "$text" to clipboard'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  void _showMoreDetailOptions() {
+    final downloadedCount = DownloadService.instance.getDownloadedCountForManga(_manga.id);
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 32,
+                height: 4,
+                margin: const EdgeInsets.only(top: 4, bottom: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.read,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.refresh_rounded, color: AppColors.primary),
+                title: Text('Refresh Metadata & Chapters', style: AppText.bodyMedium),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _loadMangaData();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.public_rounded, color: AppColors.primary),
+                title: Text('Open in WebView', style: AppText.bodyMedium),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _openWebView();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.share_outlined, color: AppColors.primary),
+                title: Text('Share Title', style: AppText.bodyMedium),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _shareManga();
+                },
+              ),
+              if (downloadedCount > 0)
+                ListTile(
+                  leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                  title: Text(
+                    'Delete $downloadedCount Downloaded Chapters',
+                    style: AppText.bodyMedium.copyWith(color: Colors.redAccent),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    DownloadService.instance.deleteMangaDownloads(_manga.id);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Deleted offline downloads for this title')),
+                    );
+                  },
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _chips() {
-    final chips = _manga.tags.take(6).toList();
+    final chips = _manga.tags.take(8).toList();
     if (chips.isEmpty) return const SizedBox.shrink();
 
     return SingleChildScrollView(
@@ -1526,16 +1743,33 @@ class _DetailScreenState extends State<DetailScreen> {
       child: Row(
         children: [
           for (final t in chips)
-            Container(
-              constraints: const BoxConstraints(minHeight: 30),
-              margin: const EdgeInsets.only(right: 6),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                border: Border.all(color: AppColors.outline),
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: InkWell(
                 borderRadius: BorderRadius.circular(8),
+                onTap: () {
+                  final srcId = SourceResolver.resolve(_manga.id, _manga.source);
+                  final srcName = SourceResolver.displayName(srcId);
+                  Navigator.of(context).push(
+                    smoothRoute(
+                      SourceCatalogScreen(
+                        sourceId: srcId,
+                        sourceName: srcName,
+                      ),
+                    ),
+                  );
+                },
+                child: Container(
+                  constraints: const BoxConstraints(minHeight: 30),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    border: Border.all(color: AppColors.outline),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Text(t, style: AppText.chip.copyWith(color: AppColors.muted)),
+                ),
               ),
-              child: Text(t, style: AppText.chip.copyWith(color: AppColors.muted)),
             ),
         ],
       ),
@@ -1972,6 +2206,26 @@ class _DetailScreenState extends State<DetailScreen> {
           ),
           IconButton(
             icon: Icon(
+              _searchingChapters ? Icons.search_off_rounded : Icons.search_rounded,
+              size: 20,
+              color: _searchingChapters || _chapterSearchQuery.isNotEmpty
+                  ? AppColors.primary
+                  : AppColors.muted,
+            ),
+            tooltip: 'Search chapters',
+            onPressed: () {
+              setState(() {
+                _searchingChapters = !_searchingChapters;
+                if (!_searchingChapters && _chapterSearchQuery.isNotEmpty) {
+                  _chapterSearchController.clear();
+                  _chapterSearchQuery = '';
+                  _recomputeChapterDisplayList();
+                }
+              });
+            },
+          ),
+          IconButton(
+            icon: Icon(
               Icons.tune_rounded,
               size: 20,
               color: _hasActiveFilters ? AppColors.primary : AppColors.muted,
@@ -2093,6 +2347,8 @@ class _ApiChapterTile extends StatelessWidget {
     required this.chapter,
     required this.isRead,
     required this.isBookmarked,
+    this.partialPage,
+    this.partialTotalPages,
     required this.downloadStatus,
     required this.downloadProgress,
     this.displayChapterNumberOnly = false,
@@ -2106,6 +2362,8 @@ class _ApiChapterTile extends StatelessWidget {
   final ChapterItem chapter;
   final bool isRead;
   final bool isBookmarked;
+  final int? partialPage;
+  final int? partialTotalPages;
   final DownloadStatus downloadStatus;
   final double downloadProgress;
   final bool displayChapterNumberOnly;
@@ -2168,6 +2426,12 @@ class _ApiChapterTile extends StatelessWidget {
     final color = isRead ? AppColors.read : AppColors.text;
     final metaColor = isRead ? AppColors.read : AppColors.muted;
     final metaParts = <String>[];
+    if (partialPage != null && partialPage! > 1) {
+      final totalStr = (partialTotalPages != null && partialTotalPages! > 0)
+          ? '/$partialTotalPages'
+          : '';
+      metaParts.add('Page $partialPage$totalStr');
+    }
     if (chapter.group.isNotEmpty) metaParts.add(chapter.group);
     if (chapter.pages > 0) metaParts.add('${chapter.pages} pages');
 

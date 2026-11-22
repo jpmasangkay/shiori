@@ -139,7 +139,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
                         const SizedBox(width: 10),
                         const Expanded(
                           child: Text(
-                            'Offline mode — reading downloaded content',
+                            'Offline mode — local library & cached chapters ready',
                             style: TextStyle(
                               color: Colors.white,
                               fontSize: 12.5,

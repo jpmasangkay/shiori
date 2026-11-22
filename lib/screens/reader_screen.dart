@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/download_service.dart';
 import '../services/extension_bridge.dart';
 import '../services/extension_service.dart';
 import '../services/reader_settings.dart';
@@ -57,6 +58,7 @@ class ReaderScreen extends StatefulWidget {
     this.coverUrl,
     this.chapters = const [],
     this.initialIndex = 0,
+    this.initialPage,
     this.mangaType,
     this.tags,
   });
@@ -69,6 +71,7 @@ class ReaderScreen extends StatefulWidget {
   final String? coverUrl;
   final List<ChapterItem> chapters;
   final int initialIndex;
+  final int? initialPage;
   final String? mangaType;
   final List<String>? tags;
 
@@ -178,6 +181,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   bool _invertTapZones = ReaderSettings.instance.invertTapZones;
   double _brightness = ReaderSettings.instance.brightness;
   double _tint = ReaderSettings.instance.tint;
+  bool _dataSaver = ReaderSettings.instance.dataSaver;
+  bool _immersiveFullscreen = ReaderSettings.instance.immersiveFullscreen;
+  int? _pendingInitialPage;
 
   final _scrollController = ScrollController();
   late PageController _pageController;
@@ -257,6 +263,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _invertTapZones = ReaderSettings.instance.invertTapZones;
     _brightness = ReaderSettings.instance.brightness;
     _tint = ReaderSettings.instance.tint;
+    _dataSaver = ReaderSettings.instance.dataSaver;
+    _immersiveFullscreen = ReaderSettings.instance.immersiveFullscreen;
 
     // Async re-check in case ReaderSettings was initialized concurrently
     SharedPreferences.getInstance().then((prefs) {
@@ -361,6 +369,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
 
     _webtoonLoadedIndices.add(_currentChapterIndex);
+
+    // Resolve saved page progress if resuming an unfinished chapter
+    int startPage = widget.initialPage ?? 1;
+    if (widget.initialPage == null && widget.mangaId.isNotEmpty) {
+      final savedProg = ApiService.instance.historyRepo.localProgress[widget.mangaId];
+      final curChId = _currentChapter.id;
+      if (savedProg != null &&
+          curChId.isNotEmpty &&
+          savedProg.chapterId == curChId &&
+          !savedProg.completed &&
+          savedProg.page > 1) {
+        startPage = savedProg.page;
+      }
+    }
+    if (startPage > 1) {
+      _page = startPage;
+      _pageNotifier.value = startPage;
+      _pendingInitialPage = startPage;
+    }
+
     _loadChapter(_currentChapterIndex);
   }
 
@@ -384,6 +412,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final clamped = val.clamp(0.0, 1.0);
     setState(() => _tint = clamped);
     ReaderSettings.instance.setTint(clamped);
+  }
+
+  void _setDataSaver(bool val) {
+    setState(() => _dataSaver = val);
+    ReaderSettings.instance.setDataSaver(val);
+  }
+
+  void _toggleChrome() {
+    final nextChrome = !_chrome;
+    setState(() => _chrome = nextChrome);
+    if (_immersiveFullscreen) {
+      SystemChrome.setEnabledSystemUIMode(
+        nextChrome ? SystemUiMode.edgeToEdge : SystemUiMode.immersiveSticky,
+      );
+    }
   }
 
   void _showDisplaySheet() {
@@ -468,6 +511,21 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     },
                   ),
                 ),
+                const Divider(color: AppColors.outline, height: 16),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _dataSaver,
+                  activeThumbColor: AppColors.primary,
+                  title: Text('Data Saver (Slow Internet)', style: AppText.bodyMedium),
+                  subtitle: Text(
+                    'Prefer compressed images & reduce prefetch bandwidth',
+                    style: AppText.caption,
+                  ),
+                  onChanged: (val) {
+                    _setDataSaver(val);
+                    setSheetState(() {});
+                  },
+                ),
               ],
             ),
           ),
@@ -478,6 +536,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _flushProgress();
     _scrollController.dispose();
     _pageController.dispose();
@@ -514,28 +573,52 @@ class _ReaderScreenState extends State<ReaderScreen> {
         forceRefresh: forceRefresh,
       );
       if (res.pages.isEmpty) throw Exception('No pages found for this chapter.');
-      _pagesCache[chapter.id] = res.pages;
-      _dataSaverCache[chapter.id] = res.dataSaver;
+      final useSaverFirst = _dataSaver && res.dataSaver.length == res.pages.length;
+      final primaryPages = useSaverFirst ? res.dataSaver : res.pages;
+      final backupPages = useSaverFirst ? res.pages : res.dataSaver;
+      _pagesCache[chapter.id] = primaryPages;
+      _dataSaverCache[chapter.id] = backupPages;
       _loadingChapterIds.remove(chapter.id);
       if (!mounted) return;
 
+      final prefetchWin = _dataSaver ? 2 : 6;
+      int targetStartPage = 1;
+      if (idx == _currentChapterIndex) {
+        final pending = _pendingInitialPage;
+        _pendingInitialPage = null;
+        if (pending != null && pending > 1) {
+          targetStartPage = pending.clamp(1, primaryPages.length);
+        } else {
+          targetStartPage = _page.clamp(1, primaryPages.length);
+        }
+      }
+
       setState(() {
         if (idx == _currentChapterIndex) {
-          _totalPages = res.pages.length;
-          _page = _page.clamp(1, _totalPages);
+          _totalPages = primaryPages.length;
+          _page = targetStartPage;
+          _pageNotifier.value = targetStartPage;
+          if (targetStartPage > 1 && _mode != ReaderMode.webtoon) {
+            final oldCtrl = _pageController;
+            _pageController = _newPageController(targetStartPage - 1);
+            WidgetsBinding.instance.addPostFrameCallback((_) => oldCtrl.dispose());
+          }
         }
       });
-      _precacheSlidingWindow(res.pages, 0, window: 6);
+      _precacheSlidingWindow(primaryPages, targetStartPage - 1, window: prefetchWin);
 
       if (idx == _currentChapterIndex) {
+        if (targetStartPage > 1 && _mode == ReaderMode.webtoon) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _scrollToWebtoonPage(targetStartPage);
+          });
+        }
         _syncProgress(_page);
-        // Preload first 6 pages immediately so turning pages is instant
-        _precacheRange(res.pages, 0, 6);
+        _precacheRange(primaryPages, targetStartPage - 1, prefetchWin);
         // Prefetch the next chapter so continuing to read has no loading gap.
         _loadChapter(idx + 1);
       } else if (idx == _currentChapterIndex + 1) {
-        // Preload initial pages of the upcoming chapter as well
-        _precacheRange(res.pages, 0, 3);
+        _precacheRange(primaryPages, 0, _dataSaver ? 1 : 3);
       }
     } catch (err) {
       _loadingChapterIds.remove(chapter.id);
@@ -674,6 +757,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     // Automatically mark the finished chapter as read
     ApiService.instance.markChapterRead(widget.mangaId, finished.id, read: true);
+    // Clean up downloaded chapter if auto-delete after reading is enabled
+    DownloadService.instance.onChapterFinishedReading(finished.id);
     // Auto sync reading progress to AniList Tracker
     TrackerService.instance.onChapterFinished(
       mangaTitle: _effectiveMangaTitle,
@@ -1041,7 +1126,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _handleTap(TapUpDetails details, BoxConstraints constraints) {
     if (_mode == ReaderMode.webtoon || !_enableTapZones) {
-      setState(() => _chrome = !_chrome);
+      _toggleChrome();
       return;
     }
     final x = details.localPosition.dx;
@@ -1066,7 +1151,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
         _prevPage();
       }
     } else {
-      setState(() => _chrome = !_chrome);
+      _toggleChrome();
     }
   }
 
@@ -1340,22 +1425,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ];
     final indexByKey = <Key, int>{for (var i = 0; i < keys.length; i++) keys[i]: i};
 
-    return NotificationListener<ScrollNotification>(
-      onNotification: _onWebtoonScroll,
-      child: ListView.builder(
-        key: _listKey,
-        controller: _scrollController,
-        // ignore: deprecated_member_use
-        cacheExtent: MediaQuery.sizeOf(context).height * 1.5,
-        padding: EdgeInsets.only(
-          top: MediaQuery.paddingOf(context).top + 50,
-          bottom: MediaQuery.paddingOf(context).bottom + 90,
-        ),
-        itemCount: feedItems.length,
-        findChildIndexCallback: (key) => indexByKey[key],
-        itemBuilder: (context, i) => KeyedSubtree(
-          key: keys[i],
-          child: _buildFeedItem(feedItems[i]),
+    return InteractiveViewer(
+      minScale: 1.0,
+      maxScale: 3.5,
+      panEnabled: false,
+      child: NotificationListener<ScrollNotification>(
+        onNotification: _onWebtoonScroll,
+        child: ListView.builder(
+          key: _listKey,
+          controller: _scrollController,
+          // ignore: deprecated_member_use
+          cacheExtent: MediaQuery.sizeOf(context).height * 1.5,
+          padding: EdgeInsets.only(
+            top: MediaQuery.paddingOf(context).top + 50,
+            bottom: MediaQuery.paddingOf(context).bottom + 90,
+          ),
+          itemCount: feedItems.length,
+          findChildIndexCallback: (key) => indexByKey[key],
+          itemBuilder: (context, i) => KeyedSubtree(
+            key: keys[i],
+            child: _buildFeedItem(feedItems[i]),
+          ),
         ),
       ),
     );

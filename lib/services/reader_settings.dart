@@ -11,6 +11,9 @@ class ReaderSettings extends ChangeNotifier {
   static const _keyInvertTapZones = 'reader_invert_tap_zones';
   static const _keyBrightness = 'reader_brightness';
   static const _keyTint = 'reader_tint';
+  static const _keyDataSaver = 'reader_data_saver';
+  static const _keyImmersiveFullscreen = 'reader_immersive_fullscreen';
+  static const _keyAutoScrollSpeed = 'reader_auto_scroll_speed';
 
   String defaultDirection = 'automatic';
   BoxFit fitMode = BoxFit.fitWidth;
@@ -18,6 +21,9 @@ class ReaderSettings extends ChangeNotifier {
   bool invertTapZones = false;
   double brightness = 1.0;
   double tint = 0.0;
+  bool dataSaver = false;
+  bool immersiveFullscreen = true;
+  double autoScrollSpeed = 1.0;
 
   SharedPreferences? _prefs;
 
@@ -35,6 +41,9 @@ class ReaderSettings extends ChangeNotifier {
       invertTapZones = _prefs?.getBool(_keyInvertTapZones) ?? false;
       brightness = _prefs?.getDouble(_keyBrightness) ?? 1.0;
       tint = _prefs?.getDouble(_keyTint) ?? 0.0;
+      dataSaver = _prefs?.getBool(_keyDataSaver) ?? false;
+      immersiveFullscreen = _prefs?.getBool(_keyImmersiveFullscreen) ?? true;
+      autoScrollSpeed = (_prefs?.getDouble(_keyAutoScrollSpeed) ?? 1.0).clamp(0.25, 4.0);
       notifyListeners();
     } catch (_) {}
   }
@@ -101,6 +110,33 @@ class ReaderSettings extends ChangeNotifier {
     try {
       _prefs ??= await SharedPreferences.getInstance();
       await _prefs?.setDouble(_keyTint, tint);
+    } catch (_) {}
+  }
+
+  Future<void> setDataSaver(bool val) async {
+    dataSaver = val;
+    notifyListeners();
+    try {
+      _prefs ??= await SharedPreferences.getInstance();
+      await _prefs?.setBool(_keyDataSaver, val);
+    } catch (_) {}
+  }
+
+  Future<void> setImmersiveFullscreen(bool val) async {
+    immersiveFullscreen = val;
+    notifyListeners();
+    try {
+      _prefs ??= await SharedPreferences.getInstance();
+      await _prefs?.setBool(_keyImmersiveFullscreen, val);
+    } catch (_) {}
+  }
+
+  Future<void> setAutoScrollSpeed(double val) async {
+    autoScrollSpeed = val.clamp(0.25, 4.0);
+    notifyListeners();
+    try {
+      _prefs ??= await SharedPreferences.getInstance();
+      await _prefs?.setDouble(_keyAutoScrollSpeed, autoScrollSpeed);
     } catch (_) {}
   }
 }

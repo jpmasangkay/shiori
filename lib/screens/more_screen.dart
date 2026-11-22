@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
 import '../services/download_service.dart';
+import '../services/reader_settings.dart';
 import '../services/source_manager.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
@@ -291,8 +292,27 @@ class _MoreScreenState extends State<MoreScreen> {
               _settingTile(
                 icon: Icons.dashboard_customize_outlined,
                 title: 'Display & Library Settings',
-                subtitle: 'Columns, grid modes, and category tabs',
+                subtitle: 'Filters, columns, grid modes, and category tabs',
                 onTap: () => showDisplaySheet(context),
+              ),
+              ListenableBuilder(
+                listenable: ReaderSettings.instance,
+                builder: (context, _) {
+                  final rs = ReaderSettings.instance;
+                  return _settingTile(
+                    icon: Icons.data_saver_on_rounded,
+                    title: 'Data Saver (Slow Internet Mode)',
+                    subtitle: rs.dataSaver
+                        ? 'Enabled • Loads compressed images & conservative prefetch'
+                        : 'Prefer compressed chapter images on slow connections',
+                    trailing: Switch(
+                      value: rs.dataSaver,
+                      activeThumbColor: AppColors.primary,
+                      onChanged: (val) => rs.setDataSaver(val),
+                    ),
+                    onTap: () => rs.setDataSaver(!rs.dataSaver),
+                  );
+                },
               ),
 
               const SizedBox(height: 22),

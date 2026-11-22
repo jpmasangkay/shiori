@@ -11,13 +11,7 @@ import '../widgets/common.dart';
 import 'api_service.dart';
 import 'extension_bridge.dart';
 
-enum DownloadStatus {
-  notDownloaded,
-  queued,
-  downloading,
-  downloaded,
-  failed,
-}
+enum DownloadStatus { notDownloaded, queued, downloading, downloaded, failed }
 
 class DownloadTask {
   final MangaItem manga;
@@ -37,6 +31,26 @@ class DownloadTask {
     this.totalPages = 0,
     this.error,
   });
+
+  Map<String, dynamic> toJson() => {
+    'manga': manga.toJson(),
+    'chapter': chapter.toJson(),
+    'status': status.name,
+  };
+
+  factory DownloadTask.fromJson(Map<String, dynamic> json) {
+    final mangaMap = json['manga'] is Map
+        ? Map<String, dynamic>.from(json['manga'] as Map)
+        : const <String, dynamic>{};
+    final chapterMap = json['chapter'] is Map
+        ? Map<String, dynamic>.from(json['chapter'] as Map)
+        : const <String, dynamic>{};
+    return DownloadTask(
+      manga: MangaItem.fromJson(mangaMap),
+      chapter: ChapterItem.fromJson(chapterMap),
+      status: DownloadStatus.queued,
+    );
+  }
 }
 
 class DownloadedChapterInfo {
@@ -65,17 +79,17 @@ class DownloadedChapterInfo {
   });
 
   Map<String, dynamic> toJson() => {
-        'chapterId': chapterId,
-        'mangaId': mangaId,
-        'mangaTitle': mangaTitle,
-        'mangaCover': mangaCover,
-        'chapterTitle': chapterTitle,
-        'chapterNumber': chapterNumber,
-        'pageCount': pageCount,
-        'totalBytes': totalBytes,
-        'downloadedAt': downloadedAt.toIso8601String(),
-        'directoryPath': directoryPath,
-      };
+    'chapterId': chapterId,
+    'mangaId': mangaId,
+    'mangaTitle': mangaTitle,
+    'mangaCover': mangaCover,
+    'chapterTitle': chapterTitle,
+    'chapterNumber': chapterNumber,
+    'pageCount': pageCount,
+    'totalBytes': totalBytes,
+    'downloadedAt': downloadedAt.toIso8601String(),
+    'directoryPath': directoryPath,
+  };
 
   factory DownloadedChapterInfo.fromJson(Map<String, dynamic> json) =>
       DownloadedChapterInfo(
@@ -88,7 +102,8 @@ class DownloadedChapterInfo {
         pageCount: (json['pageCount'] as num?)?.toInt() ?? 0,
         totalBytes: (json['totalBytes'] as num?)?.toInt() ?? 0,
         downloadedAt: json['downloadedAt'] != null
-            ? DateTime.tryParse(json['downloadedAt'] as String) ?? DateTime.now()
+            ? DateTime.tryParse(json['downloadedAt'] as String) ??
+                  DateTime.now()
             : DateTime.now(),
         directoryPath: json['directoryPath'] as String? ?? '',
       );
@@ -99,16 +114,28 @@ class DownloadService extends ChangeNotifier {
   static final DownloadService instance = DownloadService._();
 
   static const String _manifestKey = 'shiori_downloads_manifest_v1';
+  static const String _queueKey = 'shiori_downloads_queue_v1';
+  static const String _autoDeleteReadKey =
+      'shiori_auto_delete_read_downloads_v1';
+  static const int maxConcurrentPageDownloads = 3;
+  static const int maxQueueCapacity = 500;
+
   final Map<String, DownloadedChapterInfo> _downloadedManifest = {};
   final Map<String, DownloadTask> _activeTasks = {};
+  final Map<String, DownloadTask> _failedTasks = {};
   final List<String> _queue = [];
   bool _isProcessing = false;
+  bool _isPaused = false;
+  bool _autoDeleteReadChapters = false;
   Directory? _baseDownloadDir;
 
   Map<String, DownloadedChapterInfo> get downloadedChapters =>
       Map.unmodifiable(_downloadedManifest);
 
   List<DownloadTask> get activeTasks => _activeTasks.values.toList();
+  List<DownloadTask> get failedTasks => _failedTasks.values.toList();
+  bool get isPaused => _isPaused;
+  bool get autoDeleteReadChapters => _autoDeleteReadChapters;
 
   Future<void> init() async {
     try {
@@ -119,19 +146,62 @@ class DownloadService extends ChangeNotifier {
       }
 
       final prefs = await SharedPreferences.getInstance();
+      _autoDeleteReadChapters = prefs.getBool(_autoDeleteReadKey) ?? false;
+
+      _downloadedManifest.clear();
       final raw = prefs.getString(_manifestKey);
       if (raw != null && raw.isNotEmpty) {
         final decoded = jsonDecode(raw) as Map<String, dynamic>;
         for (final entry in decoded.entries) {
           if (entry.value is Map<String, dynamic>) {
-            _downloadedManifest[entry.key] =
-                DownloadedChapterInfo.fromJson(entry.value as Map<String, dynamic>);
+            _downloadedManifest[entry.key] = DownloadedChapterInfo.fromJson(
+              entry.value as Map<String, dynamic>,
+            );
           }
         }
       }
+
+      // Restore persisted download queue across app restarts
+      _activeTasks.clear();
+      _queue.clear();
+      final queueRaw = prefs.getString(_queueKey);
+      if (queueRaw != null && queueRaw.isNotEmpty) {
+        try {
+          final list = jsonDecode(queueRaw) as List<dynamic>;
+          for (final item in list) {
+            if (item is Map) {
+              final task = DownloadTask.fromJson(
+                Map<String, dynamic>.from(item),
+              );
+              if (task.chapter.id.isNotEmpty &&
+                  !_downloadedManifest.containsKey(task.chapter.id) &&
+                  _queue.length < maxQueueCapacity) {
+                _activeTasks[task.chapter.id] = task;
+                _queue.add(task.chapter.id);
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
       notifyListeners();
     } catch (e) {
       debugPrint('DownloadService init error: $e');
+    }
+  }
+
+  Future<void> setAutoDeleteReadChapters(bool enabled) async {
+    _autoDeleteReadChapters = enabled;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_autoDeleteReadKey, enabled);
+    } catch (_) {}
+  }
+
+  Future<void> onChapterFinishedReading(String chapterId) async {
+    if (_autoDeleteReadChapters && isChapterDownloaded(chapterId)) {
+      await deleteDownloadedChapter(chapterId);
     }
   }
 
@@ -148,12 +218,69 @@ class DownloadService extends ChangeNotifier {
     }
   }
 
+  Future<void> _persistQueue() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final list = _activeTasks.values.map((t) => t.toJson()).toList();
+      await prefs.setString(_queueKey, jsonEncode(list));
+    } catch (e) {
+      debugPrint('DownloadService _persistQueue error: $e');
+    }
+  }
+
   String _sanitize(String text) {
     return text.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_');
   }
 
   bool isChapterDownloaded(String chapterId) {
     return _downloadedManifest.containsKey(chapterId);
+  }
+
+  /// Returns how many chapters are downloaded locally for [mangaId].
+  int getDownloadedCountForManga(String mangaId) {
+    if (mangaId.isEmpty) return 0;
+    var count = 0;
+    for (final info in _downloadedManifest.values) {
+      if (info.mangaId == mangaId) count++;
+    }
+    return count;
+  }
+
+  /// Synthesizes sorted [ChapterItem]s from locally downloaded chapters for [mangaId],
+  /// guaranteeing that downloaded chapters can always be opened from DetailScreen offline.
+  List<ChapterItem> getDownloadedChaptersForManga(String mangaId) {
+    if (mangaId.isEmpty) return const [];
+    final items = <ChapterItem>[];
+    for (final info in _downloadedManifest.values) {
+      if (info.mangaId == mangaId) {
+        items.add(
+          ChapterItem(
+            id: info.chapterId,
+            number: info.chapterNumber,
+            title: info.chapterTitle,
+            pages: info.pageCount,
+            publishAt: info.downloadedAt.toIso8601String(),
+          ),
+        );
+      }
+    }
+    items.sort((a, b) {
+      final numA = double.tryParse(a.number ?? '') ?? -1.0;
+      final numB = double.tryParse(b.number ?? '') ?? -1.0;
+      return numB.compareTo(numA);
+    });
+    return items;
+  }
+
+  /// Returns a local `file://` cover path if any downloaded chapter for [mangaId] stored one.
+  String? getLocalCoverForManga(String mangaId) {
+    if (mangaId.isEmpty) return null;
+    for (final info in _downloadedManifest.values) {
+      if (info.mangaId == mangaId && info.mangaCover.startsWith('file://')) {
+        return info.mangaCover;
+      }
+    }
+    return null;
   }
 
   DownloadStatus getStatus(String chapterId) {
@@ -163,6 +290,9 @@ class DownloadService extends ChangeNotifier {
     final task = _activeTasks[chapterId];
     if (task != null) {
       return task.status;
+    }
+    if (_failedTasks.containsKey(chapterId)) {
+      return DownloadStatus.failed;
     }
     return DownloadStatus.notDownloaded;
   }
@@ -181,7 +311,12 @@ class DownloadService extends ChangeNotifier {
     final files = dir
         .listSync()
         .whereType<File>()
-        .where((f) => f.path.endsWith('.jpg') || f.path.endsWith('.png') || f.path.endsWith('.webp'))
+        .where(
+          (f) =>
+              f.path.endsWith('.jpg') ||
+              f.path.endsWith('.png') ||
+              f.path.endsWith('.webp'),
+        )
         .toList();
 
     files.sort((a, b) => a.path.compareTo(b.path));
@@ -191,34 +326,84 @@ class DownloadService extends ChangeNotifier {
   Future<void> downloadChapter(MangaItem manga, ChapterItem chapter) async {
     if (isChapterDownloaded(chapter.id)) return;
     if (_activeTasks.containsKey(chapter.id)) return;
+    if (_queue.length >= maxQueueCapacity) return;
 
+    _failedTasks.remove(chapter.id);
     final task = DownloadTask(manga: manga, chapter: chapter);
     _activeTasks[chapter.id] = task;
     _queue.add(chapter.id);
+    unawaited(_persistQueue());
     notifyListeners();
 
     _processQueue();
   }
 
-  Future<void> downloadChapters(MangaItem manga, List<ChapterItem> chapters) async {
+  Future<void> downloadChapters(
+    MangaItem manga,
+    List<ChapterItem> chapters,
+  ) async {
     for (final chapter in chapters) {
-      if (!isChapterDownloaded(chapter.id) && !_activeTasks.containsKey(chapter.id)) {
+      if (!isChapterDownloaded(chapter.id) &&
+          !_activeTasks.containsKey(chapter.id) &&
+          _queue.length < maxQueueCapacity) {
+        _failedTasks.remove(chapter.id);
         final task = DownloadTask(manga: manga, chapter: chapter);
         _activeTasks[chapter.id] = task;
         _queue.add(chapter.id);
       }
     }
+    unawaited(_persistQueue());
+    notifyListeners();
+    _processQueue();
+  }
+
+  void pauseQueue() {
+    if (_isPaused) return;
+    _isPaused = true;
+    notifyListeners();
+  }
+
+  void resumeQueue() {
+    if (!_isPaused) return;
+    _isPaused = false;
+    notifyListeners();
+    _processQueue();
+  }
+
+  Future<void> retryFailedDownloads() async {
+    if (_failedTasks.isEmpty) return;
+    final toRetry = _failedTasks.values.toList();
+    _failedTasks.clear();
+    for (final task in toRetry) {
+      task.status = DownloadStatus.queued;
+      task.error = null;
+      _activeTasks[task.chapter.id] = task;
+      _queue.add(task.chapter.id);
+    }
+    unawaited(_persistQueue());
+    _isPaused = false;
     notifyListeners();
     _processQueue();
   }
 
   void cancelDownload(String chapterId) {
     _queue.remove(chapterId);
+    _failedTasks.remove(chapterId);
     final task = _activeTasks.remove(chapterId);
     if (task != null) {
       task.status = DownloadStatus.failed;
       task.error = 'Cancelled by user';
     }
+    unawaited(_persistQueue());
+    notifyListeners();
+  }
+
+  Future<void> cancelAllActiveDownloads() async {
+    _queue.clear();
+    _activeTasks.clear();
+    _failedTasks.clear();
+    _isPaused = false;
+    await _persistQueue();
     notifyListeners();
   }
 
@@ -252,6 +437,7 @@ class DownloadService extends ChangeNotifier {
 
   Future<void> deleteAllDownloads() async {
     _downloadedManifest.clear();
+    _failedTasks.clear();
     await _persistManifest();
     notifyListeners();
 
@@ -283,10 +469,10 @@ class DownloadService extends ChangeNotifier {
   }
 
   Future<void> _processQueue() async {
-    if (_isProcessing) return;
+    if (_isProcessing || _isPaused) return;
     _isProcessing = true;
 
-    while (_queue.isNotEmpty) {
+    while (_queue.isNotEmpty && !_isPaused) {
       final chapterId = _queue.removeAt(0);
       final task = _activeTasks[chapterId];
       if (task == null) continue;
@@ -297,13 +483,16 @@ class DownloadService extends ChangeNotifier {
       try {
         await _executeDownloadTask(task);
         task.status = DownloadStatus.downloaded;
+        _failedTasks.remove(chapterId);
       } catch (e) {
         debugPrint('Error downloading chapter ${task.chapter.id}: $e');
         task.status = DownloadStatus.failed;
         task.error = e.toString();
+        _failedTasks[chapterId] = task;
       }
 
       _activeTasks.remove(chapterId);
+      unawaited(_persistQueue());
       notifyListeners();
     }
 
@@ -351,7 +540,9 @@ class DownloadService extends ChangeNotifier {
       } catch (_) {}
     }
 
-    if (!preferNative && (ImageReferers.hasNativeLoader(candidate) || (extPkg != null && extPkg.isNotEmpty))) {
+    if (!preferNative &&
+        (ImageReferers.hasNativeLoader(candidate) ||
+            (extPkg != null && extPkg.isNotEmpty))) {
       final nativeBytes = await tryNative();
       if (nativeBytes != null && nativeBytes.isNotEmpty) {
         return (nativeBytes, 200);
@@ -405,7 +596,10 @@ class DownloadService extends ChangeNotifier {
       effectiveCover = 'file://${localCoverFile.path}';
     } else if (effectiveCover.startsWith('http')) {
       try {
-        final (coverBytes, _) = await _downloadImageBytes(effectiveCover, extPkg: extPkg);
+        final (coverBytes, _) = await _downloadImageBytes(
+          effectiveCover,
+          extPkg: extPkg,
+        );
         if (coverBytes != null && coverBytes.isNotEmpty) {
           await localCoverFile.writeAsBytes(coverBytes);
           effectiveCover = 'file://${localCoverFile.path}';
@@ -414,7 +608,10 @@ class DownloadService extends ChangeNotifier {
     }
 
     // 1. Fetch pages list
-    final pagesRes = await ApiService.instance.getChapterPages(task.chapter.id, forceRefresh: true);
+    final pagesRes = await ApiService.instance.getChapterPages(
+      task.chapter.id,
+      forceRefresh: true,
+    );
     final pageUrls = pagesRes.pages;
     if (pageUrls.isEmpty) {
       throw Exception('No pages available for download');
@@ -426,54 +623,75 @@ class DownloadService extends ChangeNotifier {
     notifyListeners();
 
     var totalBytes = 0;
+    var completedPages = 0;
 
-    // 2. Download each page sequentially with header, native OkHttp & fallback-URL retries
-    for (var i = 0; i < pageUrls.length; i++) {
-      final url = pageUrls[i];
-      final fallbackUrl = (i < pagesRes.dataSaver.length && pagesRes.dataSaver[i] != url)
-          ? pagesRes.dataSaver[i]
-          : null;
-      final candidateUrls = <String>[
-        url,
-        if (fallbackUrl != null && fallbackUrl.isNotEmpty) fallbackUrl,
-      ];
-
-      final ext = _extractExtension(url);
-      final pageFileName = 'page_${(i + 1).toString().padLeft(4, '0')}.$ext';
-      final pageFile = File('${chapterDir.path}/$pageFileName');
-
-      if (!await pageFile.exists() || await pageFile.length() == 0) {
-        Uint8List? downloadedBytes;
-        int? lastStatus;
-
-        for (final candidate in candidateUrls) {
-          final (bytes, status) = await _downloadImageBytes(
-            candidate,
-            extPkg: extPkg,
-            chapterPageUrl: rawChapterUrl,
-          );
-          if (status != null) lastStatus = status;
-          if (bytes != null && bytes.isNotEmpty) {
-            downloadedBytes = bytes;
-            break;
-          }
-        }
-
-        if (downloadedBytes == null) {
-          throw Exception(
-            'Failed to download page ${i + 1}${lastStatus != null ? ' (HTTP $lastStatus)' : ''}',
-          );
-        }
-
-        await pageFile.writeAsBytes(downloadedBytes);
-        totalBytes += downloadedBytes.length;
-      } else {
-        totalBytes += await pageFile.length();
+    // 2. Download pages in bounded concurrent batches of up to 3 pages at a time
+    for (
+      var batchStart = 0;
+      batchStart < pageUrls.length;
+      batchStart += maxConcurrentPageDownloads
+    ) {
+      if (!_activeTasks.containsKey(task.chapter.id)) {
+        throw Exception('Cancelled by user');
       }
+      final batchEnd =
+          (batchStart + maxConcurrentPageDownloads > pageUrls.length)
+          ? pageUrls.length
+          : batchStart + maxConcurrentPageDownloads;
+      final indices = [for (var i = batchStart; i < batchEnd; i++) i];
 
-      task.downloadedPages = i + 1;
-      task.progress = (i + 1) / pageUrls.length;
-      notifyListeners();
+      await Future.wait(
+        indices.map((i) async {
+          final url = pageUrls[i];
+          final fallbackUrl =
+              (i < pagesRes.dataSaver.length && pagesRes.dataSaver[i] != url)
+              ? pagesRes.dataSaver[i]
+              : null;
+          final candidateUrls = <String>[
+            url,
+            if (fallbackUrl != null && fallbackUrl.isNotEmpty) fallbackUrl,
+          ];
+
+          final ext = _extractExtension(url);
+          final pageFileName =
+              'page_${(i + 1).toString().padLeft(4, '0')}.$ext';
+          final pageFile = File('${chapterDir.path}/$pageFileName');
+
+          if (!await pageFile.exists() || await pageFile.length() == 0) {
+            Uint8List? downloadedBytes;
+            int? lastStatus;
+
+            for (final candidate in candidateUrls) {
+              final (bytes, status) = await _downloadImageBytes(
+                candidate,
+                extPkg: extPkg,
+                chapterPageUrl: rawChapterUrl,
+              );
+              if (status != null) lastStatus = status;
+              if (bytes != null && bytes.isNotEmpty) {
+                downloadedBytes = bytes;
+                break;
+              }
+            }
+
+            if (downloadedBytes == null) {
+              throw Exception(
+                'Failed to download page ${i + 1}${lastStatus != null ? ' (HTTP $lastStatus)' : ''}',
+              );
+            }
+
+            await pageFile.writeAsBytes(downloadedBytes);
+            totalBytes += downloadedBytes.length;
+          } else {
+            totalBytes += await pageFile.length();
+          }
+
+          completedPages++;
+          task.downloadedPages = completedPages;
+          task.progress = completedPages / pageUrls.length;
+          notifyListeners();
+        }),
+      );
     }
 
     // 3. Register into manifest
@@ -497,7 +715,9 @@ class DownloadService extends ChangeNotifier {
   String _extractExtension(String url) {
     try {
       final uri = Uri.parse(url);
-      final lastSegment = uri.pathSegments.isNotEmpty ? uri.pathSegments.last : '';
+      final lastSegment = uri.pathSegments.isNotEmpty
+          ? uri.pathSegments.last
+          : '';
       if (lastSegment.contains('.')) {
         final ext = lastSegment.split('.').last.toLowerCase();
         if (['jpg', 'jpeg', 'png', 'webp', 'gif'].contains(ext)) {

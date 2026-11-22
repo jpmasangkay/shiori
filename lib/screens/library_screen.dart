@@ -3,12 +3,15 @@ import 'package:flutter/material.dart';
 import '../display_settings.dart';
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/download_service.dart';
+import '../services/tracker_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import '../widgets/duplicate_migration_sheet.dart';
 import '../widgets/skeleton.dart';
 import 'detail_screen.dart';
 import 'display_sheet.dart';
+import 'reader_screen.dart';
 
 class LibraryScreen extends StatefulWidget {
   const LibraryScreen({super.key, this.isActive = true});
@@ -25,13 +28,22 @@ class _LibraryScreenState extends State<LibraryScreen>
   List<MangaItem> _userLibrary = [];
   bool _loading = false;
   bool _dirty = false;
+  bool _isSearching = false;
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+  final Set<String> _selectedIds = {};
+
+  bool get _isSelectionMode => _selectedIds.isNotEmpty;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadUserLibrary();
+    // Instant synchronous local hydration (0ms load time on slow/offline internet)
+    _userLibrary = ApiService.instance.libraryRepo.getLibraryItems();
+    _loadUserLibrary(silent: _userLibrary.isNotEmpty);
     ApiService.instance.addListener(_onServiceChanged);
+    DownloadService.instance.addListener(_onServiceChanged);
   }
 
   @override
@@ -45,8 +57,10 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   @override
   void dispose() {
+    _searchController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     ApiService.instance.removeListener(_onServiceChanged);
+    DownloadService.instance.removeListener(_onServiceChanged);
     super.dispose();
   }
 
@@ -56,8 +70,10 @@ class _LibraryScreenState extends State<LibraryScreen>
       return;
     }
     if (mounted) {
-      setState(() {});
-      _loadUserLibrary(silent: true);
+      setState(() {
+        _userLibrary = ApiService.instance.libraryRepo.getLibraryItems();
+        _cachedDuplicateGroups = null;
+      });
     }
   }
 
@@ -101,11 +117,10 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   List<MangaItem> _visibleItems(DisplaySettings s, List<(String?, String)> visibleTabs) {
-    if (!s.categoryTabs || visibleTabs.isEmpty) {
-      return _sortItems([..._userLibrary], s.sort);
-    }
     List<MangaItem> items;
-    if (_category == '__all__') {
+    if (!s.categoryTabs || visibleTabs.isEmpty) {
+      items = [..._userLibrary];
+    } else if (_category == '__all__') {
       items = [..._userLibrary];
     } else if (_category == null) {
       final validCatIds = ApiService.instance
@@ -122,6 +137,38 @@ class _LibraryScreenState extends State<LibraryScreen>
         return catIds.contains(_category);
       }).toList();
     }
+
+    // Apply in-library search query
+    if (_searchQuery.isNotEmpty) {
+      final q = _searchQuery.toLowerCase();
+      items = items.where((m) {
+        if (m.displayTitle.toLowerCase().contains(q)) return true;
+        if (m.authors.any((a) => a.toLowerCase().contains(q))) return true;
+        if (m.tags.any((t) => t.toLowerCase().contains(q))) return true;
+        if (m.source.toLowerCase().contains(q)) return true;
+        return false;
+      }).toList();
+    }
+
+    // Apply library filters from DisplaySettings
+    if (s.filterDownloaded) {
+      items = items
+          .where((m) => DownloadService.instance.getDownloadedCountForManga(m.id) > 0)
+          .toList();
+    }
+    if (s.filterUnread) {
+      items = items.where((m) => ApiService.instance.getUnreadCount(m.id) > 0).toList();
+    }
+    if (s.filterCompleted) {
+      items = items.where((m) {
+        final st = m.status.toLowerCase();
+        return st.contains('completed') || st.contains('complete');
+      }).toList();
+    }
+    if (s.filterTracked) {
+      items = items.where((m) => TrackerService.instance.isMangaTracked(m.id)).toList();
+    }
+
     return _sortItems(items, s.sort);
   }
 
@@ -179,7 +226,89 @@ class _LibraryScreenState extends State<LibraryScreen>
     );
   }
 
+  void _quickResumeManga(MangaItem manga) {
+    final prog = ApiService.instance.historyRepo.localProgress[manga.id];
+    final cachedChapters = ApiService.instance.getCachedChapters(manga.id);
+    if (prog != null && prog.chapterId.isNotEmpty) {
+      Navigator.of(context)
+          .push(
+            smoothRoute(
+              ReaderScreen(
+                chapterId: prog.chapterId,
+                mangaId: manga.id,
+                mangaTitle: manga.displayTitle,
+                coverUrl: manga.cover,
+                chapterNumber: prog.chapterNumber,
+                chapterTitle: prog.chapterTitle,
+                chapters: cachedChapters,
+                initialPage: prog.completed ? 1 : prog.page,
+                mangaType: manga.type,
+                tags: manga.tags,
+              ),
+            ),
+          )
+          .then((_) => _loadUserLibrary(silent: true));
+      return;
+    }
+    if (cachedChapters.isNotEmpty) {
+      final first = cachedChapters.last;
+      Navigator.of(context)
+          .push(
+            smoothRoute(
+              ReaderScreen(
+                chapterId: first.id,
+                mangaId: manga.id,
+                mangaTitle: manga.displayTitle,
+                coverUrl: manga.cover,
+                chapterNumber: first.number,
+                chapterTitle: first.title,
+                chapters: cachedChapters,
+                mangaType: manga.type,
+                tags: manga.tags,
+              ),
+            ),
+          )
+          .then((_) => _loadUserLibrary(silent: true));
+      return;
+    }
+    _openManga(manga);
+  }
+
+  void _toggleSelection(String mangaId) {
+    setState(() {
+      if (_selectedIds.contains(mangaId)) {
+        _selectedIds.remove(mangaId);
+      } else {
+        _selectedIds.add(mangaId);
+      }
+    });
+  }
+
+  Future<void> _batchRemoveSelected() async {
+    final ids = _selectedIds.toList();
+    setState(() => _selectedIds.clear());
+    for (final id in ids) {
+      await ApiService.instance.removeFromLibrary(id);
+    }
+    if (mounted) {
+      _loadUserLibrary(silent: true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Removed ${ids.length} titles from library'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   void _showMangaContextMenu(MangaItem manga) {
+    final prog = ApiService.instance.historyRepo.localProgress[manga.id];
+    final cachedChs = ApiService.instance.getCachedChapters(manga.id);
+    final canQuickResume = (prog != null && prog.chapterId.isNotEmpty) || cachedChs.isNotEmpty;
+    final resumeLabel = (prog != null && prog.chapterNumber.isNotEmpty)
+        ? 'Resume Ch. ${prog.chapterNumber}${!prog.completed && prog.page > 1 ? " (Page ${prog.page})" : ""}'
+        : 'Start Reading';
+
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
@@ -226,12 +355,29 @@ class _LibraryScreenState extends State<LibraryScreen>
                 ),
               ),
               const Divider(color: AppColors.outline, height: 16),
+              if (canQuickResume)
+                ListTile(
+                  leading: const Icon(Icons.play_arrow_rounded, color: AppColors.primary),
+                  title: Text(resumeLabel, style: const TextStyle(color: AppColors.text)),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _quickResumeManga(manga);
+                  },
+                ),
               ListTile(
                 leading: const Icon(Icons.label_outline_rounded, color: AppColors.primary),
                 title: const Text('Set Categories', style: TextStyle(color: AppColors.text)),
                 onTap: () {
                   Navigator.pop(ctx);
                   _showMangaCategoryDialog(manga);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.checklist_rounded, color: AppColors.primary),
+                title: const Text('Select Multiple', style: TextStyle(color: AppColors.text)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _toggleSelection(manga.id);
                 },
               ),
               ListTile(
@@ -800,13 +946,13 @@ class _LibraryScreenState extends State<LibraryScreen>
           }
         }
 
-        // Categories ONLY appear when they have something in them
+        // Categories appear when they have items (or when showEmptyCategories is toggled on)
         final visibleTabCategories = <(String?, String)>[];
-        if (uncategorizedCount > 0) {
+        if (uncategorizedCount > 0 || s.showEmptyCategories) {
           visibleTabCategories.add((null, 'All'));
         }
         for (final c in userCats) {
-          if ((categoryCounts[c.id] ?? 0) > 0) {
+          if ((categoryCounts[c.id] ?? 0) > 0 || s.showEmptyCategories) {
             visibleTabCategories.add((c.id, c.name));
           }
         }
@@ -823,52 +969,186 @@ class _LibraryScreenState extends State<LibraryScreen>
 
         return Column(
           children: [
-            AppTopBar(
-              title: 'Library',
-              branded: true,
-              actions: [
-                if (duplicateGroups.isNotEmpty)
+            if (_isSelectionMode)
+              AppTopBar(
+                title: '${_selectedIds.length} Selected',
+                onBack: () => setState(() => _selectedIds.clear()),
+                actions: [
                   BarIcon(
-                    Icons.copy_all_rounded,
-                    label: 'Resolve duplicates (${duplicateGroups.length})',
-                    onTap: () => _showResolveDuplicatesSheet(duplicateGroups),
+                    Icons.select_all_rounded,
+                    label: 'Select all',
+                    onTap: () {
+                      setState(() {
+                        if (_selectedIds.length == items.length) {
+                          _selectedIds.clear();
+                        } else {
+                          _selectedIds.addAll(items.map((m) => m.id));
+                        }
+                      });
+                    },
                   ),
-                PopupMenuButton<LibrarySort>(
-                  icon: const Icon(Icons.sort_rounded, size: 22, color: AppColors.muted),
-                  tooltip: 'Sort library',
-                  color: AppColors.surface,
-                  initialValue: s.sort,
-                  onSelected: (val) => s.update(() => s.sort = val),
-                  itemBuilder: (ctx) => [
-                    for (final sortOpt in LibrarySort.values)
-                      PopupMenuItem(
-                        value: sortOpt,
-                        child: Row(
-                          children: [
-                            if (s.sort == sortOpt)
-                              const Icon(Icons.check_rounded, size: 16, color: AppColors.primary)
-                            else
-                              const SizedBox(width: 16),
-                            const SizedBox(width: 8),
-                            Text(sortOpt.label, style: AppText.body),
-                          ],
+                  BarIcon(
+                    Icons.delete_outline_rounded,
+                    label: 'Remove selected',
+                    onTap: _batchRemoveSelected,
+                  ),
+                ],
+              )
+            else
+              AppTopBar(
+                title: 'Library',
+                branded: true,
+                actions: [
+                  if (_userLibrary.isNotEmpty)
+                    BarIcon(
+                      _isSearching ? Icons.search_off_rounded : Icons.search_rounded,
+                      label: 'Search library',
+                      onTap: () {
+                        setState(() {
+                          _isSearching = !_isSearching;
+                          if (!_isSearching) {
+                            _searchController.clear();
+                            _searchQuery = '';
+                          }
+                        });
+                      },
+                    ),
+                  if (duplicateGroups.isNotEmpty)
+                    BarIcon(
+                      Icons.copy_all_rounded,
+                      label: 'Resolve duplicates (${duplicateGroups.length})',
+                      onTap: () => _showResolveDuplicatesSheet(duplicateGroups),
+                    ),
+                  PopupMenuButton<LibrarySort>(
+                    icon: const Icon(Icons.sort_rounded, size: 22, color: AppColors.muted),
+                    tooltip: 'Sort library',
+                    color: AppColors.surface,
+                    initialValue: s.sort,
+                    onSelected: (val) => s.update(() => s.sort = val),
+                    itemBuilder: (ctx) => [
+                      for (final sortOpt in LibrarySort.values)
+                        PopupMenuItem(
+                          value: sortOpt,
+                          child: Row(
+                            children: [
+                              if (s.sort == sortOpt)
+                                const Icon(Icons.check_rounded, size: 16, color: AppColors.primary)
+                              else
+                                const SizedBox(width: 16),
+                              const SizedBox(width: 8),
+                              Text(sortOpt.label, style: AppText.body),
+                            ],
+                          ),
                         ),
-                      ),
-                  ],
-                ),
-                if (!s.categoryTabs || _userLibrary.isEmpty || visibleTabCategories.isEmpty)
-                  BarIcon(
-                    Icons.playlist_add_rounded,
-                    label: 'Manage categories',
-                    onTap: _showCategoryManagementSheet,
+                    ],
                   ),
-                BarIcon(
-                  Icons.filter_list_rounded,
-                  label: 'Filter, sort and display',
-                  onTap: () => showDisplaySheet(context, onManageCategories: _showCategoryManagementSheet),
+                  if (!s.categoryTabs || _userLibrary.isEmpty || visibleTabCategories.isEmpty)
+                    BarIcon(
+                      Icons.playlist_add_rounded,
+                      label: 'Manage categories',
+                      onTap: _showCategoryManagementSheet,
+                    ),
+                  BarIcon(
+                    Icons.filter_list_rounded,
+                    label: 'Filter, sort and display',
+                    onTap: () => showDisplaySheet(context, onManageCategories: _showCategoryManagementSheet),
+                  ),
+                ],
+              ),
+            if (_isSearching && _userLibrary.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+                child: SizedBox(
+                  height: 42,
+                  child: TextField(
+                    controller: _searchController,
+                    autofocus: true,
+                    style: AppText.body,
+                    decoration: InputDecoration(
+                      hintText: 'Search library by title, author, or tag...',
+                      hintStyle: AppText.caption,
+                      prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.muted),
+                      suffixIcon: _searchQuery.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.muted),
+                              onPressed: () {
+                                _searchController.clear();
+                                setState(() => _searchQuery = '');
+                              },
+                            )
+                          : null,
+                      filled: true,
+                      fillColor: AppColors.surfaceHigh,
+                      contentPadding: EdgeInsets.zero,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    onChanged: (val) => setState(() => _searchQuery = val.trim()),
+                  ),
                 ),
-              ],
-            ),
+              ),
+            if (s.hasActiveFilters && _userLibrary.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 2, 12, 6),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      if (s.filterDownloaded)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: InputChip(
+                            label: Text('Downloaded', style: AppText.chip),
+                            selected: true,
+                            onDeleted: () => s.update(() => s.filterDownloaded = false),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                      if (s.filterUnread)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: InputChip(
+                            label: Text('Unread', style: AppText.chip),
+                            selected: true,
+                            onDeleted: () => s.update(() => s.filterUnread = false),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                      if (s.filterCompleted)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: InputChip(
+                            label: Text('Completed', style: AppText.chip),
+                            selected: true,
+                            onDeleted: () => s.update(() => s.filterCompleted = false),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                      if (s.filterTracked)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: InputChip(
+                            label: Text('Tracked', style: AppText.chip),
+                            selected: true,
+                            onDeleted: () => s.update(() => s.filterTracked = false),
+                            visualDensity: VisualDensity.compact,
+                          ),
+                        ),
+                      TextButton(
+                        onPressed: s.clearFilters,
+                        style: TextButton.styleFrom(
+                          minimumSize: Size.zero,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        child: Text('Clear filters', style: AppText.caption.copyWith(color: AppColors.primary)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             if (duplicateGroups.isNotEmpty)
               Container(
                 margin: const EdgeInsets.fromLTRB(12, 6, 12, 4),
@@ -1131,6 +1411,10 @@ class _LibraryScreenState extends State<LibraryScreen>
       itemBuilder: (_, i) {
         final manga = items[i];
         final unread = ApiService.instance.getUnreadCount(manga.id);
+        final downloaded = s.showDownloadBadges
+            ? DownloadService.instance.getDownloadedCountForManga(manga.id)
+            : 0;
+        final isSelected = _selectedIds.contains(manga.id);
         return RepaintBoundary(
           child: CoverCard(
             title: manga.displayTitle,
@@ -1138,7 +1422,15 @@ class _LibraryScreenState extends State<LibraryScreen>
             mangaId: manga.id,
             mode: s.mode,
             unreadCount: unread,
-            onTap: () => _openManga(manga),
+            downloadedCount: downloaded,
+            isSelected: isSelected,
+            onTap: () {
+              if (_isSelectionMode) {
+                _toggleSelection(manga.id);
+              } else {
+                _openManga(manga);
+              }
+            },
             onLongPress: () => _showMangaContextMenu(manga),
           ),
         );
@@ -1388,6 +1680,8 @@ class CoverCard extends StatelessWidget {
     this.imageUrl,
     this.mangaId,
     this.unreadCount,
+    this.downloadedCount,
+    this.isSelected = false,
     this.onTap,
     this.onLongPress,
   });
@@ -1397,6 +1691,8 @@ class CoverCard extends StatelessWidget {
   final String? imageUrl;
   final String? mangaId;
   final int? unreadCount;
+  final int? downloadedCount;
+  final bool isSelected;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
 
@@ -1447,6 +1743,36 @@ class CoverCard extends StatelessWidget {
                 ),
               ),
             ),
+          if (downloadedCount != null && downloadedCount! > 0)
+            Positioned(
+              top: 6,
+              left: 6,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981),
+                  borderRadius: BorderRadius.circular(8),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: .5),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.download_done_rounded, size: 10, color: Colors.black),
+                    const SizedBox(width: 2),
+                    Text(
+                      downloadedCount! > 99 ? '99+' : '$downloadedCount',
+                      style: AppText.badge.copyWith(color: Colors.black),
+                    ),
+                  ],
+                ),
+              ),
+            ),
           if (unreadCount != null && unreadCount! > 0)
             Positioned(
               top: 6,
@@ -1467,6 +1793,20 @@ class CoverCard extends StatelessWidget {
                 child: Text(
                   unreadCount! > 99 ? '99+' : '$unreadCount',
                   style: AppText.badge.copyWith(color: AppColors.onPrimary),
+                ),
+              ),
+            ),
+          if (isSelected)
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.28),
+                  border: Border.all(color: AppColors.primary, width: 2.5),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Align(
+                  alignment: Alignment.center,
+                  child: Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 32),
                 ),
               ),
             ),
