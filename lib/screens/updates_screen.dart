@@ -25,7 +25,8 @@ class _UpdatesScreenState extends State<UpdatesScreen>
   Map<String, dynamic> _groups = {};
   bool _loading = false;
   bool _dirty = false;
-  Timer? _realtimeTimer;
+  DateTime _lastFetchAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _resumeCooldown = Duration(minutes: 10);
 
   @override
   void initState() {
@@ -38,17 +39,6 @@ class _UpdatesScreenState extends State<UpdatesScreen>
     }
     _fetch(silent: _groups.values.any((list) => (list as List).isNotEmpty));
     ApiService.instance.addListener(_onServiceChanged);
-    _realtimeTimer = Timer.periodic(
-      const Duration(seconds: 60),
-      (_) {
-        if (ConnectivityService.instance.isOffline) return;
-        if (widget.isActive) {
-          _fetch(silent: true);
-        } else {
-          _dirty = true;
-        }
-      },
-    );
   }
 
   @override
@@ -62,7 +52,6 @@ class _UpdatesScreenState extends State<UpdatesScreen>
 
   @override
   void dispose() {
-    _realtimeTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     ApiService.instance.removeListener(_onServiceChanged);
     super.dispose();
@@ -73,17 +62,23 @@ class _UpdatesScreenState extends State<UpdatesScreen>
       _dirty = true;
       return;
     }
-    _fetch(silent: true);
+    if (DateTime.now().difference(_lastFetchAt) >= const Duration(seconds: 30)) {
+      _fetch(silent: true);
+    }
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && !ConnectivityService.instance.isOffline) {
+    if (state == AppLifecycleState.resumed &&
+        widget.isActive &&
+        !ConnectivityService.instance.isOffline &&
+        DateTime.now().difference(_lastFetchAt) >= _resumeCooldown) {
       _fetch(silent: true);
     }
   }
 
   Future<void> _fetch({bool silent = false}) async {
+    _lastFetchAt = DateTime.now();
     final hasCurrent = _groups.values.any((list) => (list as List).isNotEmpty);
     if (!silent && !hasCurrent) {
       setState(() => _loading = true);

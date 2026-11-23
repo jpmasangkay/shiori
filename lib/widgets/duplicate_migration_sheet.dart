@@ -648,27 +648,7 @@ class _LibraryDuplicatesSheetWidgetState
   void _refreshGroups() {
     final library = ApiService.instance.libraryRepo.localLibrary.values
         .toList();
-    final newGroups = <String, List<MangaItem>>{};
-    for (int i = 0; i < library.length; i++) {
-      for (int j = i + 1; j < library.length; j++) {
-        if (DuplicateDetector.isPossibleDuplicate(
-          library[i].title,
-          library[j].title,
-        )) {
-          final norm = DuplicateDetector.normalize(library[i].title);
-          newGroups.putIfAbsent(norm, () => []).addAll([
-            library[i],
-            library[j],
-          ]);
-        }
-      }
-    }
-    final filtered = <String, List<MangaItem>>{};
-    newGroups.forEach((k, list) {
-      final seen = <String>{};
-      final unique = list.where((m) => seen.add(m.id)).toList();
-      if (unique.length > 1) filtered[k] = unique;
-    });
+    final filtered = DuplicateDetector.groupDuplicates(library);
 
     setState(() {
       _groups = filtered;

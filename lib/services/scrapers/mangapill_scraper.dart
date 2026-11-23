@@ -3,6 +3,7 @@ import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/http_cache.dart';
 import 'package:manga_reader/services/scrapers/html_scraper_utils.dart';
 
+/// MangaPill HTML scraper backed by `package:html` standards-compliant DOM parsing.
 class MangaPillScraper {
   final http.Client Function() _clientProvider;
   final LruHttpCache? _cache;
@@ -11,6 +12,13 @@ class MangaPillScraper {
 
   http.Client get _client => _clientProvider();
 
+  static const _defaultHeaders = <String, String>{
+    'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+    'Accept': 'text/html',
+    'Referer': 'https://mangapill.com/',
+  };
+
   Future<http.Response> _getCached(
     Uri uri, {
     Map<String, String>? headers,
@@ -18,11 +26,13 @@ class MangaPillScraper {
   }) async {
     final key = uri.toString();
     if (_cache != null) {
-      return _cache.deduplicate(key, () async {
-        return await _client.get(uri, headers: headers).timeout(timeout);
-      });
+      return _cache.deduplicate(
+        key,
+        () async => _client.get(uri, headers: headers).timeout(timeout),
+        shouldCache: (r) => r.statusCode == 200,
+      );
     }
-    return await _client.get(uri, headers: headers).timeout(timeout);
+    return _client.get(uri, headers: headers).timeout(timeout);
   }
 
   Future<List<MangaItem>> search({
@@ -35,62 +45,53 @@ class MangaPillScraper {
       return [];
     }
 
-    final String url;
-    if (query != null && query.trim().isNotEmpty) {
-      url =
-          'https://mangapill.com/search?q=${Uri.encodeComponent(query.trim())}&page=$page';
-    } else {
-      url = 'https://mangapill.com/mangas/new?page=$page';
-    }
+    final String url = (query != null && query.trim().isNotEmpty)
+        ? 'https://mangapill.com/search?q=${Uri.encodeComponent(query.trim())}&page=$page'
+        : 'https://mangapill.com/mangas/new?page=$page';
 
     final res = await _getCached(
       Uri.parse(url),
-      headers: const {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
-        'Referer': 'https://mangapill.com/',
-      },
+      headers: _defaultHeaders,
       timeout: const Duration(seconds: 10),
     );
 
     HtmlScraperUtils.checkResponseHealth(res, 'MangaPill');
 
     if (res.statusCode == 200) {
-      final html = res.body;
-      final cardRegex = RegExp(
-        r'<a\s+href="/manga/(\d+)/([^"]+)"[^>]*>([\s\S]*?<img\b[^>]*>)[\s\S]*?<div class="mt-3 font-black leading-tight line-clamp-2">([^<]+)</div>',
-        caseSensitive: false,
-      );
-
-      final matches = cardRegex.allMatches(html);
+      final doc = HtmlScraperUtils.parseDocument(res.body);
       final items = <MangaItem>[];
       final seen = <String>{};
+      final hrefRe = RegExp(r'^/manga/(\d+)/([^/?#]+)');
 
-      for (final m in matches) {
+      for (final a in doc.querySelectorAll('a[href^="/manga/"]')) {
+        final href = a.attributes['href']?.trim() ?? '';
+        final m = hrefRe.firstMatch(href);
+        if (m == null) continue;
         final mId = m.group(1)!;
         final slug = m.group(2)!;
-        final imgSub = m.group(3)!;
-        final imgTag =
-            RegExp(
-              r'<img\b[^>]*>',
-              caseSensitive: false,
-            ).firstMatch(imgSub)?.group(0) ??
-            '';
-        final cover = HtmlScraperUtils.extractImgFromTag(
-          imgTag,
+        final id = 'pill:$mId:$slug';
+
+        final imgEl = a.querySelector('img');
+        final cover = HtmlScraperUtils.extractImgFromElement(
+          imgEl,
           baseUrl: 'https://mangapill.com',
           referer: 'https://mangapill.com/',
         );
-        final title = HtmlScraperUtils.unescapeHtml(m.group(4)!.trim());
 
-        final id = 'pill:$mId:$slug';
+        var title = a.querySelector('.font-black, .line-clamp-2')?.text.trim() ?? '';
+        if (title.isEmpty) {
+          title = imgEl?.attributes['alt']?.trim() ?? '';
+        }
+        if (title.isEmpty) {
+          title = a.text.trim();
+        }
+        if (title.isEmpty) continue;
         if (!seen.add(id)) continue;
 
         items.add(
           MangaItem(
             id: id,
-            title: title,
+            title: HtmlScraperUtils.unescapeHtml(title),
             cover: cover,
             type: 'manga',
             source: 'mangapill',
@@ -111,61 +112,40 @@ class MangaPillScraper {
 
     final res = await _getCached(
       Uri.parse(url),
-      headers: const {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
-        'Referer': 'https://mangapill.com/',
-      },
+      headers: _defaultHeaders,
       timeout: const Duration(seconds: 10),
     );
 
     HtmlScraperUtils.checkResponseHealth(res, 'MangaPill');
 
     if (res.statusCode == 200) {
-      final html = res.body;
-      final titleMatch = RegExp(r'<h1[^>]*>([^<]+)</h1>').firstMatch(html);
-      final title = titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' ');
+      final doc = HtmlScraperUtils.parseDocument(res.body);
+      final title =
+          doc.querySelector('h1')?.text.trim() ?? slug.replaceAll('-', ' ');
+      final desc = doc.querySelector('p.text-sm')?.text.trim() ?? '';
 
-      final descMatch = RegExp(
-        r'<p class="text-sm[^"]*">([\s\S]*?)</p>',
-      ).firstMatch(html);
-      final desc =
-          descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '';
-
-      final figImgMatch = RegExp(
-        r'<figure[^>]*>[\s\S]*?(<img\b[^>]*>)',
-        caseSensitive: false,
-      ).firstMatch(html);
-      var cover = figImgMatch != null
-          ? HtmlScraperUtils.extractImgFromTag(
-              figImgMatch.group(1)!,
-              baseUrl: 'https://mangapill.com',
-              referer: 'https://mangapill.com/',
-            )
-          : '';
+      var cover = HtmlScraperUtils.extractImgFromElement(
+        doc.querySelector('figure img'),
+        baseUrl: 'https://mangapill.com',
+        referer: 'https://mangapill.com/',
+      );
       if (cover.isEmpty) {
-        final ogMatch = RegExp(
-          r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"',
-          caseSensitive: false,
-        ).firstMatch(html);
+        final ogContent = doc
+            .querySelector('meta[property="og:image"]')
+            ?.attributes['content'];
         cover = HtmlScraperUtils.normalizeImgUrl(
-          ogMatch?.group(1),
+          ogContent,
           baseUrl: 'https://mangapill.com',
           referer: 'https://mangapill.com/',
         );
       }
 
-      final tags =
-          RegExp(
-                r'<a[^>]+href="/search\?genre=[^"]+"[^>]*>([^<]+)</a>',
-                caseSensitive: false,
-              )
-              .allMatches(html)
-              .map((m) => HtmlScraperUtils.unescapeHtml(m.group(1)!.trim()))
-              .where((s) => s.isNotEmpty)
-              .toSet()
-              .toList();
+      final tags = doc
+          .querySelectorAll('a[href^="/search?genre="]')
+          .map((e) => HtmlScraperUtils.unescapeHtml(e.text.trim()))
+          .where((s) => s.isNotEmpty)
+          .toSet()
+          .toList();
 
       return MangaItem(
         id: id,
@@ -187,41 +167,34 @@ class MangaPillScraper {
 
     final res = await _getCached(
       Uri.parse(url),
-      headers: const {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
-        'Referer': 'https://mangapill.com/',
-      },
+      headers: _defaultHeaders,
       timeout: const Duration(seconds: 10),
     );
 
     HtmlScraperUtils.checkResponseHealth(res, 'MangaPill');
 
     if (res.statusCode == 200) {
-      final html = res.body;
-      final chapterRegex = RegExp(
-        r'<a[^>]+href="/chapters/([0-9-]+)/([^"]+)"[^>]*>([^<]+)</a>',
-        caseSensitive: false,
-      );
-
-      final matches = chapterRegex.allMatches(html);
+      final doc = HtmlScraperUtils.parseDocument(res.body);
+      final hrefRe = RegExp(r'^/chapters/([0-9-]+)/([^/?#]+)');
+      final numRe = RegExp(r'Chapter\s+([0-9.]+)', caseSensitive: false);
       final chapters = <ChapterItem>[];
+      final seen = <String>{};
 
-      for (final m in matches) {
+      for (final a in doc.querySelectorAll('a[href^="/chapters/"]')) {
+        final href = a.attributes['href']?.trim() ?? '';
+        final m = hrefRe.firstMatch(href);
+        if (m == null) continue;
         final cId = m.group(1)!;
         final cSlug = m.group(2)!;
-        final rawTitle = HtmlScraperUtils.unescapeHtml(m.group(3)!.trim());
+        final chId = 'pill:$cId:$cSlug';
+        if (!seen.add(chId)) continue;
 
-        final numMatch = RegExp(
-          r'Chapter\s+([0-9.]+)',
-          caseSensitive: false,
-        ).firstMatch(rawTitle);
-        final num = numMatch?.group(1);
+        final rawTitle = HtmlScraperUtils.unescapeHtml(a.text.trim());
+        final num = numRe.firstMatch(rawTitle)?.group(1);
 
         chapters.add(
           ChapterItem(
-            id: 'pill:$cId:$cSlug',
+            id: chId,
             title: rawTitle,
             number: num,
             group: 'MangaPill',
@@ -241,31 +214,17 @@ class MangaPillScraper {
     final url = 'https://mangapill.com/chapters/$cId/$cSlug';
 
     final res = await _client
-        .get(
-          Uri.parse(url),
-          headers: const {
-            'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html',
-            'Referer': 'https://mangapill.com/',
-          },
-        )
+        .get(Uri.parse(url), headers: _defaultHeaders)
         .timeout(const Duration(seconds: 12));
 
     HtmlScraperUtils.checkResponseHealth(res, 'MangaPill');
 
     if (res.statusCode == 200) {
-      final html = res.body;
-      final pageTagRegex = RegExp(
-        r'<img\b[^>]*class="[^"]*js-page[^"]*"[^>]*>',
-        caseSensitive: false,
-      );
-      final matches = pageTagRegex.allMatches(html);
-
+      final doc = HtmlScraperUtils.parseDocument(res.body);
       final pages = <String>[];
-      for (final m in matches) {
-        final imgUrl = HtmlScraperUtils.extractImgFromTag(
-          m.group(0)!,
+      for (final img in doc.querySelectorAll('img.js-page')) {
+        final imgUrl = HtmlScraperUtils.extractImgFromElement(
+          img,
           baseUrl: 'https://mangapill.com',
           referer: 'https://mangapill.com/',
         );

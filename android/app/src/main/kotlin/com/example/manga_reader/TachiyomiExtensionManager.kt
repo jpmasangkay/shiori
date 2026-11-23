@@ -54,12 +54,33 @@ import android.graphics.drawable.Drawable
 
 class TachiyomiExtensionManager(private val context: Context) {
     private val TAG = "TachiyomiExtMgr"
+
+    /** Thread-safe bounded LRU map preventing unbounded RAM growth in long sessions. */
+    private class BoundedCache<K, V>(private val maxEntries: Int) {
+        private val map = object : LinkedHashMap<K, V>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<K, V>?): Boolean =
+                size > maxEntries
+        }
+
+        @Synchronized operator fun get(key: K): V? = map[key]
+        @Synchronized operator fun set(key: K, value: V) { map[key] = value }
+        @Synchronized fun remove(key: K): V? = map.remove(key)
+        @Synchronized fun removeMatching(predicate: (K) -> Boolean) {
+            val iter = map.keys.iterator()
+            while (iter.hasNext()) {
+                if (predicate(iter.next())) iter.remove()
+            }
+        }
+        @Synchronized fun clear() = map.clear()
+        @Synchronized fun size(): Int = map.size
+    }
+
     private val sourceCache = ConcurrentHashMap<String, CatalogueSource>()
     private val allSourcesCache = ConcurrentHashMap<String, List<CatalogueSource>>()
-    private val mangaCache = ConcurrentHashMap<String, SManga>()
-    private val chapterCache = ConcurrentHashMap<String, SChapter>()
-    private val pageCache = ConcurrentHashMap<String, Page>()
-    private val iconCache = ConcurrentHashMap<String, ByteArray>()
+    private val mangaCache = BoundedCache<String, SManga>(512)
+    private val chapterCache = BoundedCache<String, SChapter>(2048)
+    private val pageCache = BoundedCache<String, Page>(800)
+    private val iconCache = BoundedCache<String, ByteArray>(128)
     private val updateLocks = ConcurrentHashMap<String, Mutex>()
     private val mangaUpdateSupport = ConcurrentHashMap<Class<*>, Boolean>()
     private val customImagePipelineSupport = ConcurrentHashMap<Class<*>, Boolean>()
@@ -71,6 +92,15 @@ class TachiyomiExtensionManager(private val context: Context) {
         const val METADATA_NSFW = "tachiyomi.extension.nsfw"
         const val LIB_VERSION_MIN = 1.4
         const val LIB_VERSION_MAX = 1.6
+        const val MAX_IMAGE_BYTES = 25L * 1024L * 1024L // 25 MB hard cap per page image
+        const val MAX_IMAGE_CACHE_BYTES = 150L * 1024L * 1024L // 150 MB disk LRU cache
+
+        private const val TRUSTED_SIGS_PREF = "shiori_trusted_ext_sigs"
+        private const val KEY_TRUSTED_SIGS = "trusted_sha256_set"
+        // Keiyoushi official repo signing key fingerprint
+        private val DEFAULT_TRUSTED_SIGNATURES = setOf(
+            "9add655a78e96c4ec7a53ef89dccb557cb5d767489fac5e785d671a5a75d4da2"
+        )
 
         private val STUB_PACKAGES = setOf(
             "eu.kanade.tachiyomi.extension.all.keiyoushi",
@@ -607,9 +637,11 @@ class TachiyomiExtensionManager(private val context: Context) {
         }
 
         // 3. Fallback: Dex entries scan
+        @Suppress("DEPRECATION")
+        var dexFile: dalvik.system.DexFile? = null
         try {
             @Suppress("DEPRECATION")
-            val dexFile = dalvik.system.DexFile(apkPath)
+            dexFile = dalvik.system.DexFile(apkPath)
             val entries = dexFile.entries()
             while (entries.hasMoreElements()) {
                 val candidate = entries.nextElement()
@@ -625,6 +657,8 @@ class TachiyomiExtensionManager(private val context: Context) {
             }
         } catch (e: Throwable) {
             Log.w(TAG, "Dex scan failed for $apkPath: ${e.message}")
+        } finally {
+            try { dexFile?.close() } catch (_: Throwable) {}
         }
 
         return null
@@ -724,12 +758,44 @@ class TachiyomiExtensionManager(private val context: Context) {
         return stagedApk.absolutePath to nativeLibPath
     }
 
+    fun getTrustedSignatures(): Set<String> {
+        val prefs = context.getSharedPreferences(TRUSTED_SIGS_PREF, Context.MODE_PRIVATE)
+        val saved = prefs.getStringSet(KEY_TRUSTED_SIGS, emptySet()) ?: emptySet()
+        return (DEFAULT_TRUSTED_SIGNATURES + saved).map { it.lowercase() }.toSet()
+    }
+
+    fun trustSignature(sha256: String) {
+        val clean = sha256.trim().lowercase()
+        if (clean.isEmpty()) return
+        val prefs = context.getSharedPreferences(TRUSTED_SIGS_PREF, Context.MODE_PRIVATE)
+        val updated = (prefs.getStringSet(KEY_TRUSTED_SIGS, emptySet()) ?: emptySet()).toMutableSet()
+        updated.add(clean)
+        prefs.edit().putStringSet(KEY_TRUSTED_SIGS, updated).apply()
+    }
+
+    private fun verifyApkTrustBeforeLoading(basePkg: String, apkPath: String) {
+        // OS-installed packages under /data/app were explicitly approved by Android PackageInstaller.
+        if (apkPath.startsWith("/data/app/")) return
+        val actualSig = getApkSignatureSha256(apkPath)?.lowercase()
+        if (actualSig.isNullOrEmpty()) {
+            throw SecurityException("Refusing to load unsigned extension APK for $basePkg")
+        }
+        val trusted = getTrustedSignatures()
+        if (actualSig !in trusted) {
+            throw SecurityException(
+                "Untrusted extension signature ($actualSig) for $basePkg. Install from a trusted repository first."
+            )
+        }
+    }
+
     @Synchronized
     private fun loadAllSourcesForPkg(basePkg: String, hintPath: String? = null): List<CatalogueSource> {
         allSourcesCache[basePkg]?.let { if (it.isNotEmpty()) return it }
 
         val rawApkPath = findApkPath(basePkg, hintPath)
             ?: throw IllegalStateException("Extension APK for package '$basePkg' not found on device.")
+
+        verifyApkTrustBeforeLoading(basePkg, rawApkPath)
 
         val (apkPath, nativeLibPath) = stageReadOnlyDexAndLibs(basePkg, rawApkPath)
         Log.d(TAG, "Loading extension for $basePkg from $apkPath (nativeLibs=$nativeLibPath)")
@@ -959,8 +1025,8 @@ class TachiyomiExtensionManager(private val context: Context) {
         sourceCache.keys.filter { it == basePkg || it.startsWith("$basePkg@") }.forEach { sourceCache.remove(it) }
         allSourcesCache.remove(basePkg)
         val prefix = "$basePkg:"
-        mangaCache.keys.filter { it.startsWith(prefix) }.forEach { mangaCache.remove(it) }
-        chapterCache.keys.filter { it.startsWith(prefix) }.forEach { chapterCache.remove(it) }
+        mangaCache.removeMatching { it.startsWith(prefix) }
+        chapterCache.removeMatching { it.startsWith(prefix) }
 
         val safePkg = basePkg.replace(Regex("[^a-zA-Z0-9_.]"), "_")
         if (safePkg.isNotEmpty()) {
@@ -1553,6 +1619,13 @@ class TachiyomiExtensionManager(private val context: Context) {
             }
         }
 
+        // Abort fallback retries immediately when the upstream source rate-limits or blocks us
+        fun isRateLimitOrBlocked(err: Throwable?): Boolean {
+            if (err == null) return false
+            val msg = err.message?.lowercase() ?: ""
+            return msg.contains("403") || msg.contains("429") || msg.contains("503") || msg.contains("cloudflare")
+        }
+
         // Tier 1: Try exact query with requested type filter (if specified) or clean FilterList()
         if (hasTypeFilter) {
             try {
@@ -1564,60 +1637,20 @@ class TachiyomiExtensionManager(private val context: Context) {
             }
         }
 
-        // Tier 2: Search with standard Tachiyomi empty FilterList() so conflicting filters don't break keyword search
-        if (mangasPage == null) {
+        // Tier 2: Standard Tachiyomi empty FilterList() search
+        if (mangasPage == null && !isRateLimitOrBlocked(lastSearchError)) {
             mangasPage = trySearch(trimmed, FilterList())
         }
 
-        // Tier 3: If clean FilterList() returned 0/null and no type filter was requested, try source default FilterList
-        if (mangasPage == null && !hasTypeFilter) {
-            try {
-                val defaultFilters = getSafeFilterList(source)
-                if (defaultFilters.isNotEmpty()) {
-                    mangasPage = trySearch(trimmed, defaultFilters)
-                }
-            } catch (e: Throwable) {
-                lastSearchError = e
-            }
-        }
-
-        // Tier 4: Sanitized query (punctuation stripped: colons, dashes, apostrophes, commas replaced with space)
-        if (mangasPage == null && sanitized.isNotEmpty() && sanitized != trimmed && sanitized.length >= 2) {
+        // Tier 3 (Capped): Single punctuation-sanitized retry to handle colons/smart quotes
+        // without triggering 40–80 request storms across Global Search.
+        if (mangasPage == null &&
+            !isRateLimitOrBlocked(lastSearchError) &&
+            sanitized.isNotEmpty() &&
+            sanitized != trimmed &&
+            sanitized.length >= 2
+        ) {
             mangasPage = trySearch(sanitized, FilterList())
-        }
-
-        // Tier 5: Compact sanitized query (punctuation completely stripped without spaces)
-        if (mangasPage == null && compactSanitized.isNotEmpty() && compactSanitized != trimmed && compactSanitized != sanitized && compactSanitized.length >= 2) {
-            mangasPage = trySearch(compactSanitized, FilterList())
-        }
-
-        // Tier 6: Query stripped of type keywords (e.g. "solo leveling manhwa" -> "solo leveling")
-        if (mangasPage == null && queryWithoutTypeWords.isNotEmpty() && queryWithoutTypeWords.length >= 2 && queryWithoutTypeWords != trimmed && queryWithoutTypeWords != sanitized) {
-            mangasPage = trySearch(queryWithoutTypeWords, FilterList())
-        }
-
-        // Tier 7: Core title (before colon or dash) if long enough
-        if (mangasPage == null && coreTitle.length >= 3 && coreTitle != trimmed && coreTitle != sanitized && coreTitle != queryWithoutTypeWords) {
-            mangasPage = trySearch(coreTitle, FilterList())
-        }
-
-        // Tier 8: Popular manga matching fallback (especially if source has 3-character min or query was short)
-        if (mangasPage == null) {
-            try {
-                val popular = fetchPopularManga(pkg, 1, null, hintPath)
-                val lowerTrimmed = trimmed.lowercase()
-                val lowerSanitized = sanitized.lowercase()
-                val lowerQueryWithoutType = queryWithoutTypeWords.lowercase()
-                val filtered = popular.filter {
-                    val t = (it["title"] as? String)?.lowercase() ?: ""
-                    t.contains(lowerTrimmed) ||
-                        (lowerSanitized.isNotEmpty() && t.contains(lowerSanitized)) ||
-                        (lowerQueryWithoutType.isNotEmpty() && t.contains(lowerQueryWithoutType))
-                }
-                if (filtered.isNotEmpty()) {
-                    return@withContext filtered
-                }
-            } catch (_: Throwable) {}
         }
 
         val list = mangasPage?.mangas ?: emptyList()
@@ -1934,17 +1967,20 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }
             }
 
-            if (pageCache.size > 600) {
-                pageCache.clear()
-            }
-
+            // Only eagerly resolve lazy per-page image URLs for the first 4 pages;
+            // remaining pages resolve on demand in fetchImageBytes / fetchImageFilePath
+            // so opening a 60-page chapter does not fire 60 HTTP requests or expire CDN tokens.
+            val eagerLazyLimit = if (pages.size > 8) 4 else pages.size
             val sem = Semaphore(4)
             coroutineScope {
                 pages.mapIndexed { idx, page ->
                     async {
                         sem.withPermit {
                             var imgUrl = page.imageUrl
-                            if (imgUrl.isNullOrEmpty() && page.url.isNotEmpty()) {
+                            val shouldResolveNow = imgUrl.isNullOrEmpty() &&
+                                page.url.isNotEmpty() &&
+                                idx < eagerLazyLimit
+                            if (shouldResolveNow) {
                                 for (attempt in 0..1) {
                                     try {
                                         imgUrl = try {
@@ -1979,6 +2015,7 @@ class TachiyomiExtensionManager(private val context: Context) {
                                     pageCache[finalUrl] = Page(page.index, page.url, finalUrl)
                                 }
                             } else if (finalUrl.isNotEmpty()) {
+                                // Store imageUrl=null so fetchImageBytes/fetchImageFilePath resolves lazily
                                 pageCache[finalUrl] = Page(idx, page.url, imgUrl)
                             }
                             finalUrl
@@ -1987,6 +2024,80 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }.awaitAll()
             }
         }
+
+    private fun readBoundedResponseBytes(body: okhttp3.ResponseBody?): ByteArray? {
+        if (body == null) return null
+        val contentLength = body.contentLength()
+        if (contentLength > MAX_IMAGE_BYTES) {
+            throw IllegalStateException("Image exceeds ${MAX_IMAGE_BYTES / (1024 * 1024)} MB safety limit")
+        }
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(16 * 1024)
+        var total = 0L
+        body.byteStream().use { input ->
+            while (true) {
+                val read = input.read(buf)
+                if (read == -1) break
+                total += read
+                if (total > MAX_IMAGE_BYTES) {
+                    throw IllegalStateException("Image stream exceeded ${MAX_IMAGE_BYTES / (1024 * 1024)} MB limit")
+                }
+                out.write(buf, 0, read)
+            }
+        }
+        val bytes = out.toByteArray()
+        return if (bytes.isNotEmpty()) bytes else null
+    }
+
+    private fun pruneDiskImageCacheIfNeeded(cacheDir: File) {
+        try {
+            val files = cacheDir.listFiles() ?: return
+            var totalBytes = files.sumOf { it.length() }
+            if (totalBytes <= MAX_IMAGE_CACHE_BYTES) return
+            val sorted = files.sortedBy { it.lastModified() }
+            for (f in sorted) {
+                if (totalBytes <= (MAX_IMAGE_CACHE_BYTES * 3) / 4) break
+                val len = f.length()
+                if (f.delete()) {
+                    totalBytes -= len
+                }
+            }
+        } catch (_: Throwable) {}
+    }
+
+    /**
+     * Fetches an extension image and writes it directly to a bounded LRU disk cache,
+     * returning only the local file path string so Flutter can render `Image.file`
+     * without double-copying multi-MB byte arrays across JNI / MethodChannel.
+     */
+    suspend fun fetchImageFilePath(
+        pkg: String,
+        imageUrl: String,
+        pageUrl: String? = null,
+        hintPath: String? = null
+    ): String = withContext(Dispatchers.IO) {
+        val cacheDir = File(context.cacheDir, "shiori_ext_images")
+        if (!cacheDir.exists()) cacheDir.mkdirs()
+
+        val keyHash = MessageDigest.getInstance("SHA-256")
+            .digest("$pkg|$imageUrl".toByteArray())
+            .joinToString("") { "%02x".format(it) }
+        val targetFile = File(cacheDir, "$keyHash.img")
+        if (targetFile.exists() && targetFile.length() > 64L) {
+            targetFile.setLastModified(System.currentTimeMillis())
+            return@withContext targetFile.absolutePath
+        }
+
+        val bytes = fetchImageBytes(pkg, imageUrl, pageUrl, hintPath)
+        val tmpFile = File(cacheDir, "$keyHash.tmp")
+        tmpFile.outputStream().use { it.write(bytes) }
+        if (!tmpFile.renameTo(targetFile)) {
+            tmpFile.copyTo(targetFile, overwrite = true)
+            tmpFile.delete()
+        }
+        pruneDiskImageCacheIfNeeded(cacheDir)
+        targetFile.absolutePath
+    }
 
     suspend fun fetchImageBytes(
         pkg: String,
@@ -2032,8 +2143,8 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }
                 source.client.newCall(req).execute().use { res ->
                     if (res.isSuccessful) {
-                        val bytes = res.body?.bytes()
-                        if (bytes != null && bytes.isNotEmpty()) {
+                        val bytes = readBoundedResponseBytes(res.body)
+                        if (bytes != null) {
                             return@withContext bytes
                         }
                     } else {
@@ -2055,8 +2166,8 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }
                 response.use { res ->
                     if (res.isSuccessful) {
-                        val bytes = res.body?.bytes()
-                        if (bytes != null && bytes.isNotEmpty()) {
+                        val bytes = readBoundedResponseBytes(res.body)
+                        if (bytes != null) {
                             return@withContext bytes
                         }
                     } else {
@@ -2075,8 +2186,8 @@ class TachiyomiExtensionManager(private val context: Context) {
                 }
                 source.client.newCall(req).execute().use { res ->
                     if (res.isSuccessful) {
-                        val bytes = res.body?.bytes()
-                        if (bytes != null && bytes.isNotEmpty()) {
+                        val bytes = readBoundedResponseBytes(res.body)
+                        if (bytes != null) {
                             return@withContext bytes
                         }
                     } else if (lastErr == null) {
@@ -2089,6 +2200,202 @@ class TachiyomiExtensionManager(private val context: Context) {
         }
 
         throw (lastErr ?: IllegalStateException("Empty image response for $targetImgUrl"))
+    }
+
+    /**
+     * Introspects a [eu.kanade.tachiyomi.source.ConfigurableSource] extension's PreferenceScreen
+     * and returns a Flutter-friendly list of editable settings.
+     */
+    fun getExtensionPreferences(pkg: String, hintPath: String? = null): List<Map<String, Any?>> {
+        val source = getOrLoadSource(pkg, hintPath)
+        if (source !is eu.kanade.tachiyomi.source.ConfigurableSource) return emptyList()
+        val prefs = context.getSharedPreferences("source_${source.id}", Context.MODE_PRIVATE)
+        val result = mutableListOf<Map<String, Any?>>()
+        try {
+            val prefManager = androidx.preference.PreferenceManager(context)
+            prefManager.sharedPreferencesName = "source_${source.id}"
+            val screen = prefManager.createPreferenceScreen(context)
+            source.setupPreferenceScreen(screen)
+            for (i in 0 until screen.preferenceCount) {
+                val pref = screen.getPreference(i)
+                val key = pref.key ?: continue
+                val title = pref.title?.toString() ?: key
+                val summary = pref.summary?.toString() ?: ""
+                when (pref) {
+                    is androidx.preference.TwoStatePreference -> {
+                        val cur = prefs.getBoolean(key, pref.isChecked)
+                        result.add(mapOf(
+                            "type" to "switch",
+                            "key" to key,
+                            "title" to title,
+                            "summary" to summary,
+                            "value" to cur
+                        ))
+                    }
+                    is androidx.preference.ListPreference -> {
+                        val entries = pref.entries?.map { it.toString() } ?: emptyList()
+                        val entryValues = pref.entryValues?.map { it.toString() } ?: emptyList()
+                        val cur = prefs.getString(key, pref.value ?: entryValues.firstOrNull() ?: "") ?: ""
+                        result.add(mapOf(
+                            "type" to "list",
+                            "key" to key,
+                            "title" to title,
+                            "summary" to summary,
+                            "value" to cur,
+                            "entries" to entries,
+                            "entryValues" to entryValues
+                        ))
+                    }
+                    is androidx.preference.EditTextPreference -> {
+                        val cur = prefs.getString(key, pref.text ?: "") ?: ""
+                        result.add(mapOf(
+                            "type" to "text",
+                            "key" to key,
+                            "title" to title,
+                            "summary" to summary,
+                            "value" to cur
+                        ))
+                    }
+                    is androidx.preference.MultiSelectListPreference -> {
+                        val entries = pref.entries?.map { it.toString() } ?: emptyList()
+                        val entryValues = pref.entryValues?.map { it.toString() } ?: emptyList()
+                        val cur = (prefs.getStringSet(key, pref.values) ?: emptySet()).toList()
+                        result.add(mapOf(
+                            "type" to "multiSelect",
+                            "key" to key,
+                            "title" to title,
+                            "summary" to summary,
+                            "value" to cur,
+                            "entries" to entries,
+                            "entryValues" to entryValues
+                        ))
+                    }
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed reading ConfigurableSource preferences for $pkg: ${e.message}")
+        }
+        return result
+    }
+
+    fun setExtensionPreference(pkg: String, key: String, value: Any?, type: String): Boolean {
+        return try {
+            val source = getOrLoadSource(pkg, null)
+            val prefs = context.getSharedPreferences("source_${source.id}", Context.MODE_PRIVATE)
+            val editor = prefs.edit()
+            when (type) {
+                "switch" -> editor.putBoolean(key, value == true)
+                "multiSelect" -> {
+                    val set = (value as? List<*>)?.mapNotNull { it?.toString() }?.toSet() ?: emptySet()
+                    editor.putStringSet(key, set)
+                }
+                else -> editor.putString(key, value?.toString() ?: "")
+            }
+            editor.apply()
+            // Evict cached source instance so new settings (like mirror/domain) take effect immediately
+            removeSource(pkg)
+            true
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed saving preference '$key' for $pkg: ${e.message}")
+            false
+        }
+    }
+
+    private fun serializeFilter(filter: Filter<*>): Map<String, Any?> {
+        return when (filter) {
+            is Filter.Header -> mapOf("type" to "header", "name" to filter.name)
+            is Filter.Separator -> mapOf("type" to "separator", "name" to filter.name)
+            is Filter.Text -> mapOf("type" to "text", "name" to filter.name, "state" to filter.state)
+            is Filter.CheckBox -> mapOf("type" to "checkbox", "name" to filter.name, "state" to filter.state)
+            is Filter.TriState -> mapOf("type" to "tristate", "name" to filter.name, "state" to filter.state)
+            is Filter.Select<*> -> mapOf(
+                "type" to "select",
+                "name" to filter.name,
+                "state" to filter.state,
+                "values" to filter.values.map { it?.toString() ?: "" }
+            )
+            is Filter.Sort -> mapOf(
+                "type" to "sort",
+                "name" to filter.name,
+                "values" to filter.values.toList(),
+                "index" to (filter.state?.index ?: 0),
+                "ascending" to (filter.state?.ascending ?: false)
+            )
+            is Filter.Group<*> -> mapOf(
+                "type" to "group",
+                "name" to filter.name,
+                "children" to filter.state.filterIsInstance<Filter<*>>().map { serializeFilter(it) }
+            )
+            else -> mapOf("type" to "header", "name" to filter.name)
+        }
+    }
+
+    fun getExtensionFilters(pkg: String, hintPath: String? = null): List<Map<String, Any?>> {
+        return try {
+            val source = getOrLoadSource(pkg, hintPath)
+            val filters = getSafeFilterList(source)
+            filters.map { serializeFilter(it) }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed getting filters for $pkg: ${e.message}")
+            emptyList()
+        }
+    }
+
+    private fun applySerializedFilters(filters: List<Filter<*>>, specs: List<Map<String, Any?>>) {
+        val count = minOf(filters.size, specs.size)
+        for (i in 0 until count) {
+            val f = filters[i]
+            val spec = specs[i]
+            when (f) {
+                is Filter.Text -> (spec["state"] as? String)?.let { f.state = it }
+                is Filter.CheckBox -> (spec["state"] as? Boolean)?.let { f.state = it }
+                is Filter.TriState -> (spec["state"] as? Number)?.let { f.state = it.toInt().coerceIn(0, 2) }
+                is Filter.Select<*> -> (spec["state"] as? Number)?.let {
+                    val idx = it.toInt()
+                    if (idx in f.values.indices) f.state = idx
+                }
+                is Filter.Sort -> {
+                    val idx = (spec["index"] as? Number)?.toInt()
+                    val asc = spec["ascending"] as? Boolean
+                    if (idx != null && idx in f.values.indices) {
+                        f.state = Filter.Sort.Selection(idx, asc ?: false)
+                    }
+                }
+                is Filter.Group<*> -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val childSpecs = (spec["children"] as? List<*>)?.filterIsInstance<Map<String, Any?>>() ?: emptyList()
+                    applySerializedFilters(f.state.filterIsInstance<Filter<*>>(), childSpecs)
+                }
+                else -> {}
+            }
+        }
+    }
+
+    suspend fun searchMangaWithFilters(
+        pkg: String,
+        query: String,
+        page: Int,
+        serializedFilters: List<Map<String, Any?>>,
+        hintPath: String? = null
+    ): List<Map<String, Any?>> = withContext(Dispatchers.IO) {
+        val (basePkg, _) = splitPkgSelector(pkg)
+        val source = getOrLoadSource(pkg, hintPath)
+        val filterList = getSafeFilterList(source)
+        applySerializedFilters(filterList, serializedFilters)
+        val mangasPage = try {
+            source.getSearchManga(page, query.trim(), filterList)
+        } catch (_: NoSuchMethodError) {
+            source.fetchSearchManga(page, query.trim(), filterList).toBlocking().first()
+        } catch (_: AbstractMethodError) {
+            source.fetchSearchManga(page, query.trim(), filterList).toBlocking().first()
+        }
+        val list = mangasPage.mangas
+        list.forEach { m ->
+            mangaCache["$pkg:${m.url}"] = m
+            mangaCache["$basePkg:${m.url}"] = m
+        }
+        enrichMissingThumbnails(pkg, source, list)
+        list.map { sMangaToMap(it, source, pkg) }
     }
 
     private fun sMangaToMap(sManga: SManga, source: CatalogueSource? = null, pkg: String = ""): Map<String, Any?> {

@@ -4,6 +4,8 @@ import 'dart:math' as math;
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
@@ -11,6 +13,9 @@ import '../services/api_service.dart';
 import '../services/download_service.dart';
 import '../services/extension_bridge.dart';
 import '../services/extension_service.dart';
+import '../services/local_database.dart';
+import '../services/platform_bridge.dart';
+import '../services/privacy_service.dart';
 import '../services/reader_settings.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
@@ -183,6 +188,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
   double _tint = ReaderSettings.instance.tint;
   bool _dataSaver = ReaderSettings.instance.dataSaver;
   bool _immersiveFullscreen = ReaderSettings.instance.immersiveFullscreen;
+  bool _keepScreenOn = ReaderSettings.instance.keepScreenOn;
+  bool _volumeKeyNav = ReaderSettings.instance.volumeKeyNavigation;
+  bool _invertVolumeKeys = ReaderSettings.instance.invertVolumeKeys;
+  bool _showStatusBar = ReaderSettings.instance.showReadingStatusBar;
+  ReaderBackground _background = ReaderSettings.instance.background;
+  bool _cropBorders = ReaderSettings.instance.cropBorders;
+  bool _dualPageSpread = ReaderSettings.instance.dualPageSpread;
+  double _webtoonSidePadding = ReaderSettings.instance.webtoonSidePadding;
+  bool _grayscaleFilter = ReaderSettings.instance.grayscaleFilter;
+  bool _invertColors = ReaderSettings.instance.invertColors;
+  double _autoScrollSpeed = ReaderSettings.instance.autoScrollSpeed;
+  bool _autoScrolling = false;
+  Timer? _autoScrollTimer;
+  Timer? _autoAdvanceTimer;
+  StreamSubscription<String>? _volumeKeySub;
+  bool _isPageZoomed = false;
+  final TransformationController _webtoonTransformController = TransformationController();
+  bool _isWebtoonZoomed = false;
+  final DateTime _sessionStartedAt = DateTime.now();
+  int _sessionPagesTurned = 0;
   int? _pendingInitialPage;
 
   final _scrollController = ScrollController();
@@ -265,6 +290,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _tint = ReaderSettings.instance.tint;
     _dataSaver = ReaderSettings.instance.dataSaver;
     _immersiveFullscreen = ReaderSettings.instance.immersiveFullscreen;
+    _keepScreenOn = ReaderSettings.instance.keepScreenOn;
+    _volumeKeyNav = ReaderSettings.instance.volumeKeyNavigation;
+    _invertVolumeKeys = ReaderSettings.instance.invertVolumeKeys;
+    _showStatusBar = ReaderSettings.instance.showReadingStatusBar;
+    _background = ReaderSettings.instance.background;
+    _cropBorders = ReaderSettings.instance.cropBorders;
+    _dualPageSpread = ReaderSettings.instance.dualPageSpread;
+    _webtoonSidePadding = ReaderSettings.instance.webtoonSidePadding;
+    _grayscaleFilter = ReaderSettings.instance.grayscaleFilter;
+    _invertColors = ReaderSettings.instance.invertColors;
+    _autoScrollSpeed = ReaderSettings.instance.autoScrollSpeed;
+
+    _webtoonTransformController.addListener(_onWebtoonTransformChanged);
+    unawaited(PlatformBridge.instance.setKeepScreenOn(_keepScreenOn));
+    unawaited(PlatformBridge.instance.setVolumeKeyIntercept(_volumeKeyNav));
+    _volumeKeySub = PlatformBridge.instance.volumeKeyStream.listen(_onVolumeKey);
+    if (_immersiveFullscreen) {
+      SystemChrome.setEnabledSystemUIMode(
+        _chrome ? SystemUiMode.edgeToEdge : SystemUiMode.immersiveSticky,
+      );
+    }
 
     // Async re-check in case ReaderSettings was initialized concurrently
     SharedPreferences.getInstance().then((prefs) {
@@ -419,6 +465,67 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ReaderSettings.instance.setDataSaver(val);
   }
 
+  void _onWebtoonTransformChanged() {
+    final zoomed = _webtoonTransformController.value.getMaxScaleOnAxis() > 1.05;
+    if (zoomed != _isWebtoonZoomed && mounted) {
+      setState(() => _isWebtoonZoomed = zoomed);
+    }
+  }
+
+  void _onVolumeKey(String dir) {
+    if (!mounted || !_volumeKeyNav) return;
+    final goNext = _invertVolumeKeys ? (dir == 'up') : (dir == 'down');
+    if (_mode == ReaderMode.webtoon) {
+      if (_scrollController.hasClients) {
+        final step = MediaQuery.sizeOf(context).height * 0.75;
+        final target = (_scrollController.offset + (goNext ? step : -step))
+            .clamp(0.0, _scrollController.position.maxScrollExtent);
+        _scrollController.animateTo(
+          target,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOut,
+        );
+      }
+    } else {
+      if (goNext) {
+        _nextPage();
+      } else {
+        _prevPage();
+      }
+    }
+  }
+
+  void _toggleAutoScroll([bool? force]) {
+    final next = force ?? !_autoScrolling;
+    _autoScrollTimer?.cancel();
+    _autoAdvanceTimer?.cancel();
+    _autoScrollTimer = null;
+    if (!next) {
+      if (mounted) setState(() => _autoScrolling = false);
+      return;
+    }
+    setState(() => _autoScrolling = true);
+    if (_mode == ReaderMode.webtoon) {
+      _autoScrollTimer = Timer.periodic(const Duration(milliseconds: 32), (_) {
+        if (!mounted || !_autoScrolling || !_scrollController.hasClients) return;
+        final max = _scrollController.position.maxScrollExtent;
+        final cur = _scrollController.offset;
+        if (cur >= max - 2) {
+          _toggleAutoScroll(false);
+          return;
+        }
+        // Speed 1.0x ~= 75 px/sec (2.4 px per 32ms frame)
+        _scrollController.jumpTo((cur + 2.4 * _autoScrollSpeed).clamp(0.0, max));
+      });
+    } else {
+      final intervalMs = (5000 / _autoScrollSpeed).round().clamp(1200, 18000);
+      _autoScrollTimer = Timer.periodic(Duration(milliseconds: intervalMs), (_) {
+        if (!mounted || !_autoScrolling) return;
+        _nextPage();
+      });
+    }
+  }
+
   void _toggleChrome() {
     final nextChrome = !_chrome;
     setState(() => _chrome = nextChrome);
@@ -429,104 +536,486 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
-  void _showDisplaySheet() {
+  void _showChaptersDrawer() {
     showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => DraggableScrollableSheet(
+        expand: false,
+        initialChildSize: 0.6,
+        minChildSize: 0.35,
+        maxChildSize: 0.88,
+        builder: (_, scrollCtrl) => Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
+              child: Row(
+                children: [
+                  Text('CHAPTERS (${_chapters.length})', style: AppText.sectionHeader),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: AppColors.muted),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(color: AppColors.outline, height: 1),
+            Expanded(
+              child: ListView.builder(
+                controller: scrollCtrl,
+                itemCount: _chapters.length,
+                itemBuilder: (_, idx) {
+                  final ch = _chapters[idx];
+                  final isCurrent = idx == _currentChapterIndex;
+                  final isRead = ApiService.instance.isChapterRead(widget.mangaId, ch.id);
+                  return ListTile(
+                    selected: isCurrent,
+                    selectedTileColor: AppColors.active.withValues(alpha: 0.5),
+                    leading: Icon(
+                      isCurrent
+                          ? Icons.play_arrow_rounded
+                          : (isRead ? Icons.check_circle_outline_rounded : Icons.circle_outlined),
+                      size: 18,
+                      color: isCurrent
+                          ? AppColors.primary
+                          : (isRead ? AppColors.read : AppColors.muted),
+                    ),
+                    title: Text(
+                      ch.displayTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.bodyMedium.copyWith(
+                        color: isCurrent
+                            ? AppColors.primary
+                            : (isRead ? AppColors.read : AppColors.text),
+                      ),
+                    ),
+                    subtitle: ch.group.isNotEmpty
+                        ? Text(ch.group, style: AppText.caption, maxLines: 1, overflow: TextOverflow.ellipsis)
+                        : null,
+                    onTap: () {
+                      Navigator.of(ctx).pop();
+                      if (idx != _currentChapterIndex) {
+                        _switchToChapter(idx);
+                      }
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showPageContextMenu(String pageUrl, int pageNumber, VoidCallback onReload) async {
+    await showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Row(
+                children: [
+                  Text('PAGE $pageNumber OPTIONS', style: AppText.sectionHeader),
+                ],
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.save_alt_rounded, color: AppColors.primary),
+              title: Text('Save Page to Device', style: AppText.bodyMedium),
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                await _exportSinglePage(pageUrl, pageNumber, share: false);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.share_rounded, color: AppColors.primary),
+              title: Text('Share Page', style: AppText.bodyMedium),
+              onTap: () async {
+                Navigator.of(ctx).pop();
+                await _exportSinglePage(pageUrl, pageNumber, share: true);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.refresh_rounded, color: AppColors.muted),
+              title: Text('Reload Page Image', style: AppText.bodyMedium),
+              onTap: () {
+                Navigator.of(ctx).pop();
+                onReload();
+              },
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportSinglePage(String pageUrl, int pageNumber, {required bool share}) async {
+    try {
+      Uint8List? bytes;
+      if (pageUrl.startsWith('file://')) {
+        bytes = await File(pageUrl.replaceFirst('file://', '')).readAsBytes();
+      } else {
+        bytes = ImageReferers.getCachedNativeBytes(pageUrl) ??
+            await ImageReferers.fetchNativeBytes(pageUrl);
+        if (bytes == null) {
+          final headers = imageHeadersForUrl(pageUrl, mangaId: widget.mangaId);
+          final res = await http
+              .get(Uri.parse(pageUrl), headers: headers)
+              .timeout(const Duration(seconds: 15));
+          if (res.statusCode == 200) bytes = res.bodyBytes;
+        }
+      }
+      if (bytes == null || bytes.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Could not read page image bytes.')),
+          );
+        }
+        return;
+      }
+      final safeName = '${_effectiveMangaTitle.replaceAll(RegExp(r'[^a-zA-Z0-9_\-]'), '_')}_p$pageNumber.jpg';
+      if (share) {
+        final tmp = await getTemporaryDirectory();
+        final outFile = File('${tmp.path}/$safeName');
+        await outFile.writeAsBytes(bytes, flush: true);
+        await PlatformBridge.instance.shareFile(
+          filePath: outFile.path,
+          mimeType: 'image/jpeg',
+          subject: '$_effectiveMangaTitle - Page $pageNumber',
+        );
+      } else {
+        final saved = await PlatformBridge.instance.saveFile(
+          fileName: safeName,
+          bytes: bytes,
+          mimeType: 'image/jpeg',
+        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(saved != null ? 'Saved $safeName' : 'Save cancelled'),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Page export failed: $e')),
+        );
+      }
+    }
+  }
+
+  void _showDisplaySheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheetState) => SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text('DISPLAY & COMFORT', style: AppText.sectionHeader),
-                    if (_brightness < 0.99 || _tint > 0.01)
-                      TextButton(
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(ctx).height * 0.82,
+            ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text('DISPLAY & COMFORT', style: AppText.sectionHeader),
+                      if (_brightness < 0.99 || _tint > 0.01 || _grayscaleFilter || _invertColors)
+                        TextButton(
+                          onPressed: () {
+                            _setBrightness(1.0);
+                            _setTint(0.0);
+                            setState(() {
+                              _grayscaleFilter = false;
+                              _invertColors = false;
+                            });
+                            ReaderSettings.instance.setGrayscaleFilter(false);
+                            ReaderSettings.instance.setInvertColors(false);
+                            setSheetState(() {});
+                          },
+                          child: Text('Reset', style: AppText.caption.copyWith(color: AppColors.primary)),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const Icon(Icons.brightness_medium_rounded, size: 20, color: AppColors.muted),
+                      const SizedBox(width: 8),
+                      Text('Brightness', style: AppText.bodyMedium),
+                      const Spacer(),
+                      Text('${(_brightness * 100).round()}%', style: AppText.caption),
+                    ],
+                  ),
+                  SliderTheme(
+                    data: SliderTheme.of(ctx).copyWith(
+                      activeTrackColor: AppColors.primary,
+                      thumbColor: AppColors.primary,
+                      inactiveTrackColor: AppColors.outline,
+                    ),
+                    child: Slider(
+                      min: 0.2,
+                      max: 1.0,
+                      value: _brightness,
+                      onChanged: (val) {
+                        _setBrightness(val);
+                        setSheetState(() {});
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Icon(Icons.wb_sunny_rounded, size: 20, color: Color(0xFFFFA726)),
+                      const SizedBox(width: 8),
+                      Text('Eye-Care Warm Tint', style: AppText.bodyMedium),
+                      const Spacer(),
+                      Text('${(_tint * 100).round()}%', style: AppText.caption),
+                    ],
+                  ),
+                  SliderTheme(
+                    data: SliderTheme.of(ctx).copyWith(
+                      activeTrackColor: const Color(0xFFFFA726),
+                      thumbColor: const Color(0xFFFFA726),
+                      inactiveTrackColor: AppColors.outline,
+                    ),
+                    child: Slider(
+                      min: 0.0,
+                      max: 1.0,
+                      value: _tint,
+                      onChanged: (val) {
+                        _setTint(val);
+                        setSheetState(() {});
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text('BACKGROUND COLOR', style: AppText.sectionHeader),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final bg in ReaderBackground.values)
+                        ChoiceChip(
+                          label: Text(bg.label, style: AppText.chip),
+                          selected: _background == bg,
+                          avatar: Container(
+                            width: 14,
+                            height: 14,
+                            decoration: BoxDecoration(
+                              color: bg.color,
+                              shape: BoxShape.circle,
+                              border: Border.all(color: AppColors.outline),
+                            ),
+                          ),
+                          onSelected: (_) {
+                            setState(() => _background = bg);
+                            ReaderSettings.instance.setBackground(bg);
+                            setSheetState(() {});
+                          },
+                        ),
+                    ],
+                  ),
+                  const Divider(color: AppColors.outline, height: 24),
+                  Row(
+                    children: [
+                      const Icon(Icons.play_circle_outline_rounded, size: 20, color: AppColors.primary),
+                      const SizedBox(width: 8),
+                      Text('Auto-Scroll (${_autoScrollSpeed.toStringAsFixed(1)}x)', style: AppText.bodyMedium),
+                      const Spacer(),
+                      FilledButton.tonal(
                         onPressed: () {
-                          _setBrightness(1.0);
-                          _setTint(0.0);
+                          _toggleAutoScroll();
                           setSheetState(() {});
                         },
-                        child: Text('Reset', style: AppText.caption.copyWith(color: AppColors.primary)),
+                        child: Text(_autoScrolling ? 'Stop' : 'Start'),
                       ),
-                  ],
-                ),
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    const Icon(Icons.brightness_medium_rounded, size: 20, color: AppColors.muted),
-                    const SizedBox(width: 8),
-                    Text('Brightness', style: AppText.bodyMedium),
-                    const Spacer(),
-                    Text('${(_brightness * 100).round()}%', style: AppText.caption),
-                  ],
-                ),
-                SliderTheme(
-                  data: SliderTheme.of(ctx).copyWith(
-                    activeTrackColor: AppColors.primary,
-                    thumbColor: AppColors.primary,
-                    inactiveTrackColor: AppColors.outline,
+                    ],
                   ),
-                  child: Slider(
-                    min: 0.2,
-                    max: 1.0,
-                    value: _brightness,
-                    onChanged: (val) {
-                      _setBrightness(val);
+                  Slider(
+                    min: 0.25,
+                    max: 4.0,
+                    divisions: 15,
+                    value: _autoScrollSpeed,
+                    onChanged: (v) {
+                      setState(() => _autoScrollSpeed = v);
+                      ReaderSettings.instance.setAutoScrollSpeed(v);
+                      if (_autoScrolling) _toggleAutoScroll(true);
                       setSheetState(() {});
                     },
                   ),
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    const Icon(Icons.wb_sunny_rounded, size: 20, color: Color(0xFFFFA726)),
-                    const SizedBox(width: 8),
-                    Text('Eye-Care Warm Tint', style: AppText.bodyMedium),
-                    const Spacer(),
-                    Text('${(_tint * 100).round()}%', style: AppText.caption),
+                  if (_mode == ReaderMode.webtoon) ...[
+                    Row(
+                      children: [
+                        const Icon(Icons.padding_rounded, size: 20, color: AppColors.muted),
+                        const SizedBox(width: 8),
+                        Text('Webtoon Side Padding', style: AppText.bodyMedium),
+                        const Spacer(),
+                        Text('${(_webtoonSidePadding * 100).round()}%', style: AppText.caption),
+                      ],
+                    ),
+                    Slider(
+                      min: 0.0,
+                      max: 0.25,
+                      divisions: 10,
+                      value: _webtoonSidePadding,
+                      onChanged: (v) {
+                        setState(() => _webtoonSidePadding = v);
+                        ReaderSettings.instance.setWebtoonSidePadding(v);
+                        setSheetState(() {});
+                      },
+                    ),
                   ],
-                ),
-                SliderTheme(
-                  data: SliderTheme.of(ctx).copyWith(
-                    activeTrackColor: const Color(0xFFFFA726),
-                    thumbColor: const Color(0xFFFFA726),
-                    inactiveTrackColor: AppColors.outline,
-                  ),
-                  child: Slider(
-                    min: 0.0,
-                    max: 1.0,
-                    value: _tint,
+                  const Divider(color: AppColors.outline, height: 16),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _keepScreenOn,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Keep Screen On', style: AppText.bodyMedium),
                     onChanged: (val) {
-                      _setTint(val);
+                      setState(() => _keepScreenOn = val);
+                      ReaderSettings.instance.setKeepScreenOn(val);
+                      PlatformBridge.instance.setKeepScreenOn(val);
                       setSheetState(() {});
                     },
                   ),
-                ),
-                const Divider(color: AppColors.outline, height: 16),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: _dataSaver,
-                  activeThumbColor: AppColors.primary,
-                  title: Text('Data Saver (Slow Internet)', style: AppText.bodyMedium),
-                  subtitle: Text(
-                    'Prefer compressed images & reduce prefetch bandwidth',
-                    style: AppText.caption,
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _volumeKeyNav,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Volume Keys Turn Pages', style: AppText.bodyMedium),
+                    onChanged: (val) {
+                      setState(() => _volumeKeyNav = val);
+                      ReaderSettings.instance.setVolumeKeyNavigation(val);
+                      PlatformBridge.instance.setVolumeKeyIntercept(val);
+                      setSheetState(() {});
+                    },
                   ),
-                  onChanged: (val) {
-                    _setDataSaver(val);
-                    setSheetState(() {});
-                  },
-                ),
-              ],
+                  if (_volumeKeyNav)
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: _invertVolumeKeys,
+                      activeThumbColor: AppColors.primary,
+                      title: Text('Invert Volume Keys', style: AppText.bodyMedium),
+                      onChanged: (val) {
+                        setState(() => _invertVolumeKeys = val);
+                        ReaderSettings.instance.setInvertVolumeKeys(val);
+                        setSheetState(() {});
+                      },
+                    ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _cropBorders,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Crop Page Borders', style: AppText.bodyMedium),
+                    subtitle: Text('Trim excess white/black scanner margins', style: AppText.caption),
+                    onChanged: (val) {
+                      setState(() => _cropBorders = val);
+                      ReaderSettings.instance.setCropBorders(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _dualPageSpread,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Double-Page Spread (Landscape)', style: AppText.bodyMedium),
+                    onChanged: (val) {
+                      setState(() => _dualPageSpread = val);
+                      ReaderSettings.instance.setDualPageSpread(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _showStatusBar,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Show Minimal Status Overlay', style: AppText.bodyMedium),
+                    subtitle: Text('Display page number & clock when bars are hidden', style: AppText.caption),
+                    onChanged: (val) {
+                      setState(() => _showStatusBar = val);
+                      ReaderSettings.instance.setShowReadingStatusBar(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _immersiveFullscreen,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Immersive Fullscreen', style: AppText.bodyMedium),
+                    onChanged: (val) {
+                      setState(() => _immersiveFullscreen = val);
+                      ReaderSettings.instance.setImmersiveFullscreen(val);
+                      SystemChrome.setEnabledSystemUIMode(
+                        val && !_chrome ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+                      );
+                      setSheetState(() {});
+                    },
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _grayscaleFilter,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Grayscale Filter (E-Ink Style)', style: AppText.bodyMedium),
+                    onChanged: (val) {
+                      setState(() => _grayscaleFilter = val);
+                      ReaderSettings.instance.setGrayscaleFilter(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _invertColors,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Invert Colors (Night Reading)', style: AppText.bodyMedium),
+                    onChanged: (val) {
+                      setState(() => _invertColors = val);
+                      ReaderSettings.instance.setInvertColors(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _dataSaver,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Data Saver (Slow Internet)', style: AppText.bodyMedium),
+                    subtitle: Text(
+                      'Prefer compressed images & reduce prefetch bandwidth',
+                      style: AppText.caption,
+                    ),
+                    onChanged: (val) {
+                      _setDataSaver(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                ],
+              ),
             ),
           ),
         ),
@@ -536,8 +1025,29 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
+    _autoScrollTimer?.cancel();
+    _autoAdvanceTimer?.cancel();
+    _volumeKeySub?.cancel();
+    _webtoonTransformController.removeListener(_onWebtoonTransformChanged);
+    _webtoonTransformController.dispose();
+    unawaited(PlatformBridge.instance.setKeepScreenOn(false));
+    unawaited(PlatformBridge.instance.setVolumeKeyIntercept(false));
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _flushProgress();
+    if (!PrivacyService.instance.incognitoMode && LocalDatabase.instance.isAvailable) {
+      final elapsedSec = DateTime.now().difference(_sessionStartedAt).inSeconds;
+      if (elapsedSec >= 3 || _sessionPagesTurned > 0) {
+        unawaited(
+          LocalDatabase.instance.recordReadingSession(
+            mangaId: widget.mangaId,
+            chapterId: _currentChapter.id,
+            durationSeconds: elapsedSec,
+            pagesRead: _sessionPagesTurned,
+            startedAt: _sessionStartedAt,
+          ),
+        );
+      }
+    }
     _scrollController.dispose();
     _pageController.dispose();
     _pageNotifier.dispose();
@@ -1125,7 +1635,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _handleTap(TapUpDetails details, BoxConstraints constraints) {
-    if (_mode == ReaderMode.webtoon || !_enableTapZones) {
+    // Never accidentally turn pages when zoomed in or in Webtoon/disabled tap-zones mode
+    if (_isPageZoomed || _isWebtoonZoomed || _mode == ReaderMode.webtoon || !_enableTapZones) {
       _toggleChrome();
       return;
     }
@@ -1185,15 +1696,44 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
   }
 
+  static const ColorFilter _grayscaleColorFilter = ColorFilter.matrix(<double>[
+    0.2126, 0.7152, 0.0722, 0, 0,
+    0.2126, 0.7152, 0.0722, 0, 0,
+    0.2126, 0.7152, 0.0722, 0, 0,
+    0,      0,      0,      1, 0,
+  ]);
+
+  static const ColorFilter _invertColorFilter = ColorFilter.matrix(<double>[
+    -1,  0,  0, 0, 255,
+     0, -1,  0, 0, 255,
+     0,  0, -1, 0, 255,
+     0,  0,  0, 1,   0,
+  ]);
+
+  Widget _applyColorFilters(Widget child) {
+    Widget out = child;
+    if (_grayscaleFilter) {
+      out = ColorFiltered(colorFilter: _grayscaleColorFilter, child: out);
+    }
+    if (_invertColors) {
+      out = ColorFiltered(colorFilter: _invertColorFilter, child: out);
+    }
+    return out;
+  }
+
   @override
   Widget build(BuildContext context) {
+    final nowTime = TimeOfDay.now();
+    final clockStr =
+        '${nowTime.hour.toString().padLeft(2, '0')}:${nowTime.minute.toString().padLeft(2, '0')}';
+
     return PopScope(
       canPop: true,
       onPopInvokedWithResult: (didPop, result) {
         _flushProgress();
       },
       child: Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: _background.color,
       body: Stack(
         fit: StackFit.expand,
         children: [
@@ -1203,7 +1743,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               return GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTapUp: (details) => _handleTap(details, constraints),
-                child: _buildReaderBody(),
+                child: _applyColorFilters(_buildReaderBody()),
               );
             },
           ),
@@ -1222,6 +1762,63 @@ class _ReaderScreenState extends State<ReaderScreen> {
               child: IgnorePointer(
                 child: ColoredBox(
                   color: const Color(0xFFFFA726).withValues(alpha: (_tint * 0.35).clamp(0.0, 0.45)),
+                ),
+              ),
+            ),
+          // Minimal always-visible reading status bar when chrome is hidden
+          if (!_chrome && _showStatusBar && _totalPages > 0)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: MediaQuery.paddingOf(context).bottom + 4,
+              child: IgnorePointer(
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: Colors.black.withValues(alpha: 0.62),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _pageNotifier,
+                      builder: (_, page, _) => Text(
+                        '$_chapterLabel  ·  $page / $_totalPages  ·  $clockStr',
+                        style: const TextStyle(
+                          color: Colors.white70,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          // Auto-Scroll floating control pill when active
+          if (_autoScrolling)
+            Positioned(
+              right: 16,
+              bottom: (_chrome ? 148 : 34) + MediaQuery.paddingOf(context).bottom,
+              child: Material(
+                color: AppColors.surfaceHigh.withValues(alpha: 0.92),
+                borderRadius: BorderRadius.circular(24),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(24),
+                  onTap: () => _toggleAutoScroll(false),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.pause_rounded, size: 16, color: AppColors.primary),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Auto ${_autoScrollSpeed.toStringAsFixed(1)}x',
+                          style: AppText.caption.copyWith(color: AppColors.text),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1425,18 +2022,27 @@ class _ReaderScreenState extends State<ReaderScreen> {
     ];
     final indexByKey = <Key, int>{for (var i = 0; i < keys.length; i++) keys[i]: i};
 
+    final sidePadPx = MediaQuery.sizeOf(context).width * _webtoonSidePadding;
     return InteractiveViewer(
+      transformationController: _webtoonTransformController,
       minScale: 1.0,
       maxScale: 3.5,
-      panEnabled: false,
+      panEnabled: _isWebtoonZoomed,
       child: NotificationListener<ScrollNotification>(
-        onNotification: _onWebtoonScroll,
+        onNotification: (notification) {
+          if (_autoScrolling && notification is UserScrollNotification && notification.direction.name != 'idle') {
+            _toggleAutoScroll(false);
+          }
+          return _onWebtoonScroll(notification);
+        },
         child: ListView.builder(
           key: _listKey,
           controller: _scrollController,
           // ignore: deprecated_member_use
           cacheExtent: MediaQuery.sizeOf(context).height * 1.5,
           padding: EdgeInsets.only(
+            left: sidePadPx,
+            right: sidePadPx,
             top: MediaQuery.paddingOf(context).top + 50,
             bottom: MediaQuery.paddingOf(context).bottom + 90,
           ),
@@ -1464,7 +2070,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
           pageNumber: pageIdx + 1,
           fit: BoxFit.fitWidth,
           expandWidth: true,
+          cropBorders: _cropBorders,
           onReloadChapter: () => _reloadChapterPages(chIdx),
+          onLongPress: (reload) => _showPageContextMenu(url, pageIdx + 1, reload),
         );
 
       case _ItemType.divider:
@@ -1553,7 +2161,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _scheduleAutoAdvance(int fromIdx, int cardPage) {
     if (_advancing) return;
     _advancing = true;
-    Future.delayed(const Duration(milliseconds: 1500), () {
+    _autoAdvanceTimer?.cancel();
+    _autoAdvanceTimer = Timer(const Duration(milliseconds: 1500), () {
       _advancing = false;
       if (!mounted || _mode == ReaderMode.webtoon || _currentChapterIndex != fromIdx) return;
       if (!_pageController.hasClients || _pageController.page?.round() != cardPage) return;
@@ -1570,31 +2179,37 @@ class _ReaderScreenState extends State<ReaderScreen> {
     }
 
     final isRtl = _mode == ReaderMode.rightToLeft;
+    final size = MediaQuery.sizeOf(context);
+    final useDualSpread = _dualPageSpread && size.width >= 720 && size.width > size.height;
 
-    // Total items in pageview: pages + 1 transition card to next chapter if available
+    // Total items in pageview: pages (or pairs in landscape dual-spread) + 1 transition card
     final hasNext = _hasNextChapter;
-    final pageCount = pages.length + (hasNext ? 1 : 0);
+    final spreadCount = useDualSpread ? (pages.length / 2).ceil() : pages.length;
+    final pageCount = spreadCount + (hasNext ? 1 : 0);
     final chapterIdx = _currentChapterIndex;
 
     return PageView.builder(
-      key: ValueKey('${curChapter.id}:${_mode.name}'),
+      key: ValueKey('${curChapter.id}:${_mode.name}:${useDualSpread ? 'dual' : 'single'}'),
       controller: _pageController,
       reverse: isRtl,
       itemCount: pageCount,
       physics: const PageScrollPhysics(),
       onPageChanged: (idx) {
-        if (idx < pages.length) {
-          final newP = idx + 1;
+        if (idx < spreadCount) {
+          final newP = useDualSpread
+              ? math.min((idx * 2) + 2, pages.length)
+              : idx + 1;
           if (_page != newP) {
+            _sessionPagesTurned++;
             _page = newP;
             _pageNotifier.value = newP;
             if (newP >= pages.length || (pages.length > 2 && newP >= pages.length - 1)) {
               _onChapterFinished(chapterIdx);
             }
             _syncProgress(newP);
-            _precacheSlidingWindow(pages, idx, window: 6);
+            _precacheSlidingWindow(pages, math.min(newP - 1, pages.length - 1), window: 6);
             // Prefetch next chapter when nearing the end
-            if (idx >= pages.length - 4 && chapterIdx + 1 < _chapters.length) {
+            if (newP >= pages.length - 4 && chapterIdx + 1 < _chapters.length) {
               _loadChapter(chapterIdx + 1);
             }
           }
@@ -1604,17 +2219,55 @@ class _ReaderScreenState extends State<ReaderScreen> {
         }
       },
       itemBuilder: (_, i) {
-        if (i < pages.length) {
+        if (i < spreadCount) {
+          if (useDualSpread) {
+            final firstIdx = i * 2;
+            final secondIdx = firstIdx + 1;
+            final hasSecond = secondIdx < pages.length;
+            Widget buildHalf(int pIdx) {
+              final url = pages[pIdx];
+              return Expanded(
+                child: _ReaderPageImage(
+                  url: url,
+                  fallbackUrls: _fallbackUrlsFor(curChapter.id, pIdx, url),
+                  pageNumber: pIdx + 1,
+                  fit: BoxFit.contain,
+                  expandWidth: false,
+                  cropBorders: _cropBorders,
+                  onReloadChapter: () => _reloadChapterPages(chapterIdx),
+                  onLongPress: (reload) => _showPageContextMenu(url, pIdx + 1, reload),
+                ),
+              );
+            }
+            final children = hasSecond
+                ? (isRtl
+                    ? [buildHalf(secondIdx), buildHalf(firstIdx)]
+                    : [buildHalf(firstIdx), buildHalf(secondIdx)])
+                : [buildHalf(firstIdx)];
+            return Center(
+              child: ZoomablePageWrapper(
+                onZoomChanged: (z) => _isPageZoomed = z,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: children,
+                ),
+              ),
+            );
+          }
+
           final pageUrl = pages[i];
           return Center(
             child: ZoomablePageWrapper(
+              onZoomChanged: (z) => _isPageZoomed = z,
               child: _ReaderPageImage(
                 url: pageUrl,
                 fallbackUrls: _fallbackUrlsFor(curChapter.id, i, pageUrl),
                 pageNumber: i + 1,
                 fit: _fitMode,
                 expandWidth: false,
+                cropBorders: _cropBorders,
                 onReloadChapter: () => _reloadChapterPages(chapterIdx),
+                onLongPress: (reload) => _showPageContextMenu(pageUrl, i + 1, reload),
               ),
             ),
           );
@@ -1706,6 +2359,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ],
             ),
           ),
+          // In-reader Chapter List Drawer Button
+          if (_chapters.length > 1)
+            IconButton(
+              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+              icon: const Icon(Icons.format_list_bulleted_rounded, color: AppColors.text, size: 22),
+              tooltip: 'Chapters',
+              onPressed: _showChaptersDrawer,
+            ),
           // Bookmark Chapter Icon Button
           IconButton(
             constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
@@ -1717,6 +2378,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             tooltip: isBookmarked ? 'Bookmarked' : 'Bookmark Chapter',
             onPressed: () async {
               final state = await ApiService.instance.toggleChapterBookmark(curChapter.id);
+              if (mounted) setState(() {});
               if (context.mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
                   SnackBar(
@@ -2035,15 +2697,27 @@ class _FeedItem {
 }
 
 class ZoomablePageWrapper extends StatefulWidget {
-  const ZoomablePageWrapper({super.key, required this.child});
+  const ZoomablePageWrapper({
+    super.key,
+    required this.child,
+    this.onZoomChanged,
+  });
+
   final Widget child;
+  final ValueChanged<bool>? onZoomChanged;
 
   @override
   State<ZoomablePageWrapper> createState() => _ZoomablePageWrapperState();
 }
 
-class _ZoomablePageWrapperState extends State<ZoomablePageWrapper> {
+class _ZoomablePageWrapperState extends State<ZoomablePageWrapper>
+    with SingleTickerProviderStateMixin {
   final TransformationController _controller = TransformationController();
+  late final AnimationController _animController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 180),
+  );
+  Animation<Matrix4>? _zoomAnimation;
   TapDownDetails? _doubleTapDetails;
   bool _isZoomed = false;
 
@@ -2051,30 +2725,56 @@ class _ZoomablePageWrapperState extends State<ZoomablePageWrapper> {
   void initState() {
     super.initState();
     _controller.addListener(_onTransformChanged);
+    _animController.addListener(() {
+      final anim = _zoomAnimation;
+      if (anim != null) {
+        _controller.value = anim.value;
+      }
+    });
   }
 
   void _onTransformChanged() {
     final zoomed = _controller.value.getMaxScaleOnAxis() > 1.05;
     if (zoomed != _isZoomed) {
       setState(() => _isZoomed = zoomed);
+      widget.onZoomChanged?.call(zoomed);
     }
   }
 
   void _handleDoubleTap() {
     final currentScale = _controller.value.getMaxScaleOnAxis();
+    final Matrix4 target;
     if (currentScale > 1.08) {
-      _controller.value = Matrix4.identity();
+      target = Matrix4.identity();
     } else {
+      const targetScale = 2.5;
       final position = _doubleTapDetails?.localPosition ?? Offset.zero;
-      final zoomed = Matrix4.identity()
-        ..translateByDouble(-position.dx * 1.5, -position.dy * 1.5, 0.0, 1.0)
-        ..scaleByDouble(2.5, 2.5, 1.0, 1.0);
-      _controller.value = zoomed;
+      final box = context.findRenderObject() as RenderBox?;
+      var tx = -position.dx * (targetScale - 1.0);
+      var ty = -position.dy * (targetScale - 1.0);
+      if (box != null && box.hasSize) {
+        final minTx = -(box.size.width * (targetScale - 1.0));
+        final minTy = -(box.size.height * (targetScale - 1.0));
+        tx = tx.clamp(minTx, 0.0);
+        ty = ty.clamp(minTy, 0.0);
+      }
+      target = Matrix4.identity()
+        ..translateByDouble(tx, ty, 0.0, 1.0)
+        ..scaleByDouble(targetScale, targetScale, 1.0, 1.0);
     }
+
+    _zoomAnimation = Matrix4Tween(
+      begin: _controller.value,
+      end: target,
+    ).animate(CurvedAnimation(parent: _animController, curve: Curves.easeOutCubic));
+    _animController
+      ..reset()
+      ..forward();
   }
 
   @override
   void dispose() {
+    _animController.dispose();
     _controller.removeListener(_onTransformChanged);
     _controller.dispose();
     super.dispose();
@@ -2105,7 +2805,9 @@ class _ReaderPageImage extends StatefulWidget {
     required this.pageNumber,
     required this.fit,
     required this.expandWidth,
+    this.cropBorders = false,
     this.onReloadChapter,
+    this.onLongPress,
   });
 
   final String url;
@@ -2113,7 +2815,9 @@ class _ReaderPageImage extends StatefulWidget {
   final int pageNumber;
   final BoxFit fit;
   final bool expandWidth;
+  final bool cropBorders;
   final VoidCallback? onReloadChapter;
+  final void Function(VoidCallback reloadPage)? onLongPress;
 
   @override
   State<_ReaderPageImage> createState() => _ReaderPageImageState();
@@ -2122,25 +2826,52 @@ class _ReaderPageImage extends StatefulWidget {
 class _ReaderPageImageState extends State<_ReaderPageImage> {
   int _localReloadGen = 0;
 
+  Widget _wrapPostProcess(Widget child, VoidCallback reloadPage) {
+    Widget out = child;
+    if (widget.cropBorders) {
+      out = ClipRect(
+        child: Transform.scale(scale: 1.08, child: out),
+      );
+    }
+    if (widget.onLongPress != null) {
+      out = GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onLongPress: () => widget.onLongPress!(reloadPage),
+        child: out,
+      );
+    }
+    return out;
+  }
+
   @override
   Widget build(BuildContext context) {
     final url = widget.url.trim();
+    // Impeller GPU VRAM safety: decode to viewport pixel width (capped 720..1600px)
+    // without clamping vertical height so tall webtoon strips stay sharp and never OOM.
+    final mq = MediaQuery.of(context);
+    final decodeWidth = (mq.size.width * mq.devicePixelRatio * 1.35).round().clamp(720, 1600);
+
     if (url.startsWith('file://')) {
       final file = File(url.replaceFirst('file://', ''));
-      return Image.file(
-        file,
-        key: ValueKey('file:$url#$_localReloadGen'),
-        fit: widget.fit,
-        width: widget.expandWidth ? double.infinity : null,
-        errorBuilder: (_, _, _) => _PageErrorCard(
-          pageNumber: widget.pageNumber,
-          fill: !widget.expandWidth,
-          onRetryPage: () {
-            FileImage(file).evict();
-            setState(() => _localReloadGen++);
-          },
-          onReloadChapter: widget.onReloadChapter,
+      void reloadLocal() {
+        FileImage(file).evict();
+        setState(() => _localReloadGen++);
+      }
+      return _wrapPostProcess(
+        Image.file(
+          file,
+          key: ValueKey('file:$url#$_localReloadGen'),
+          fit: widget.fit,
+          width: widget.expandWidth ? double.infinity : null,
+          cacheWidth: decodeWidth,
+          errorBuilder: (_, _, _) => _PageErrorCard(
+            pageNumber: widget.pageNumber,
+            fill: !widget.expandWidth,
+            onRetryPage: reloadLocal,
+            onReloadChapter: widget.onReloadChapter,
+          ),
         ),
+        reloadLocal,
       );
     }
 
@@ -2166,29 +2897,33 @@ class _ReaderPageImageState extends State<_ReaderPageImage> {
       }
     }
 
-    return RetryingNetworkImage(
-      key: ValueKey('net:$normalizedUrl#$_localReloadGen'),
-      url: normalizedUrl,
-      fallbackUrls: widget.fallbackUrls,
-      fit: widget.fit,
-      width: widget.expandWidth ? double.infinity : null,
-      fadeInDuration: const Duration(milliseconds: 60),
-      progressBuilder: (_, progress) => _PageLoadingSkeleton(
-        pageNumber: widget.pageNumber,
-        progress: progress,
-        fill: !widget.expandWidth,
-        onForceRetry: forceRetryThisPage,
-        onReloadChapter: widget.onReloadChapter,
+    return _wrapPostProcess(
+      RetryingNetworkImage(
+        key: ValueKey('net:$normalizedUrl#$_localReloadGen'),
+        url: normalizedUrl,
+        fallbackUrls: widget.fallbackUrls,
+        fit: widget.fit,
+        width: widget.expandWidth ? double.infinity : null,
+        memCacheWidth: decodeWidth,
+        fadeInDuration: const Duration(milliseconds: 60),
+        progressBuilder: (_, progress) => _PageLoadingSkeleton(
+          pageNumber: widget.pageNumber,
+          progress: progress,
+          fill: !widget.expandWidth,
+          onForceRetry: forceRetryThisPage,
+          onReloadChapter: widget.onReloadChapter,
+        ),
+        errorBuilder: (_, retry) => _PageErrorCard(
+          pageNumber: widget.pageNumber,
+          fill: !widget.expandWidth,
+          onRetryPage: () {
+            evictCachedImageUrl(normalizedUrl);
+            retry();
+          },
+          onReloadChapter: widget.onReloadChapter,
+        ),
       ),
-      errorBuilder: (_, retry) => _PageErrorCard(
-        pageNumber: widget.pageNumber,
-        fill: !widget.expandWidth,
-        onRetryPage: () {
-          evictCachedImageUrl(normalizedUrl);
-          retry();
-        },
-        onReloadChapter: widget.onReloadChapter,
-      ),
+      forceRetryThisPage,
     );
   }
 }

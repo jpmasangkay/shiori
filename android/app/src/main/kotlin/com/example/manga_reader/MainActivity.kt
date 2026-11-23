@@ -1,6 +1,8 @@
 package com.example.manga_reader
 
 import android.app.ActivityOptions
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,32 +13,51 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.provider.Settings
+import android.view.KeyEvent
+import android.view.WindowManager
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
-import io.flutter.embedding.android.FlutterActivity
+import eu.kanade.tachiyomi.network.NetworkHelper
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
-class MainActivity : FlutterActivity() {
+class MainActivity : FlutterFragmentActivity() {
     private val INSTALLER_CHANNEL = "com.example.manga_reader/installer"
     private val EXTENSIONS_CHANNEL = "com.example.manga_reader/extensions"
+    private val PLATFORM_CHANNEL = "com.example.manga_reader/platform"
+    private val DOWNLOAD_CHANNEL_ID = "shiori_downloads"
+    private val DOWNLOAD_NOTIFICATION_ID = 4201
     private val REQUEST_WEBVIEW = 9401
     private val REQUEST_UNKNOWN_SOURCES = 9403
     private val REQUEST_ACTION_VIEW_INSTALL = 9404
+    private val REQUEST_SAF_CREATE_DOC = 9405
+    private val REQUEST_SAF_OPEN_DOC = 9406
 
     private var pendingWebViewResult: MethodChannel.Result? = null
     private var pendingUnknownSourcesDeferred: CompletableDeferred<Boolean>? = null
     private var pendingActionViewInstallDeferred: CompletableDeferred<Unit>? = null
+    private var pendingSafSaveResult: MethodChannel.Result? = null
+    private var pendingSafSaveBytes: ByteArray? = null
+    private var pendingSafPickResult: MethodChannel.Result? = null
     private var installerMethodChannel: MethodChannel? = null
+    private var platformMethodChannel: MethodChannel? = null
+    @Volatile private var volumeKeyInterceptEnabled: Boolean = false
 
     private val mainScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val extensionManager by lazy { TachiyomiExtensionManager(applicationContext) }
@@ -86,7 +107,24 @@ class MainActivity : FlutterActivity() {
         pendingUnknownSourcesDeferred = null
         pendingActionViewInstallDeferred?.complete(Unit)
         pendingActionViewInstallDeferred = null
+        pendingSafSaveBytes = null
+        pendingSafSaveResult = null
+        pendingSafPickResult = null
+        mainScope.cancel()
         super.onDestroy()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (volumeKeyInterceptEnabled &&
+            (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP || event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN)
+        ) {
+            if (event.action == KeyEvent.ACTION_DOWN) {
+                val dir = if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP) "up" else "down"
+                platformMethodChannel?.invokeMethod("onVolumeKey", dir)
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private suspend fun requestUnknownSourcesPermission(): Boolean {
@@ -329,14 +367,16 @@ class MainActivity : FlutterActivity() {
                                 val actualFingerprint = withContext(Dispatchers.IO) {
                                     extensionManager.getApkSignatureSha256(file.absolutePath)?.lowercase()
                                 }
-                                if (!actualFingerprint.isNullOrEmpty() && actualFingerprint != expectedFingerprint) {
+                                // Fail-closed: reject if signature could not be read OR does not match repo key
+                                if (actualFingerprint.isNullOrEmpty() || actualFingerprint != expectedFingerprint) {
                                     result.error(
                                         "SIGNATURE_MISMATCH",
-                                        "APK signing key fingerprint ($actualFingerprint) does not match repo ($expectedFingerprint)",
+                                        "APK signing key fingerprint (${actualFingerprint ?: "unreadable"}) does not match expected repo key ($expectedFingerprint)",
                                         null
                                     )
                                     return@launch
                                 }
+                                extensionManager.trustSignature(actualFingerprint)
                             }
 
                             val (archivePkg, archiveVersionCode) = withContext(Dispatchers.IO) {
@@ -682,6 +722,18 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 }
+                "fetchImageFilePath" -> {
+                    val imageUrl = call.argument<String>("imageUrl") ?: call.argument<String>("url") ?: ""
+                    val pageUrl = call.argument<String>("pageUrl")
+                    mainScope.launch {
+                        try {
+                            val filePath = extensionManager.fetchImageFilePath(pkg, imageUrl, pageUrl, apkPath)
+                            result.success(filePath)
+                        } catch (e: Throwable) {
+                            result.error("IMAGE_ERROR", extractErrorMessage(e), null)
+                        }
+                    }
+                }
                 "testAllExtensions" -> {
                     mainScope.launch {
                         val report = mutableMapOf<String, Any?>()
@@ -699,6 +751,256 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                         result.success(report)
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Platform utilities channel (Wakelock, FLAG_SECURE, Volume Keys, Biometric, DoH, SAF, Notifications, Ext Prefs/Filters)
+        val platChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, PLATFORM_CHANNEL)
+        platformMethodChannel = platChannel
+        platChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "setKeepScreenOn" -> {
+                    val enabled = call.argument<Boolean>("enabled") == true
+                    runOnUiThread {
+                        if (enabled) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        }
+                    }
+                    result.success(true)
+                }
+                "setSecureScreen" -> {
+                    val enabled = call.argument<Boolean>("enabled") == true
+                    runOnUiThread {
+                        if (enabled) {
+                            window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        } else {
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                        }
+                    }
+                    result.success(true)
+                }
+                "setVolumeKeyIntercept" -> {
+                    volumeKeyInterceptEnabled = call.argument<Boolean>("enabled") == true
+                    result.success(true)
+                }
+                "canAuthenticateBiometric" -> {
+                    val bm = BiometricManager.from(this)
+                    val authenticators = BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                    result.success(bm.canAuthenticate(authenticators) == BiometricManager.BIOMETRIC_SUCCESS)
+                }
+                "authenticateBiometric" -> {
+                    val title = call.argument<String>("title") ?: "Unlock Shiori"
+                    val subtitle = call.argument<String>("subtitle") ?: "Authenticate to continue"
+                    runOnUiThread {
+                        try {
+                            val executor = ContextCompat.getMainExecutor(this)
+                            var replied = false
+                            val prompt = BiometricPrompt(
+                                this,
+                                executor,
+                                object : BiometricPrompt.AuthenticationCallback() {
+                                    override fun onAuthenticationSucceeded(authResult: BiometricPrompt.AuthenticationResult) {
+                                        if (!replied) { replied = true; result.success(true) }
+                                    }
+                                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                                        if (!replied) { replied = true; result.success(false) }
+                                    }
+                                    override fun onAuthenticationFailed() {}
+                                }
+                            )
+                            val promptInfo = BiometricPrompt.PromptInfo.Builder()
+                                .setTitle(title)
+                                .setSubtitle(subtitle)
+                                .setAllowedAuthenticators(
+                                    BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                                        BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                                )
+                                .build()
+                            prompt.authenticate(promptInfo)
+                        } catch (_: Throwable) {
+                            result.success(false)
+                        }
+                    }
+                }
+                "setDohProvider" -> {
+                    val provider = call.argument<String>("provider") ?: "none"
+                    NetworkHelper.setDohProvider(applicationContext, provider)
+                    result.success(true)
+                }
+                "getDohProvider" -> {
+                    result.success(NetworkHelper.getDohProvider(applicationContext))
+                }
+                "saveFile" -> {
+                    val fileName = call.argument<String>("fileName") ?: "shiori_backup.json"
+                    val mimeType = call.argument<String>("mimeType") ?: "application/octet-stream"
+                    val bytes = call.argument<ByteArray>("bytes")
+                    if (bytes == null) {
+                        result.error("INVALID_ARG", "bytes required", null)
+                        return@setMethodCallHandler
+                    }
+                    pendingSafSaveResult?.success(null)
+                    pendingSafSaveResult = result
+                    pendingSafSaveBytes = bytes
+                    try {
+                        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = mimeType
+                            putExtra(Intent.EXTRA_TITLE, fileName)
+                        }
+                        @Suppress("DEPRECATION")
+                        startActivityForResult(intent, REQUEST_SAF_CREATE_DOC)
+                    } catch (e: Throwable) {
+                        pendingSafSaveResult = null
+                        pendingSafSaveBytes = null
+                        result.error("SAF_ERROR", e.message, null)
+                    }
+                }
+                "pickFile" -> {
+                    val mimes = call.argument<List<String>>("mimeTypes") ?: listOf("*/*")
+                    pendingSafPickResult?.success(null)
+                    pendingSafPickResult = result
+                    try {
+                        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                            addCategory(Intent.CATEGORY_OPENABLE)
+                            type = if (mimes.size == 1) mimes.first() else "*/*"
+                            if (mimes.size > 1) {
+                                putExtra(Intent.EXTRA_MIME_TYPES, mimes.toTypedArray())
+                            }
+                        }
+                        @Suppress("DEPRECATION")
+                        startActivityForResult(intent, REQUEST_SAF_OPEN_DOC)
+                    } catch (e: Throwable) {
+                        pendingSafPickResult = null
+                        result.error("SAF_ERROR", e.message, null)
+                    }
+                }
+                "shareFile" -> {
+                    val filePath = call.argument<String>("filePath") ?: ""
+                    val mimeType = call.argument<String>("mimeType") ?: "*/*"
+                    val subject = call.argument<String>("subject") ?: "Shiori"
+                    try {
+                        val src = File(filePath)
+                        if (!src.exists()) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        val exportDir = File(cacheDir, "shiori_exports")
+                        if (!exportDir.exists()) exportDir.mkdirs()
+                        val shareCopy = File(exportDir, src.name)
+                        if (src.canonicalPath != shareCopy.canonicalPath) {
+                            src.copyTo(shareCopy, overwrite = true)
+                        }
+                        val uri = FileProvider.getUriForFile(
+                            this,
+                            "${applicationContext.packageName}.fileprovider",
+                            shareCopy
+                        )
+                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = mimeType
+                            putExtra(Intent.EXTRA_STREAM, uri)
+                            putExtra(Intent.EXTRA_SUBJECT, subject)
+                            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        }
+                        startActivity(Intent.createChooser(shareIntent, subject))
+                        result.success(true)
+                    } catch (_: Throwable) {
+                        result.success(false)
+                    }
+                }
+                "updateDownloadNotification" -> {
+                    val title = call.argument<String>("title") ?: "Shiori Downloads"
+                    val body = call.argument<String>("body") ?: ""
+                    val progress = call.argument<Int>("progress") ?: 0
+                    val max = call.argument<Int>("max") ?: 0
+                    val ongoing = call.argument<Boolean>("ongoing") ?: true
+                    try {
+                        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            val channel = NotificationChannel(
+                                DOWNLOAD_CHANNEL_ID,
+                                "Chapter Downloads",
+                                NotificationManager.IMPORTANCE_LOW
+                            )
+                            nm.createNotificationChannel(channel)
+                        }
+                        val builder = NotificationCompat.Builder(this, DOWNLOAD_CHANNEL_ID)
+                            .setSmallIcon(android.R.drawable.stat_sys_download)
+                            .setContentTitle(title)
+                            .setContentText(body)
+                            .setOngoing(ongoing)
+                            .setOnlyAlertOnce(true)
+                        if (max > 0) {
+                            builder.setProgress(max, progress.coerceIn(0, max), false)
+                        }
+                        nm.notify(DOWNLOAD_NOTIFICATION_ID, builder.build())
+                    } catch (_: Throwable) {}
+                    result.success(true)
+                }
+                "cancelDownloadNotification" -> {
+                    try {
+                        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                        nm.cancel(DOWNLOAD_NOTIFICATION_ID)
+                    } catch (_: Throwable) {}
+                    result.success(true)
+                }
+                "getExtensionPreferences" -> {
+                    val pkg = call.argument<String>("pkg") ?: ""
+                    mainScope.launch {
+                        try {
+                            val prefs = withContext(Dispatchers.IO) {
+                                extensionManager.getExtensionPreferences(pkg)
+                            }
+                            result.success(prefs)
+                        } catch (e: Throwable) {
+                            result.error("PREF_ERROR", extractErrorMessage(e), null)
+                        }
+                    }
+                }
+                "setExtensionPreference" -> {
+                    val pkg = call.argument<String>("pkg") ?: ""
+                    val key = call.argument<String>("key") ?: ""
+                    val value = call.argument<Any>("value")
+                    val type = call.argument<String>("type") ?: "text"
+                    mainScope.launch {
+                        val ok = withContext(Dispatchers.IO) {
+                            extensionManager.setExtensionPreference(pkg, key, value, type)
+                        }
+                        result.success(ok)
+                    }
+                }
+                "getExtensionFilters" -> {
+                    val pkg = call.argument<String>("pkg") ?: ""
+                    mainScope.launch {
+                        try {
+                            val filters = withContext(Dispatchers.IO) {
+                                extensionManager.getExtensionFilters(pkg)
+                            }
+                            result.success(filters)
+                        } catch (e: Throwable) {
+                            result.error("FILTER_ERROR", extractErrorMessage(e), null)
+                        }
+                    }
+                }
+                "searchExtensionWithFilters" -> {
+                    val pkg = call.argument<String>("pkg") ?: ""
+                    val query = call.argument<String>("query") ?: ""
+                    val page = call.argument<Int>("page") ?: 1
+                    @Suppress("UNCHECKED_CAST")
+                    val rawFilters = (call.argument<List<*>>("filters") ?: emptyList<Any>())
+                        .filterIsInstance<Map<String, Any?>>()
+                    mainScope.launch {
+                        try {
+                            val items = extensionManager.searchMangaWithFilters(pkg, query, page, rawFilters)
+                            result.success(items)
+                        } catch (e: Throwable) {
+                            result.error("FILTER_SEARCH_ERROR", extractErrorMessage(e), null)
+                        }
                     }
                 }
                 else -> result.notImplemented()
@@ -733,6 +1035,71 @@ class MainActivity : FlutterActivity() {
                 pendingActionViewInstallDeferred?.complete(Unit)
                 pendingActionViewInstallDeferred = null
             }
+            REQUEST_SAF_CREATE_DOC -> {
+                val cb = pendingSafSaveResult
+                val payload = pendingSafSaveBytes
+                pendingSafSaveResult = null
+                pendingSafSaveBytes = null
+                val uri = data?.data
+                if (resultCode == RESULT_OK && uri != null && payload != null) {
+                    mainScope.launch {
+                        try {
+                            withContext(Dispatchers.IO) {
+                                contentResolver.openOutputStream(uri)?.use { out ->
+                                    out.write(payload)
+                                    out.flush()
+                                }
+                            }
+                            cb?.success(uri.toString())
+                        } catch (e: Throwable) {
+                            cb?.error("SAF_WRITE_ERROR", e.message, null)
+                        }
+                    }
+                } else {
+                    cb?.success(null)
+                }
+            }
+            REQUEST_SAF_OPEN_DOC -> {
+                val cb = pendingSafPickResult
+                pendingSafPickResult = null
+                val uri = data?.data
+                if (resultCode == RESULT_OK && uri != null) {
+                    mainScope.launch {
+                        try {
+                            val resMap = withContext(Dispatchers.IO) {
+                                var displayName = "backup"
+                                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                                    if (idx >= 0 && cursor.moveToFirst()) {
+                                        displayName = cursor.getString(idx) ?: displayName
+                                    }
+                                }
+                                val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                                    val out = java.io.ByteArrayOutputStream()
+                                    val buf = ByteArray(16 * 1024)
+                                    var total = 0L
+                                    while (true) {
+                                        val r = input.read(buf)
+                                        if (r == -1) break
+                                        total += r
+                                        if (total > 50L * 1024L * 1024L) {
+                                            throw IllegalStateException("File exceeds 50 MB limit")
+                                        }
+                                        out.write(buf, 0, r)
+                                    }
+                                    out.toByteArray()
+                                } ?: ByteArray(0)
+                                mapOf("name" to displayName, "bytes" to bytes)
+                            }
+                            cb?.success(resMap)
+                        } catch (e: Throwable) {
+                            cb?.error("SAF_READ_ERROR", e.message, null)
+                        }
+                    }
+                } else {
+                    cb?.success(null)
+                }
+            }
         }
     }
 
@@ -755,6 +1122,7 @@ class MainActivity : FlutterActivity() {
             }
         }
         ExtensionInstallCoordinator.onHostActivityResumed(applicationContext)
+        if (!BuildConfig.DEBUG) return
         val testExt = intent?.getBooleanExtra("test_extensions", false) == true
         val testSearch = intent?.getBooleanExtra("test_search", false) == true
         val testDeep = intent?.getBooleanExtra("test_deep", false) == true

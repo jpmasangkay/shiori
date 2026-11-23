@@ -4,13 +4,26 @@ const userSchema = new mongoose.Schema(
   {
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     passwordHash: { type: String, required: true },
-    displayName: { type: String, trim: true, maxlength: 40, default: '' },
+    displayName: { type: String, trim: true, maxlength: 50, default: '' },
+    tokenVersion: { type: Number, default: 0 },
+    // Legacy array retained only for one-time read migration into ChapterBookmark collection
     chapterBookmarks: { type: [String], default: [] },
   },
   { timestamps: true },
 );
 
 export const User = mongoose.model('User', userSchema);
+
+const chapterBookmarkSchema = new mongoose.Schema(
+  {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    chapterId: { type: String, required: true, trim: true, maxlength: 512 },
+  },
+  { timestamps: true },
+);
+chapterBookmarkSchema.index({ user: 1, chapterId: 1 }, { unique: true });
+
+export const ChapterBookmark = mongoose.model('ChapterBookmark', chapterBookmarkSchema);
 
 const librarySchema = new mongoose.Schema(
   {

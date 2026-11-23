@@ -1,8 +1,11 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/download_service.dart';
+import '../services/platform_bridge.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'reader_screen.dart';
@@ -126,6 +129,30 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                   ],
                 ),
                 const SizedBox(height: 12),
+                const Divider(color: AppColors.outline, height: 1),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('Wi-Fi only downloads', style: AppText.bodyMedium),
+                  subtitle: Text(
+                    'Pause queue on cellular connections to save mobile data',
+                    style: AppText.caption,
+                  ),
+                  activeThumbColor: AppColors.primary,
+                  value: ds.wifiOnlyDownloads,
+                  onChanged: (val) => ds.setWifiOnlyDownloads(val),
+                ),
+                const Divider(color: AppColors.outline, height: 1),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text('Auto-download new chapters', style: AppText.bodyMedium),
+                  subtitle: Text(
+                    'Queue newly discovered library chapters automatically',
+                    style: AppText.caption,
+                  ),
+                  activeThumbColor: AppColors.primary,
+                  value: ds.autoDownloadNewChapters,
+                  onChanged: (val) => ds.setAutoDownloadNewChapters(val),
+                ),
                 const Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -424,13 +451,19 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   IconButton(
-                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                    constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
+                    icon: const Icon(Icons.archive_outlined, size: 19, color: AppColors.muted),
+                    tooltip: 'Export chapter as .cbz',
+                    onPressed: () => _exportChapterCbz(ch),
+                  ),
+                  IconButton(
+                    constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
                     icon: const Icon(Icons.play_circle_outline_rounded, size: 20, color: AppColors.primary),
                     tooltip: 'Read offline',
                     onPressed: () => _openReader(ch, chapters),
                   ),
                   IconButton(
-                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                    constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
                     icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.muted),
                     tooltip: 'Delete chapter',
                     onPressed: () => ds.deleteDownloadedChapter(ch.chapterId),
@@ -441,6 +474,51 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _exportChapterCbz(DownloadedChapterInfo ch) async {
+    final bytes = await DownloadService.instance.exportChapterAsCbz(ch.chapterId);
+    if (!mounted) return;
+    if (bytes == null || bytes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No chapter images found to export.')),
+      );
+      return;
+    }
+    final safeName = '${ch.mangaTitle}_${ch.chapterTitle}'
+        .replaceAll(RegExp(r'[^a-zA-Z0-9._-]+'), '_');
+    final fileName = '$safeName.cbz';
+    final savedUri = await PlatformBridge.instance.saveFile(
+      fileName: fileName,
+      bytes: bytes,
+      mimeType: 'application/zip',
+    );
+    if (savedUri != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Exported $fileName (${(bytes.length / 1024).toStringAsFixed(0)} KB)')),
+        );
+      }
+      return;
+    }
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final outDir = Directory('${dir.path}/shiori_exports');
+      if (!await outDir.exists()) await outDir.create(recursive: true);
+      final outFile = File('${outDir.path}/$fileName');
+      await outFile.writeAsBytes(bytes, flush: true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Saved CBZ to ${outFile.path}')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Export failed: $e')),
+        );
+      }
+    }
   }
 
   void _openReader(DownloadedChapterInfo chapter, List<DownloadedChapterInfo> allChapters) {

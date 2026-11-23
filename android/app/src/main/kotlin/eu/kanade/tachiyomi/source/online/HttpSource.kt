@@ -125,13 +125,12 @@ abstract class HttpSource : CatalogueSource {
     override fun fetchPopularManga(page: Int): Observable<MangasPage> {
         return Observable.defer {
             try {
-                val response = client.newCall(popularMangaRequest(page)).execute()
-                if (!response.isSuccessful) {
-                    val code = response.code
-                    try { response.close() } catch (_: Throwable) {}
-                    throw HttpException(code)
+                client.newCall(popularMangaRequest(page)).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpException(response.code)
+                    }
+                    Observable.just(popularMangaParse(response))
                 }
-                Observable.just(popularMangaParse(response))
             } catch (e: Throwable) {
                 Observable.error(e)
             }
@@ -149,13 +148,12 @@ abstract class HttpSource : CatalogueSource {
     override fun fetchSearchManga(page: Int, query: String, filters: FilterList): Observable<MangasPage> {
         return Observable.defer {
             try {
-                val response = client.newCall(searchMangaRequest(page, query, filters)).execute()
-                if (!response.isSuccessful) {
-                    val code = response.code
-                    try { response.close() } catch (_: Throwable) {}
-                    throw HttpException(code)
+                client.newCall(searchMangaRequest(page, query, filters)).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpException(response.code)
+                    }
+                    Observable.just(searchMangaParse(response))
                 }
-                Observable.just(searchMangaParse(response))
             } catch (e: Throwable) {
                 Observable.error(e)
             }
@@ -173,13 +171,12 @@ abstract class HttpSource : CatalogueSource {
     override fun fetchLatestUpdates(page: Int): Observable<MangasPage> {
         return Observable.defer {
             try {
-                val response = client.newCall(latestUpdatesRequest(page)).execute()
-                if (!response.isSuccessful) {
-                    val code = response.code
-                    try { response.close() } catch (_: Throwable) {}
-                    throw HttpException(code)
+                client.newCall(latestUpdatesRequest(page)).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpException(response.code)
+                    }
+                    Observable.just(latestUpdatesParse(response))
                 }
-                Observable.just(latestUpdatesParse(response))
             } catch (e: Throwable) {
                 Observable.error(e)
             }
@@ -200,13 +197,15 @@ abstract class HttpSource : CatalogueSource {
         fetchChapters: Boolean
     ): SMangaUpdate {
         val newDetails = if (fetchDetails) {
-            val response = client.newCall(mangaDetailsRequest(manga)).awaitSuccess()
-            mangaDetailsParse(response).apply { initialized = true }
+            client.newCall(mangaDetailsRequest(manga)).awaitSuccess().use { response ->
+                mangaDetailsParse(response).apply { initialized = true }
+            }
         } else manga
 
         val newChapters = if (fetchChapters) {
-            val response = client.newCall(chapterListRequest(manga)).awaitSuccess()
-            chapterListParse(response)
+            client.newCall(chapterListRequest(manga)).awaitSuccess().use { response ->
+                chapterListParse(response)
+            }
         } else chapters
 
         return SMangaUpdateImpl(newDetails, newChapters)
@@ -219,13 +218,12 @@ abstract class HttpSource : CatalogueSource {
     override fun fetchMangaDetails(manga: SManga): Observable<SManga> {
         return Observable.defer {
             try {
-                val response = client.newCall(mangaDetailsRequest(manga)).execute()
-                if (!response.isSuccessful) {
-                    val code = response.code
-                    try { response.close() } catch (_: Throwable) {}
-                    throw HttpException(code)
+                client.newCall(mangaDetailsRequest(manga)).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpException(response.code)
+                    }
+                    Observable.just(mangaDetailsParse(response).apply { initialized = true })
                 }
-                Observable.just(mangaDetailsParse(response).apply { initialized = true })
             } catch (e: Throwable) {
                 Observable.error(e)
             }
@@ -239,13 +237,12 @@ abstract class HttpSource : CatalogueSource {
     override fun fetchChapterList(manga: SManga): Observable<List<SChapter>> {
         return Observable.defer {
             try {
-                val response = client.newCall(chapterListRequest(manga)).execute()
-                if (!response.isSuccessful) {
-                    val code = response.code
-                    try { response.close() } catch (_: Throwable) {}
-                    throw HttpException(code)
+                client.newCall(chapterListRequest(manga)).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpException(response.code)
+                    }
+                    Observable.just(chapterListParse(response))
                 }
-                Observable.just(chapterListParse(response))
             } catch (e: Throwable) {
                 Observable.error(e)
             }
@@ -263,13 +260,12 @@ abstract class HttpSource : CatalogueSource {
     override fun fetchPageList(chapter: SChapter): Observable<List<Page>> {
         return Observable.defer {
             try {
-                val response = client.newCall(pageListRequest(chapter)).execute()
-                if (!response.isSuccessful) {
-                    val code = response.code
-                    try { response.close() } catch (_: Throwable) {}
-                    throw HttpException(code)
+                client.newCall(pageListRequest(chapter)).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpException(response.code)
+                    }
+                    Observable.just(pageListParse(response))
                 }
-                Observable.just(pageListParse(response))
             } catch (e: Throwable) {
                 Observable.error(e)
             }
@@ -305,8 +301,9 @@ abstract class HttpSource : CatalogueSource {
     open fun relatedMangaListParse(response: Response): List<SManga> = emptyList()
 
     override suspend fun fetchRelatedMangaList(manga: SManga): List<SManga> {
-        val response = client.newCall(relatedMangaListRequest(manga)).awaitSuccess()
-        return relatedMangaListParse(response)
+        return client.newCall(relatedMangaListRequest(manga)).awaitSuccess().use { response ->
+            relatedMangaListParse(response)
+        }
     }
 
     override suspend fun getImageUrl(page: Page): String {
@@ -316,13 +313,12 @@ abstract class HttpSource : CatalogueSource {
     override fun fetchImageUrl(page: Page): Observable<String> {
         return Observable.defer {
             try {
-                val response = client.newCall(imageUrlRequest(page)).execute()
-                if (!response.isSuccessful) {
-                    val code = response.code
-                    try { response.close() } catch (_: Throwable) {}
-                    throw HttpException(code)
+                client.newCall(imageUrlRequest(page)).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        throw HttpException(response.code)
+                    }
+                    Observable.just(imageUrlParse(response))
                 }
-                Observable.just(imageUrlParse(response))
             } catch (e: Throwable) {
                 Observable.error(e)
             }

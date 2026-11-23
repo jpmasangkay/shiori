@@ -13,6 +13,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -27,15 +28,26 @@ class WebViewActivity : Activity() {
     private lateinit var titleView: TextView
     private var currentUrl: String = ""
 
+    private fun isAllowedWebUrl(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return false
+        val scheme = try {
+            Uri.parse(raw).scheme?.lowercase()
+        } catch (_: Throwable) {
+            null
+        }
+        return scheme == "http" || scheme == "https"
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val targetUrl = intent.getStringExtra(EXTRA_URL) ?: ""
+        val rawUrl = intent.getStringExtra(EXTRA_URL) ?: ""
+        val targetUrl = if (isAllowedWebUrl(rawUrl)) rawUrl else ""
         val initialTitle = intent.getStringExtra(EXTRA_TITLE) ?: "Browser"
+        val customUserAgent = intent.getStringExtra(EXTRA_USER_AGENT)
         currentUrl = targetUrl
 
-        // Root layout
         val rootLayout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.parseColor("#0F1016"))
@@ -45,7 +57,6 @@ class WebViewActivity : Activity() {
             )
         }
 
-        // Toolbar
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -57,17 +68,16 @@ class WebViewActivity : Activity() {
             )
         }
 
-        // Close / Back button
         val closeBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_close_clear_cancel)
             setBackgroundColor(Color.TRANSPARENT)
             setColorFilter(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
+            contentDescription = "Close browser"
+            layoutParams = LinearLayout.LayoutParams(dpToPx(48), dpToPx(48))
             setOnClickListener { finish() }
         }
         toolbar.addView(closeBtn)
 
-        // Title
         titleView = TextView(this).apply {
             text = initialTitle
             setTextColor(Color.WHITE)
@@ -78,34 +88,35 @@ class WebViewActivity : Activity() {
         }
         toolbar.addView(titleView)
 
-        // Refresh button
         val refreshBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_rotate)
             setBackgroundColor(Color.TRANSPARENT)
             setColorFilter(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
+            contentDescription = "Reload page"
+            layoutParams = LinearLayout.LayoutParams(dpToPx(48), dpToPx(48))
             setOnClickListener { webView.reload() }
         }
         toolbar.addView(refreshBtn)
 
-        // External browser button
         val openExternalBtn = ImageButton(this).apply {
             setImageResource(android.R.drawable.ic_menu_compass)
             setBackgroundColor(Color.TRANSPARENT)
             setColorFilter(Color.WHITE)
-            layoutParams = LinearLayout.LayoutParams(dpToPx(40), dpToPx(40))
+            contentDescription = "Open in external browser"
+            layoutParams = LinearLayout.LayoutParams(dpToPx(48), dpToPx(48))
             setOnClickListener {
-                try {
-                    val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse(webView.url ?: currentUrl))
-                    startActivity(browserIntent)
-                } catch (_: Exception) {}
+                val urlToOpen = webView.url ?: currentUrl
+                if (isAllowedWebUrl(urlToOpen)) {
+                    try {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(urlToOpen)))
+                    } catch (_: Exception) {}
+                }
             }
         }
         toolbar.addView(openExternalBtn)
 
         rootLayout.addView(toolbar)
 
-        // Progress bar
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             layoutParams = LinearLayout.LayoutParams(
@@ -115,7 +126,6 @@ class WebViewActivity : Activity() {
         }
         rootLayout.addView(progressBar)
 
-        // WebView
         webView = WebView(this).apply {
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
@@ -132,19 +142,27 @@ class WebViewActivity : Activity() {
         settings.useWideViewPort = true
         settings.loadWithOverviewMode = true
         settings.cacheMode = WebSettings.LOAD_DEFAULT
+        // Security hardening: disable local file & content URI access
+        settings.allowFileAccess = false
+        settings.allowContentAccess = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            settings.safeBrowsingEnabled = true
+        }
 
-        val defaultUa = try {
-            WebSettings.getDefaultUserAgent(this)
-        } catch (_: Throwable) {
-            "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
+        val defaultUa = if (!customUserAgent.isNullOrBlank()) {
+            customUserAgent
+        } else {
+            try {
+                WebSettings.getDefaultUserAgent(this)
+            } catch (_: Throwable) {
+                "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36"
+            }
         }
         settings.userAgentString = defaultUa
 
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            cookieManager.setAcceptThirdPartyCookies(webView, true)
-        }
+        cookieManager.setAcceptThirdPartyCookies(webView, true)
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -160,10 +178,15 @@ class WebViewActivity : Activity() {
         }
 
         webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                val urlStr = request?.url?.toString()
+                return !isAllowedWebUrl(urlStr)
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 progressBar.visibility = View.VISIBLE
-                if (url != null) currentUrl = url
+                if (url != null && isAllowedWebUrl(url)) currentUrl = url
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -183,10 +206,12 @@ class WebViewActivity : Activity() {
         }
     }
 
+    @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (this::webView.isInitialized && webView.canGoBack()) {
             webView.goBack()
         } else {
+            @Suppress("DEPRECATION")
             super.onBackPressed()
         }
     }
@@ -210,5 +235,6 @@ class WebViewActivity : Activity() {
     companion object {
         const val EXTRA_URL = "extra_url"
         const val EXTRA_TITLE = "extra_title"
+        const val EXTRA_USER_AGENT = "extra_user_agent"
     }
 }

@@ -1,4 +1,6 @@
+@Tags(['live'])
 // ignore_for_file: avoid_print
+library;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';

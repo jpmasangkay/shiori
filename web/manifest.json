@@ -1,11 +1,11 @@
 {
-    "name": "manga_reader",
-    "short_name": "manga_reader",
+    "name": "Shiori",
+    "short_name": "Shiori",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#000000",
+    "theme_color": "#000000",
+    "description": "Shiori — Multi-source manga, manhwa, and webtoon reader.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

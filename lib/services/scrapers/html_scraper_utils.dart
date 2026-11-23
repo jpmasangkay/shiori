@@ -1,8 +1,71 @@
+import 'package:html/dom.dart' as dom;
+import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 import 'package:manga_reader/widgets/common.dart';
 
 class HtmlScraperUtils {
   const HtmlScraperUtils._();
+
+  /// Parses raw HTML into a standards-compliant DOM [dom.Document] via `package:html`.
+  static dom.Document parseDocument(String htmlBody) =>
+      html_parser.parse(htmlBody);
+
+  /// Extracts the highest-priority content image URL from a parsed `<img>` DOM element.
+  static String extractImgFromElement(
+    dom.Element? img, {
+    String? baseUrl,
+    String? referer,
+  }) {
+    if (img == null) return '';
+    const attrs = [
+      'data-src',
+      'data-lazy-src',
+      'data-cfsrc',
+      'data-original',
+      'data-echo',
+      'data-bg',
+      'src',
+    ];
+    for (final attr in attrs) {
+      final rawVal = img.attributes[attr];
+      if (rawVal != null && rawVal.isNotEmpty) {
+        final candidate = normalizeImgUrl(
+          rawVal,
+          baseUrl: baseUrl,
+          referer: referer,
+        );
+        if (isValidContentImage(candidate)) return candidate;
+      }
+    }
+    for (final attr in const ['data-srcset', 'srcset']) {
+      final rawSet = img.attributes[attr];
+      if (rawSet != null && rawSet.isNotEmpty) {
+        final firstPart = rawSet.trim().split(RegExp(r'[\s,]+')).firstOrNull;
+        final candidate = normalizeImgUrl(
+          firstPart,
+          baseUrl: baseUrl,
+          referer: referer,
+        );
+        if (isValidContentImage(candidate)) return candidate;
+      }
+    }
+    final style = img.attributes['style'];
+    if (style != null && style.isNotEmpty) {
+      final bgMatch = RegExp(
+        r'''background(?:-image)?\s*:\s*url\(\s*['"]?([^'")\s]+)['"]?\s*\)''',
+        caseSensitive: false,
+      ).firstMatch(style);
+      if (bgMatch != null) {
+        final candidate = normalizeImgUrl(
+          bgMatch.group(1),
+          baseUrl: baseUrl,
+          referer: referer,
+        );
+        if (isValidContentImage(candidate)) return candidate;
+      }
+    }
+    return '';
+  }
 
   static String normalizeImgUrl(
     String? raw, {

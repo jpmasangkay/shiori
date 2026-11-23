@@ -556,6 +556,8 @@ class RetryingNetworkImage extends StatefulWidget {
     this.height,
     this.memCacheWidth,
     this.memCacheHeight,
+    this.maxWidthDiskCache,
+    this.maxHeightDiskCache,
     this.placeholder,
     this.progressBuilder,
     this.errorBuilder,
@@ -571,6 +573,8 @@ class RetryingNetworkImage extends StatefulWidget {
   final double? height;
   final int? memCacheWidth;
   final int? memCacheHeight;
+  final int? maxWidthDiskCache;
+  final int? maxHeightDiskCache;
   final WidgetBuilder? placeholder;
   final Widget Function(BuildContext context, double? progress)?
   progressBuilder;
@@ -864,8 +868,8 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
       height: widget.height,
       memCacheWidth: widget.memCacheWidth,
       memCacheHeight: widget.memCacheHeight,
-      maxWidthDiskCache: 600,
-      maxHeightDiskCache: 900,
+      maxWidthDiskCache: widget.maxWidthDiskCache,
+      maxHeightDiskCache: widget.maxHeightDiskCache,
       fadeInDuration: widget.fadeInDuration,
       fadeOutDuration: const Duration(milliseconds: 120),
       placeholder: progressBuilder == null
@@ -1064,6 +1068,8 @@ class _CoverImageState extends State<CoverImage> {
         height: double.infinity,
         memCacheWidth: widget.memCacheWidth,
         memCacheHeight: widget.memCacheHeight,
+        maxWidthDiskCache: 600,
+        maxHeightDiskCache: 900,
         errorBuilder: (_, retry) {
           if (!_triedRefreshOnError &&
               widget.mangaId != null &&

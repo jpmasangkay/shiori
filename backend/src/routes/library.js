@@ -8,9 +8,18 @@ router.use(requireAuth);
 
 const VALID_TYPES = new Set(['manga', 'manhwa', 'manhua']);
 
-function sanitizeType(raw) {
+export function sanitizeType(raw) {
   const normalized = typeof raw === 'string' ? raw.trim().toLowerCase() : 'manga';
   return VALID_TYPES.has(normalized) ? normalized : 'manga';
+}
+
+function safeDecodeParam(raw) {
+  if (typeof raw !== 'string') return '';
+  try {
+    return decodeURIComponent(raw).trim();
+  } catch {
+    return raw.trim();
+  }
 }
 
 function sanitizeCategories(raw) {
@@ -25,13 +34,22 @@ function sanitizeCategories(raw) {
 router.get('/', async (req, res) => {
   try {
     const filter = { user: req.user.id };
-    if (req.query.type) {
-      filter.type = req.query.type;
+    if (req.query.type !== undefined) {
+      if (typeof req.query.type !== 'string') {
+        return res.status(400).json({ error: 'Invalid type filter' });
+      }
+      const normalized = req.query.type.trim().toLowerCase();
+      if (normalized && normalized !== 'all') {
+        if (!VALID_TYPES.has(normalized)) {
+          return res.status(400).json({ error: 'Invalid type filter' });
+        }
+        filter.type = normalized;
+      }
     }
     const entries = await LibraryEntry.find(filter).sort({ addedAt: -1 });
-    res.json({ items: entries, total: entries.length });
+    return res.json({ items: entries, total: entries.length });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -161,14 +179,15 @@ router.put('/categories', async (req, res) => {
 // GET /api/library/check/:mangaId(*) - Supports IDs with slashes and colons
 router.get('/check/:mangaId(*)', async (req, res) => {
   try {
+    const mangaId = safeDecodeParam(req.params.mangaId);
     const entry = await LibraryEntry.findOne({
       user: req.user.id,
-      mangaId: req.params.mangaId,
+      mangaId,
     });
-    res.json({ inLibrary: !!entry, entry });
+    return res.json({ inLibrary: !!entry, entry });
   } catch (err) {
     console.error('[Library Check Error]', err.message);
-    res.status(500).json({ error: 'Failed to check library status' });
+    return res.status(500).json({ error: 'Failed to check library status' });
   }
 });
 
@@ -299,7 +318,7 @@ router.delete('/', async (req, res) => {
 
 // DELETE /api/library/:mangaId(*) - Supports wildcards and slashes in mangaId
 router.delete('/:mangaId(*)', async (req, res) => {
-  await handleRemoveLibraryEntry(req, res, req.params.mangaId);
+  await handleRemoveLibraryEntry(req, res, safeDecodeParam(req.params.mangaId));
 });
 
 export default router;

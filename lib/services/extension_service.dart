@@ -464,6 +464,7 @@ class ExtensionService extends ChangeNotifier {
       'https://raw.githubusercontent.com/keiyoushi/extensions/repo/index.pb';
 
   static const String _repoUrlKey = 'shiori_extension_repo_url_v2';
+  static const String _extraReposKey = 'shiori_extension_extra_repos_v1';
   static const String _installedKey = 'shiori_installed_extensions';
   static const String _installedMetaKey = 'shiori_installed_extensions_meta_v2';
   static const String _cacheKey = 'shiori_extensions_cache_v3';
@@ -473,6 +474,9 @@ class ExtensionService extends ChangeNotifier {
 
   String _repoUrl = defaultRepoUrl;
   String get repoUrl => _repoUrl;
+
+  final List<String> _extraRepoUrls = [];
+  List<String> get extraRepoUrls => List.unmodifiable(_extraRepoUrls);
 
   ExtensionRepoMeta? _repoMeta;
   ExtensionRepoMeta? get repoMeta => _repoMeta;
@@ -544,6 +548,12 @@ class ExtensionService extends ChangeNotifier {
       _repoUrl = _normalizeRepoUrl(savedRepoUrl ?? defaultRepoUrl);
       if (savedRepoUrl != null && savedRepoUrl != _repoUrl) {
         await prefs.setString(_repoUrlKey, _repoUrl);
+      }
+      final savedExtras = prefs.getStringList(_extraReposKey);
+      if (savedExtras != null) {
+        _extraRepoUrls
+          ..clear()
+          ..addAll(savedExtras.where((u) => u.trim().isNotEmpty));
       }
 
       final installedList = prefs.getStringList(_installedKey);
@@ -955,6 +965,27 @@ class ExtensionService extends ChangeNotifier {
     await fetchExtensions(force: true);
   }
 
+  Future<void> addExtraRepoUrl(String url) async {
+    final trimmed = url.trim();
+    if (trimmed.isEmpty || (!trimmed.startsWith('https://') && !trimmed.startsWith('http://'))) {
+      return;
+    }
+    if (_extraRepoUrls.contains(trimmed) || _extraRepoUrls.length >= 10) return;
+    _extraRepoUrls.add(trimmed);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_extraReposKey, _extraRepoUrls);
+    notifyListeners();
+    await fetchExtensions(force: true);
+  }
+
+  Future<void> removeExtraRepoUrl(String url) async {
+    if (!_extraRepoUrls.remove(url)) return;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_extraReposKey, _extraRepoUrls);
+    notifyListeners();
+    await fetchExtensions(force: true);
+  }
+
   static String _cleanExtensionName(String raw) {
     final trimmed = raw.trim();
     final lower = trimmed.toLowerCase();
@@ -1338,6 +1369,52 @@ class ExtensionService extends ChangeNotifier {
           }
         } else {
           _error = 'Failed to load extensions (HTTP ${res.statusCode})';
+        }
+      }
+
+      // Also fetch and merge extensions from any additional custom repositories
+      if (_extraRepoUrls.isNotEmpty) {
+        final seenPkgs = <String>{
+          for (final e in parsed) e.pkg.toLowerCase().trim(),
+        };
+        for (final extraUrl in List<String>.from(_extraRepoUrls)) {
+          try {
+            final res = await client
+                .get(Uri.parse(extraUrl), headers: noCacheHeaders)
+                .timeout(const Duration(seconds: 15));
+            if (res.statusCode != 200 || res.bodyBytes.isEmpty) continue;
+            List<MangaExtension> extraExts = const [];
+            if (extraUrl.contains('.json')) {
+              final bodyStr = utf8.decode(res.bodyBytes, allowMalformed: true);
+              Map<String, dynamic>? repoObj;
+              if (bodyStr.length < 4096) {
+                try {
+                  final d = json.decode(bodyStr);
+                  if (d is Map<String, dynamic> && d['index_v2'] != null) {
+                    repoObj = d;
+                  }
+                } catch (_) {}
+              }
+              if (repoObj != null) {
+                final pbUrl = repoObj['index_v2'].toString().trim();
+                final pbRes = await client
+                    .get(Uri.parse(pbUrl), headers: noCacheHeaders)
+                    .timeout(const Duration(seconds: 20));
+                if (pbRes.statusCode == 200 && pbRes.bodyBytes.isNotEmpty) {
+                  extraExts = _parseRepoProtobuf(pbRes.bodyBytes, repoUrl: pbUrl).extensions;
+                }
+              } else {
+                extraExts = _parseJsonIndex(bodyStr, repoUrl: extraUrl);
+              }
+            } else {
+              extraExts = _parseRepoProtobuf(res.bodyBytes, repoUrl: extraUrl).extensions;
+            }
+            for (final ext in extraExts) {
+              if (seenPkgs.add(ext.pkg.toLowerCase().trim())) {
+                parsed.add(ext);
+              }
+            }
+          } catch (_) {}
         }
       }
 

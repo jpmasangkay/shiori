@@ -1,10 +1,49 @@
 import express from 'express';
-import { Progress, User } from '../models.js';
+import { ChapterBookmark, Progress, User } from '../models.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = express.Router();
 
 router.use(requireAuth);
+
+function safeDecodeParam(raw) {
+  if (typeof raw !== 'string') return '';
+  try {
+    return decodeURIComponent(raw).trim();
+  } catch {
+    return raw.trim();
+  }
+}
+
+async function getUserBookmarks(userId) {
+  const [docs, userDoc] = await Promise.all([
+    ChapterBookmark.find({ user: userId }).select('chapterId').limit(5000).lean(),
+    User.findById(userId).select('chapterBookmarks').lean(),
+  ]);
+  const merged = new Set(docs.map((d) => d.chapterId));
+  const legacy = Array.isArray(userDoc?.chapterBookmarks) ? userDoc.chapterBookmarks : [];
+  if (legacy.length > 0) {
+    const ops = [];
+    for (const id of legacy.slice(0, 5000)) {
+      if (typeof id === 'string' && id.trim()) {
+        const clean = id.trim();
+        merged.add(clean);
+        ops.push({
+          updateOne: {
+            filter: { user: userId, chapterId: clean },
+            update: { $setOnInsert: { user: userId, chapterId: clean } },
+            upsert: true,
+          },
+        });
+      }
+    }
+    if (ops.length > 0) {
+      await ChapterBookmark.bulkWrite(ops, { ordered: false }).catch(() => {});
+      await User.findByIdAndUpdate(userId, { $set: { chapterBookmarks: [] } }).catch(() => {});
+    }
+  }
+  return Array.from(merged);
+}
 
 // POST /api/progress - Save or update reading progress
 router.post('/', async (req, res) => {
@@ -160,9 +199,16 @@ router.post('/batch', async (req, res) => {
         .map((id) => id.trim())
         .slice(0, 5000);
       if (cleanBookmarks.length > 0) {
-        await User.findByIdAndUpdate(req.user.id, {
-          $addToSet: { chapterBookmarks: { $each: cleanBookmarks } },
-        });
+        await ChapterBookmark.bulkWrite(
+          cleanBookmarks.map((chapterId) => ({
+            updateOne: {
+              filter: { user: req.user.id, chapterId },
+              update: { $setOnInsert: { user: req.user.id, chapterId } },
+              upsert: true,
+            },
+          })),
+          { ordered: false },
+        );
       }
     }
 
@@ -212,8 +258,7 @@ router.get('/sync', async (req, res) => {
       }
     }
 
-    const userDoc = await User.findById(req.user.id).select('chapterBookmarks');
-    const chapterBookmarks = userDoc?.chapterBookmarks || [];
+    const chapterBookmarks = await getUserBookmarks(req.user.id);
 
     res.json({
       history,
@@ -276,24 +321,36 @@ router.post('/read-status', async (req, res) => {
 // GET /api/progress/chapter-bookmarks - Retrieve user's chapter bookmarks
 router.get('/chapter-bookmarks', async (req, res) => {
   try {
-    const userDoc = await User.findById(req.user.id).select('chapterBookmarks');
-    res.json({ chapterBookmarks: userDoc?.chapterBookmarks || [] });
+    const chapterBookmarks = await getUserBookmarks(req.user.id);
+    res.json({ chapterBookmarks });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// PUT /api/progress/chapter-bookmarks - Update / merge user's chapter bookmarks
+// PUT /api/progress/chapter-bookmarks - Replace user's chapter bookmarks
 router.put('/chapter-bookmarks', async (req, res) => {
   try {
     const raw = Array.isArray(req.body?.chapterBookmarks) ? req.body.chapterBookmarks : [];
-    const clean = raw.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim()).slice(0, 5000);
-    const userDoc = await User.findByIdAndUpdate(
-      req.user.id,
-      { $set: { chapterBookmarks: clean } },
-      { new: true },
-    ).select('chapterBookmarks');
-    res.json({ success: true, chapterBookmarks: userDoc?.chapterBookmarks || [] });
+    const clean = Array.from(
+      new Set(raw.filter((id) => typeof id === 'string' && id.trim()).map((id) => id.trim())),
+    ).slice(0, 5000);
+
+    await ChapterBookmark.deleteMany({ user: req.user.id, chapterId: { $nin: clean } });
+    if (clean.length > 0) {
+      await ChapterBookmark.bulkWrite(
+        clean.map((chapterId) => ({
+          updateOne: {
+            filter: { user: req.user.id, chapterId },
+            update: { $setOnInsert: { user: req.user.id, chapterId } },
+            upsert: true,
+          },
+        })),
+        { ordered: false },
+      );
+    }
+    await User.findByIdAndUpdate(req.user.id, { $set: { chapterBookmarks: [] } }).catch(() => {});
+    res.json({ success: true, chapterBookmarks: clean });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -302,31 +359,34 @@ router.put('/chapter-bookmarks', async (req, res) => {
 // POST /api/progress/chapter-bookmarks/toggle - Toggle single chapter bookmark
 router.post('/chapter-bookmarks/toggle', async (req, res) => {
   try {
-    const { chapterId } = req.body;
+    const { chapterId } = req.body || {};
     if (!chapterId || typeof chapterId !== 'string') {
       return res.status(400).json({ error: 'chapterId is required' });
     }
     const cleanId = chapterId.trim();
-    const user = await User.findById(req.user.id).select('chapterBookmarks');
-    const bookmarks = user?.chapterBookmarks || [];
-    const exists = bookmarks.includes(cleanId);
-    if (exists) {
-      await User.findByIdAndUpdate(req.user.id, { $pull: { chapterBookmarks: cleanId } });
+    const existing = await ChapterBookmark.findOne({ user: req.user.id, chapterId: cleanId });
+    if (existing) {
+      await ChapterBookmark.deleteOne({ _id: existing._id });
     } else {
-      await User.findByIdAndUpdate(req.user.id, { $addToSet: { chapterBookmarks: cleanId } });
+      await ChapterBookmark.updateOne(
+        { user: req.user.id, chapterId: cleanId },
+        { $setOnInsert: { user: req.user.id, chapterId: cleanId } },
+        { upsert: true },
+      );
     }
-    res.json({ success: true, bookmarked: !exists, chapterId: cleanId });
+    res.json({ success: true, bookmarked: !existing, chapterId: cleanId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// GET /api/progress/manga/:mangaId - All chapter progress for a given manga
-router.get('/manga/:mangaId', async (req, res) => {
+// GET /api/progress/manga/:mangaId(*) - All chapter progress for a given manga (supports slashes/ext: IDs)
+router.get('/manga/:mangaId(*)', async (req, res) => {
   try {
+    const mangaId = safeDecodeParam(req.params.mangaId);
     const records = await Progress.find({
       user: req.user.id,
-      mangaId: req.params.mangaId,
+      mangaId,
     }).sort({ updatedAt: -1 });
 
     const lastRead = records[0] || null;
@@ -335,7 +395,7 @@ router.get('/manga/:mangaId', async (req, res) => {
       .map((r) => r.chapterId);
 
     res.json({
-      mangaId: req.params.mangaId,
+      mangaId,
       lastRead,
       completedChapterIds,
       completedChapters: completedChapterIds,
@@ -380,12 +440,13 @@ router.delete('/history', async (req, res) => {
   }
 });
 
-// DELETE /api/progress/manga/:mangaId - Remove history entries for a specific manga
-router.delete('/manga/:mangaId', async (req, res) => {
+// DELETE /api/progress/manga/:mangaId(*) - Remove history entries for a specific manga
+router.delete('/manga/:mangaId(*)', async (req, res) => {
   try {
+    const mangaId = safeDecodeParam(req.params.mangaId);
     await Progress.deleteMany({
       user: req.user.id,
-      mangaId: req.params.mangaId,
+      mangaId,
     });
     res.json({ success: true });
   } catch (err) {
@@ -393,12 +454,13 @@ router.delete('/manga/:mangaId', async (req, res) => {
   }
 });
 
-// DELETE /api/progress/history/:chapterId - Remove specific history entry
-router.delete('/history/:chapterId', async (req, res) => {
+// DELETE /api/progress/history/:chapterId(*) - Remove specific history entry (supports slashes/ext: IDs)
+router.delete('/history/:chapterId(*)', async (req, res) => {
   try {
+    const chapterId = safeDecodeParam(req.params.chapterId);
     await Progress.findOneAndDelete({
       user: req.user.id,
-      chapterId: req.params.chapterId,
+      chapterId,
     });
     res.json({ success: true });
   } catch (err) {

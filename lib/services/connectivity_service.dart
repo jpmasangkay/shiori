@@ -13,7 +13,9 @@ class ConnectivityService extends ChangeNotifier {
   StreamSubscription<List<ConnectivityResult>>? _subscription;
 
   bool _isOffline = false;
+  bool _isOnWifi = true;
   bool get isOffline => _isOffline;
+  bool get isOnWifi => _isOnWifi;
 
   bool _initialized = false;
   bool _mockMode = false;
@@ -48,8 +50,11 @@ class ConnectivityService extends ChangeNotifier {
   void _updateStatus(List<ConnectivityResult> results) {
     if (_mockMode) return;
     final offline = results.isEmpty || results.every((r) => r == ConnectivityResult.none);
-    if (_isOffline != offline) {
+    final wifi = results.contains(ConnectivityResult.wifi) ||
+        results.contains(ConnectivityResult.ethernet);
+    if (_isOffline != offline || _isOnWifi != wifi) {
       _isOffline = offline;
+      _isOnWifi = wifi;
       notifyListeners();
     }
   }

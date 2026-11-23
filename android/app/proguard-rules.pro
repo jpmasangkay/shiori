@@ -12,11 +12,14 @@
 -keepclassmembers class com.example.manga_reader.** { *; }
 -keepclassmembers interface com.example.manga_reader.** { *; }
 
-# Keep Tachiyomi extension interfaces, base classes, models, and network helpers
+# Keep Tachiyomi / Keiyoushi extension interfaces, base classes, models, and network helpers
 -keep class eu.kanade.tachiyomi.** { *; }
 -keep interface eu.kanade.tachiyomi.** { *; }
 -keepclassmembers class eu.kanade.tachiyomi.** { *; }
 -keepclassmembers interface eu.kanade.tachiyomi.** { *; }
+-keep class keiyoushi.** { *; }
+-keep interface keiyoushi.** { *; }
+-keep class androidx.biometric.** { *; }
 
 # Keep Injekt dependency injection
 -keep class uy.kohesive.injekt.** { *; }
@@ -41,7 +44,10 @@
 -keep interface org.jsoup.** { *; }
 -keepclassmembers class org.jsoup.** { *; }
 
-# Keep Kotlinx Serialization
+# Keep Kotlinx Coroutines & Serialization (used by dynamically loaded Tachiyomi/Keiyoushi extensions)
+-keep class kotlinx.coroutines.** { *; }
+-keep interface kotlinx.coroutines.** { *; }
+-keepclassmembers class kotlinx.coroutines.** { *; }
 -keep class kotlinx.serialization.** { *; }
 -keep interface kotlinx.serialization.** { *; }
 -keepclassmembers class kotlinx.serialization.** { *; }
@@ -59,7 +65,8 @@
 # Preserve reflection attributes
 -keepattributes *Annotation*,EnclosingMethod,InnerClasses,Signature,SourceFile,LineNumberTable
 
-# Don't warn for unresolved references in third-party libraries
+# Don't warn for unresolved references in third-party / optional Flutter Play Core deferred components
+-dontwarn com.google.android.play.core.**
 -dontwarn rx.**
 -dontwarn okhttp3.**
 -dontwarn okio.**

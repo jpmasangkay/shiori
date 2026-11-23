@@ -1,26 +1,78 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-/// Pure-black AMOLED design tokens.
+/// Pure-black AMOLED default design tokens.
 class AppColors {
   AppColors._();
 
   static const bg = Color(0xFF000000);
   static const amoledBg = Color(0xFF000000);
+  static const slateBg = Color(0xFF101116);
+  static const lightBg = Color(0xFFF7F7FA);
+
   static const surface = Color(0xFF0A0A0A);
   static const amoledSurface = Color(0xFF0A0A0A);
+  static const slateSurface = Color(0xFF171922);
+  static const lightSurface = Color(0xFFFFFFFF);
+
   static const surfaceHigh = Color(0xFF141414);
   static const amoledSurfaceHigh = Color(0xFF141414);
+  static const slateSurfaceHigh = Color(0xFF212432);
+  static const lightSurfaceHigh = Color(0xFFEBEBF0);
+
   static const text = Color(0xFFEDEDEF);
+  static const lightText = Color(0xFF15161B);
   static const muted = Color(0xFF9A9CA6); // WCAG AA (~7.5:1 on #000000)
+  static const lightMuted = Color(0xFF5A5D6A);
   static const read = Color(0xFF70737D);
   static const primary = Color(0xFFADC6FF);
   static const onPrimary = Color(0xFF002E69);
   static const active = Color(0xFF102A45);
   static const outline = Color(0xFF222226);
+  static const lightOutline = Color(0xFFD9DBE4);
   static const black = Color(0xFF000000);
+}
+
+enum ShioriThemeMode {
+  amoled('amoled', 'AMOLED Black'),
+  dark('dark', 'Dark Slate'),
+  light('light', 'Paper Light'),
+  system('system', 'Follow System');
+
+  const ShioriThemeMode(this.key, this.label);
+  final String key;
+  final String label;
+
+  static ShioriThemeMode fromKey(String? key) {
+    for (final m in values) {
+      if (m.key == key) return m;
+    }
+    return ShioriThemeMode.amoled;
+  }
+}
+
+enum ShioriAccent {
+  periwinkle('periwinkle', 'Periwinkle', Color(0xFFADC6FF), Color(0xFF002E69)),
+  violet('violet', 'Violet', Color(0xFFC4B5FD), Color(0xFF2E1065)),
+  emerald('emerald', 'Emerald', Color(0xFF6EE7B7), Color(0xFF022C22)),
+  rose('rose', 'Sakura Rose', Color(0xFFFDA4AF), Color(0xFF4C0519)),
+  amber('amber', 'Warm Amber', Color(0xFFFCD34D), Color(0xFF451A03)),
+  teal('teal', 'Ocean Teal', Color(0xFF5EEAD4), Color(0xFF042F2E));
+
+  const ShioriAccent(this.key, this.label, this.primary, this.onPrimary);
+  final String key;
+  final String label;
+  final Color primary;
+  final Color onPrimary;
+
+  static ShioriAccent fromKey(String? key) {
+    for (final a in values) {
+      if (a.key == key) return a;
+    }
+    return ShioriAccent.periwinkle;
+  }
 }
 
 /// Consistent application-wide type scale (cached to avoid per-frame GoogleFonts lookups).
@@ -122,48 +174,162 @@ class ThemeController extends ChangeNotifier {
   ThemeController._();
   static final ThemeController instance = ThemeController._();
 
-  bool get isAmoled => true;
+  static const _keyThemeMode = 'shiori_theme_mode_v1';
+  static const _keyAccent = 'shiori_theme_accent_v1';
 
-  Color get currentBg => AppColors.bg;
-  Color get currentSurface => AppColors.surface;
-  Color get currentSurfaceHigh => AppColors.surfaceHigh;
+  ShioriThemeMode _mode = ShioriThemeMode.amoled;
+  ShioriAccent _accent = ShioriAccent.periwinkle;
+
+  ShioriThemeMode get mode => _mode;
+  ShioriAccent get accent => _accent;
+  bool get isAmoled => _mode == ShioriThemeMode.amoled;
+  bool get isLight => _mode == ShioriThemeMode.light;
+
+  ThemeMode get materialThemeMode => switch (_mode) {
+    ShioriThemeMode.light => ThemeMode.light,
+    ShioriThemeMode.system => ThemeMode.system,
+    ShioriThemeMode.amoled || ShioriThemeMode.dark => ThemeMode.dark,
+  };
+
+  Color get currentBg => switch (_mode) {
+    ShioriThemeMode.light => AppColors.lightBg,
+    ShioriThemeMode.dark => AppColors.slateBg,
+    _ => AppColors.bg,
+  };
+
+  Color get currentSurface => switch (_mode) {
+    ShioriThemeMode.light => AppColors.lightSurface,
+    ShioriThemeMode.dark => AppColors.slateSurface,
+    _ => AppColors.surface,
+  };
+
+  Color get currentSurfaceHigh => switch (_mode) {
+    ShioriThemeMode.light => AppColors.lightSurfaceHigh,
+    ShioriThemeMode.dark => AppColors.slateSurfaceHigh,
+    _ => AppColors.surfaceHigh,
+  };
 
   Future<void> init() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _mode = ShioriThemeMode.fromKey(prefs.getString(_keyThemeMode));
+      _accent = ShioriAccent.fromKey(prefs.getString(_keyAccent));
+    } catch (_) {}
     _updateSystemUI();
+    notifyListeners();
+  }
+
+  Future<void> setThemeMode(ShioriThemeMode newMode) async {
+    if (_mode == newMode) return;
+    _mode = newMode;
+    _cachedTheme = null;
+    _cachedLightTheme = null;
+    _updateSystemUI();
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_keyThemeMode, newMode.key);
+    } catch (_) {}
+  }
+
+  Future<void> setAccent(ShioriAccent newAccent) async {
+    if (_accent == newAccent) return;
+    _accent = newAccent;
+    _cachedTheme = null;
+    _cachedLightTheme = null;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_keyAccent, newAccent.key);
+    } catch (_) {}
   }
 
   void _updateSystemUI() {
+    final light = _mode == ShioriThemeMode.light;
     SystemChrome.setSystemUIOverlayStyle(
-      const SystemUiOverlayStyle(
+      SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.light,
-        systemNavigationBarColor: AppColors.bg,
-        systemNavigationBarIconBrightness: Brightness.light,
+        statusBarIconBrightness: light ? Brightness.dark : Brightness.light,
+        systemNavigationBarColor: currentBg,
+        systemNavigationBarIconBrightness: light ? Brightness.dark : Brightness.light,
       ),
     );
   }
 }
 
 ThemeData? _cachedTheme;
+ThemeData? _cachedLightTheme;
 
-ThemeData buildTheme() {
+ThemeData buildTheme({bool forceLight = false}) {
+  final ctrl = ThemeController.instance;
+  final accent = ctrl.accent;
+
+  if (forceLight || ctrl.mode == ShioriThemeMode.light) {
+    if (_cachedLightTheme != null) return _cachedLightTheme!;
+    final base = ThemeData(
+      brightness: Brightness.light,
+      useMaterial3: true,
+      scaffoldBackgroundColor: AppColors.lightBg,
+      canvasColor: AppColors.lightSurface,
+      cardColor: AppColors.lightSurface,
+      colorScheme: ColorScheme.light(
+        primary: accent.onPrimary,
+        onPrimary: Colors.white,
+        surface: AppColors.lightBg,
+        onSurface: AppColors.lightText,
+        outline: AppColors.lightOutline,
+        surfaceContainer: AppColors.lightSurface,
+        surfaceContainerHigh: AppColors.lightSurfaceHigh,
+      ),
+    );
+    final textTheme = GoogleFonts.interTextTheme(base.textTheme).apply(
+      bodyColor: AppColors.lightText,
+      displayColor: AppColors.lightText,
+    );
+    final builtLight = base.copyWith(
+      textTheme: textTheme,
+      dividerColor: AppColors.lightOutline,
+      appBarTheme: AppBarTheme(
+        backgroundColor: AppColors.lightBg,
+        surfaceTintColor: Colors.transparent,
+        foregroundColor: AppColors.lightText,
+        elevation: 0,
+        titleTextStyle: AppText.title.copyWith(color: AppColors.lightText),
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        height: 74,
+        backgroundColor: AppColors.lightSurface,
+        surfaceTintColor: Colors.transparent,
+        indicatorColor: accent.primary.withValues(alpha: 0.35),
+      ),
+    );
+    _cachedLightTheme = builtLight;
+    return builtLight;
+  }
+
   final existing = _cachedTheme;
   if (existing != null) return existing;
+
+  final bg = ctrl.mode == ShioriThemeMode.dark ? AppColors.slateBg : AppColors.bg;
+  final surface = ctrl.mode == ShioriThemeMode.dark ? AppColors.slateSurface : AppColors.surface;
+  final surfaceHigh = ctrl.mode == ShioriThemeMode.dark
+      ? AppColors.slateSurfaceHigh
+      : AppColors.surfaceHigh;
 
   final base = ThemeData(
     brightness: Brightness.dark,
     useMaterial3: true,
-    scaffoldBackgroundColor: AppColors.bg,
-    canvasColor: AppColors.surface,
-    cardColor: AppColors.surface,
-    colorScheme: const ColorScheme.dark(
-      primary: AppColors.primary,
-      onPrimary: AppColors.onPrimary,
-      surface: AppColors.bg,
+    scaffoldBackgroundColor: bg,
+    canvasColor: surface,
+    cardColor: surface,
+    colorScheme: ColorScheme.dark(
+      primary: accent.primary,
+      onPrimary: accent.onPrimary,
+      surface: bg,
       onSurface: AppColors.text,
       outline: AppColors.outline,
-      surfaceContainer: AppColors.surface,
-      surfaceContainerHigh: AppColors.surfaceHigh,
+      surfaceContainer: surface,
+      surfaceContainerHigh: surfaceHigh,
     ),
   );
 
@@ -177,25 +343,25 @@ ThemeData buildTheme() {
     splashFactory: InkRipple.splashFactory,
     dividerColor: AppColors.outline,
     appBarTheme: AppBarTheme(
-      backgroundColor: AppColors.bg,
+      backgroundColor: bg,
       surfaceTintColor: Colors.transparent,
       foregroundColor: AppColors.text,
       elevation: 0,
       titleTextStyle: AppText.title,
     ),
-    bottomSheetTheme: const BottomSheetThemeData(
-      backgroundColor: AppColors.surface,
-      modalBackgroundColor: AppColors.surface,
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: surface,
+      modalBackgroundColor: surface,
       surfaceTintColor: Colors.transparent,
     ),
     dialogTheme: DialogThemeData(
-      backgroundColor: AppColors.surface,
+      backgroundColor: surface,
       surfaceTintColor: Colors.transparent,
       titleTextStyle: AppText.sheetTitle,
       contentTextStyle: AppText.body.copyWith(color: AppColors.muted),
     ),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: AppColors.surfaceHigh,
+      backgroundColor: surfaceHigh,
       contentTextStyle: AppText.body,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
@@ -203,7 +369,7 @@ ThemeData buildTheme() {
       ),
     ),
     popupMenuTheme: PopupMenuThemeData(
-      color: AppColors.surface,
+      color: surface,
       surfaceTintColor: Colors.transparent,
       textStyle: AppText.body,
       shape: RoundedRectangleBorder(
@@ -212,7 +378,7 @@ ThemeData buildTheme() {
       ),
     ),
     chipTheme: base.chipTheme.copyWith(
-      backgroundColor: AppColors.surface,
+      backgroundColor: surface,
       selectedColor: AppColors.active,
       side: const BorderSide(color: AppColors.outline),
       labelStyle: AppText.chip,
@@ -220,15 +386,13 @@ ThemeData buildTheme() {
     pageTransitionsTheme: const PageTransitionsTheme(
       builders: {
         TargetPlatform.android: ZoomPageTransitionsBuilder(),
-        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
-        TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
         TargetPlatform.windows: ZoomPageTransitionsBuilder(),
         TargetPlatform.linux: ZoomPageTransitionsBuilder(),
       },
     ),
     navigationBarTheme: NavigationBarThemeData(
       height: 74,
-      backgroundColor: AppColors.surface,
+      backgroundColor: surface,
       surfaceTintColor: Colors.transparent,
       indicatorColor: AppColors.active,
       indicatorShape: RoundedRectangleBorder(
@@ -238,7 +402,7 @@ ThemeData buildTheme() {
         final selected = states.contains(WidgetState.selected);
         return IconThemeData(
           size: 26,
-          color: selected ? AppColors.primary : AppColors.muted,
+          color: selected ? accent.primary : AppColors.muted,
         );
       }),
       labelTextStyle: WidgetStateProperty.resolveWith((states) {

@@ -23,6 +23,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
+    buildFeatures {
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "com.shiori.reader"
         minSdk = flutter.minSdkVersion
@@ -45,8 +49,8 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
-            isShrinkResources = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -80,12 +84,15 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:5.0.0-alpha.14")
     implementation("com.squareup.okhttp3:logging-interceptor:5.0.0-alpha.14")
     implementation("com.squareup.okhttp3:okhttp-brotli:5.0.0-alpha.14")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:5.0.0-alpha.14")
     implementation("org.jsoup:jsoup:1.17.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json-okio:1.8.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-protobuf:1.8.0")
     implementation("androidx.preference:preference-ktx:1.2.1")
+    implementation("androidx.biometric:biometric:1.1.0")
     implementation("uy.kohesive.injekt:injekt-core:1.16.1")
     implementation("com.squareup.zstd:zstd-kmp-okio:0.4.0")
 }

@@ -93,25 +93,32 @@ class _TrackingScreenState extends State<TrackingScreen> {
     );
   }
 
+  static const _remoteSyncTrackerIds = {
+    'anilist',
+    'myanimelist',
+    'kitsu',
+    'mangaupdates',
+  };
+
   void _handleTrackerTap(TrackerServiceMeta tracker) {
     final record = _trackerService.getTrackingRecord(widget.manga.id, tracker.id);
 
     if (record != null) {
       _showTrackEditorSheet(tracker, record);
+    } else if (_remoteSyncTrackerIds.contains(tracker.id) &&
+        !_trackerService.isTrackerAuthenticated(tracker.id)) {
+      _showTrackerAuthSheet(tracker);
     } else {
-      // If AniList and not authenticated, offer login or guest link
-      if (tracker.id == 'anilist' && !_trackerService.isAuthenticated) {
-        _showAniListAuthSheet(tracker);
-      } else {
-        _showSearchTrackerSheet(tracker);
-      }
+      _showSearchTrackerSheet(tracker);
     }
   }
 
-  void _showAniListAuthSheet(TrackerServiceMeta tracker) {
+  void _showTrackerAuthSheet(TrackerServiceMeta tracker) {
     final tokenController = TextEditingController();
+    final isAniList = tracker.id == 'anilist';
+    final isMal = tracker.id == 'myanimelist';
 
-    showModalBottomSheet(
+    showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: AppColors.surface,
@@ -133,43 +140,71 @@ class _TrackingScreenState extends State<TrackingScreen> {
               children: [
                 TrackerLogo(trackerId: tracker.id, size: 28),
                 const SizedBox(width: 10),
-                Text('Connect ${tracker.name}', style: AppText.sheetTitle),
+                Expanded(child: Text('Connect ${tracker.name}', style: AppText.sheetTitle)),
               ],
             ),
             const SizedBox(height: 14),
             Text(
-              'Sign in to sync read chapters and scores directly to your ${tracker.name} profile.',
+              'Sign in to sync read chapters, reading status, and scores directly to your ${tracker.name} account.',
               style: AppText.bodyMedium.copyWith(color: AppColors.muted),
             ),
-            const SizedBox(height: 20),
-            ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: AppColors.onPrimary,
-                padding: const EdgeInsets.symmetric(vertical: 12),
+            const SizedBox(height: 18),
+            if (isAniList)
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: AppColors.onPrimary,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: const Icon(Icons.open_in_browser_rounded),
+                label: const Text('Sign in with AniList (OAuth)', style: TextStyle(fontWeight: FontWeight.w600)),
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  final ok = await _trackerService.startOAuthFlow();
+                  if (!ok && mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Could not open browser for AniList auth.')),
+                    );
+                  }
+                },
               ),
-              icon: const Icon(Icons.open_in_browser_rounded),
-              label: const Text('Sign in with AniList (OAuth)', style: TextStyle(fontWeight: FontWeight.w600)),
-              onPressed: () async {
-                Navigator.pop(ctx);
-                final ok = await _trackerService.startOAuthFlow();
-                if (!ok && mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('Could not open browser for AniList auth.')),
-                  );
-                }
-              },
+            if (isMal)
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF2E51A2),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+                icon: const Icon(Icons.open_in_browser_rounded),
+                label: const Text('Sign in with MyAnimeList (OAuth2 PKCE)', style: TextStyle(fontWeight: FontWeight.w600)),
+                onPressed: () async {
+                  Navigator.pop(ctx);
+                  final ok = await _trackerService.startMalOAuthFlow();
+                  if (!ok && mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Could not open browser for MyAnimeList auth.')),
+                    );
+                  }
+                },
+              ),
+            if (isAniList || isMal) ...[
+              const SizedBox(height: 16),
+              const Divider(color: AppColors.outline),
+              const SizedBox(height: 10),
+            ],
+            Text(
+              isAniList || isMal
+                  ? 'Or enter Access Token:'
+                  : 'Enter ${tracker.name} Access / Session Token:',
+              style: AppText.caption,
             ),
-            const SizedBox(height: 16),
-            const Divider(color: AppColors.outline),
-            const SizedBox(height: 10),
-            Text('Or enter Personal Access Token:', style: AppText.caption),
             const SizedBox(height: 8),
             TextField(
               controller: tokenController,
               style: AppText.body,
+              obscureText: true,
               decoration: InputDecoration(
-                hintText: 'Paste token here',
+                hintText: 'Paste ${tracker.name} token here',
                 hintStyle: TextStyle(color: AppColors.muted.withValues(alpha: .5)),
                 filled: true,
                 fillColor: AppColors.surfaceHigh,
@@ -190,7 +225,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
                       Navigator.pop(ctx);
                       _showSearchTrackerSheet(tracker);
                     },
-                    child: const Text('Quick Link (No Login)'),
+                    child: const Text('Local Link Only'),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -202,24 +237,25 @@ class _TrackingScreenState extends State<TrackingScreen> {
                     ),
                     onPressed: () async {
                       final tok = tokenController.text.trim();
-                      if (tok.isNotEmpty) {
-                        Navigator.pop(ctx);
-                        final success = await _trackerService.loginWithToken(tok);
-                        if (mounted) {
-                          if (success) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Connected to AniList successfully!')),
-                            );
-                            _showSearchTrackerSheet(tracker);
-                          } else {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text('Invalid token. Please try again.')),
-                            );
-                          }
-                        }
+                      if (tok.isEmpty) return;
+                      Navigator.pop(ctx);
+                      final success = isAniList
+                          ? await _trackerService.loginWithToken(tok)
+                          : await _trackerService.loginTracker(tracker.id, tok);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              success
+                                  ? 'Connected to ${tracker.name} successfully!'
+                                  : 'Could not verify ${tracker.name} token.',
+                            ),
+                          ),
+                        );
+                        if (success) _showSearchTrackerSheet(tracker);
                       }
                     },
-                    child: const Text('Submit Token'),
+                    child: const Text('Connect Token'),
                   ),
                 ),
               ],
@@ -378,9 +414,14 @@ class _TrackingScreenState extends State<TrackingScreen> {
               final chStr = 'Ch. ${record.lastChapterRead}'
                   '${record.totalChapters != null && record.totalChapters! > 0 ? ' / ${record.totalChapters}' : ''}';
               final scoreStr = record.score > 0 ? ' • Score: ${record.score.toStringAsFixed(1)}' : '';
-              subtitle = '${record.status} • $chStr$scoreStr';
-            } else if (isAuth && user != null) {
-              subtitle = 'Connected as $user';
+              final syncBadge = isAuth ? ' • Synced' : ' • Local only';
+              subtitle = '${record.status} • $chStr$scoreStr$syncBadge';
+            } else if (isAuth) {
+              subtitle = 'Connected${user != null ? ' as $user' : ''} • Real remote sync';
+            } else if (_remoteSyncTrackerIds.contains(tracker.id)) {
+              subtitle = 'Tap to sign in for remote sync';
+            } else {
+              subtitle = 'Local tracking';
             }
 
             return ListTile(
@@ -393,15 +434,13 @@ class _TrackingScreenState extends State<TrackingScreen> {
                   color: isLinked ? AppColors.text : AppColors.text.withValues(alpha: .9),
                 ),
               ),
-              subtitle: subtitle != null
-                  ? Text(
-                      subtitle,
-                      style: AppText.caption.copyWith(
-                        color: isLinked ? AppColors.primary : AppColors.muted,
-                        fontWeight: isLinked ? FontWeight.w500 : FontWeight.w400,
-                      ),
-                    )
-                  : null,
+              subtitle: Text(
+                subtitle,
+                style: AppText.caption.copyWith(
+                  color: isLinked ? AppColors.primary : AppColors.muted,
+                  fontWeight: isLinked ? FontWeight.w500 : FontWeight.w400,
+                ),
+              ),
               trailing: isLinked
                   ? const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 20)
                   : const Icon(Icons.chevron_right_rounded, color: AppColors.muted, size: 20),

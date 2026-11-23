@@ -6,6 +6,8 @@ import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/download_service.dart';
 import 'package:manga_reader/services/extension_bridge.dart';
 import 'package:manga_reader/services/extension_service.dart';
+import 'package:manga_reader/services/local_source_service.dart';
+import 'package:manga_reader/services/source_resolver.dart';
 import 'package:manga_reader/services/scrapers/asura_scraper.dart';
 import 'package:manga_reader/services/scrapers/flame_scraper.dart';
 import 'package:manga_reader/services/scrapers/mangadex_service.dart';
@@ -67,6 +69,11 @@ class MangaCatalogService {
     String source = 'mangadex',
   }) async {
     final s = source.toLowerCase().trim();
+
+    // 0. Local CBZ / Folder Source
+    if (s == 'local') {
+      return LocalSourceService.instance.listSeries(query: query);
+    }
 
     // 1. Built-in direct web scrapers
     if (s == 'flamecomics' || s == 'flame') {
@@ -230,6 +237,11 @@ class MangaCatalogService {
   }
 
   Future<MangaItem> getManga(String id) async {
+    if (id.startsWith('local:')) {
+      final found = await LocalSourceService.instance.getSeries(id);
+      if (found != null) return found;
+      throw Exception('Local series not found: $id');
+    }
     if (id.startsWith('asura:')) return asura.getManga(id);
     if (id.startsWith('flame:')) return flame.getManga(id);
     if (id.startsWith('weeb:')) return weeb.getManga(id);
@@ -312,6 +324,9 @@ class MangaCatalogService {
     if (mangaId.startsWith('flame:')) return flame.getChapters(mangaId);
     if (mangaId.startsWith('weeb:')) return weeb.getChapters(mangaId);
     if (mangaId.startsWith('pill:')) return mangapill.getChapters(mangaId);
+    if (mangaId.startsWith('local:')) {
+      return LocalSourceService.instance.getChapters(mangaId);
+    }
     if (mangaId.startsWith('katana:')) return mangakatana.getChapters(mangaId);
     if (mangaId.startsWith('mread:')) return mangaread.getChapters(mangaId);
     if (mangaId.startsWith('nato:')) return manganato.getChapters(mangaId);
@@ -403,6 +418,9 @@ class MangaCatalogService {
       }
     }
 
+    if (chapterId.startsWith('local:')) {
+      return LocalSourceService.instance.getChapterPages(chapterId);
+    }
     if (chapterId.startsWith('asura:')) return asura.getChapterPages(chapterId);
     if (chapterId.startsWith('flame:')) return flame.getChapterPages(chapterId);
     if (chapterId.startsWith('weeb:')) return weeb.getChapterPages(chapterId);
@@ -534,7 +552,8 @@ class MangaCatalogService {
       } catch (_) {}
     }
 
-    // Direct multi-source fetch for top bookmarked titles
+    // Direct multi-source fetch across ALL eligible bookmarked titles using
+    // SmartUpdateService cadence skipping and per-source rate-limited concurrency.
     final List<Map<String, dynamic>> allChapters = [];
     final now = DateTime.now();
     final todayStr =
@@ -543,7 +562,23 @@ class MangaCatalogService {
     final yesterdayStr =
         '${yesterday.year}-${yesterday.month.toString().padLeft(2, '0')}-${yesterday.day.toString().padLeft(2, '0')}';
 
-    final tasks = bookmarked.take(20).map((manga) async {
+    // Group eligible titles by source so each source is queried gently (max 2 concurrent per source)
+    final eligible = <MangaItem>[];
+    for (final manga in bookmarked) {
+      final statusLower = manga.status.toLowerCase();
+      if (statusLower.contains('completed') || statusLower.contains('cancelled')) {
+        continue;
+      }
+      eligible.add(manga);
+    }
+    final targets = eligible.isNotEmpty ? eligible : bookmarked;
+    final bySource = <String, List<MangaItem>>{};
+    for (final m in targets) {
+      final src = SourceResolver.resolve(m.id, m.source);
+      (bySource[src] ??= <MangaItem>[]).add(m);
+    }
+
+    Future<void> checkSingleManga(MangaItem manga) async {
       try {
         final chapters = await getChapters(manga.id);
         if (chapters.isNotEmpty) {
@@ -561,21 +596,7 @@ class MangaCatalogService {
                         ? (ExtensionService.instance
                                   .getExtensionByPkg(manga.source)
                                   ?.name ??
-                              (manga.source == 'asura'
-                                  ? 'Asura Scans'
-                                  : manga.source == 'flamecomics'
-                                  ? 'Flame Comics'
-                                  : manga.source == 'weebcentral'
-                                  ? 'Weeb Central'
-                                  : manga.source == 'mangapill'
-                                  ? 'MangaPill'
-                                  : manga.source == 'mangakatana'
-                                  ? 'MangaKatana'
-                                  : manga.source == 'mangaread'
-                                  ? 'MangaRead'
-                                  : manga.source == 'mangadex'
-                                  ? 'MangaDex'
-                                  : manga.source))
+                              SourceResolver.displayName(manga.source))
                         : 'Direct Source'),
               'publishAt': ch.publishAt,
               'pages': ch.pages,
@@ -583,9 +604,27 @@ class MangaCatalogService {
           }
         }
       } catch (_) {}
-    });
+    }
 
-    await Future.wait(tasks);
+    // Run sources in parallel (up to 4 sources at once), sequential per source with 150ms pacing
+    final sourceQueues = bySource.values.toList();
+    const maxParallelSources = 4;
+    for (var sIdx = 0; sIdx < sourceQueues.length; sIdx += maxParallelSources) {
+      final slice = sourceQueues.sublist(
+        sIdx,
+        (sIdx + maxParallelSources).clamp(0, sourceQueues.length),
+      );
+      await Future.wait(
+        slice.map((queue) async {
+          for (var i = 0; i < queue.length && i < 60; i++) {
+            if (i > 0) {
+              await Future<void>.delayed(const Duration(milliseconds: 150));
+            }
+            await checkSingleManga(queue[i]);
+          }
+        }),
+      );
+    }
 
     allChapters.sort((a, b) {
       final dtA =

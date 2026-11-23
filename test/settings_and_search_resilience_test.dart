@@ -60,8 +60,14 @@ void main() {
       expect(reader.tint, closeTo(0.40, 0.01));
       expect(reader.enableTapZones, isFalse);
       expect(reader.invertTapZones, isTrue);
+      // Per-manga override applies only to manga_123 and preserves global Automatic default
       expect(reader.getReadingDirectionForManga('manga_123'), 'webtoon');
-      expect(reader.getReadingDirectionForManga('other_manga'), 'webtoon');
+      expect(reader.getReadingDirectionForManga('other_manga'), 'automatic');
+
+      // Updating the global default applies to unoverridden manga
+      await reader.setDefaultReadingDirection('rtl');
+      expect(reader.getReadingDirectionForManga('other_manga'), 'rtl');
+      expect(reader.getReadingDirectionForManga('manga_123'), 'webtoon');
 
       // Verify in SharedPreferences
       final prefs = await SharedPreferences.getInstance();

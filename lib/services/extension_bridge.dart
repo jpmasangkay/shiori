@@ -161,6 +161,39 @@ class ExtensionBridge {
     }
   }
 
+  /// Fetches an extension image to a bounded native disk cache file and returns
+  /// its bytes, avoiding large JNI byte-array copies when `fetchImageFilePath`
+  /// is supported on Android, with clean fallback to `fetchImageBytes`.
+  Future<String?> fetchImageFilePath({
+    required String pkg,
+    required String url,
+    String? pageUrl,
+  }) async {
+    if (!_isAndroidSupported || url.trim().isEmpty) return null;
+    try {
+      final basePkg = pkg.split('@').first.trim();
+      final lowerBase = basePkg.toLowerCase();
+      final hasLocal = ExtensionService.instance.deviceExtensionsMap.containsKey(lowerBase) ||
+          _findApkPath(pkg) != null;
+      if (pageUrl == null && !hasLocal) {
+        return null;
+      }
+      final apkPath = await _ensureApkPath(pkg);
+      final filePath = await _channel.invokeMethod<String>('fetchImageFilePath', {
+        'pkg': pkg,
+        'imageUrl': url,
+        'pageUrl': pageUrl,
+        'apkPath': apkPath,
+      });
+      if (filePath != null && filePath.isNotEmpty) {
+        return filePath;
+      }
+    } catch (_) {
+      // Fall through to legacy byte path (e.g. unit tests mocking fetchImageBytes)
+    }
+    return null;
+  }
+
   Future<Uint8List?> fetchImageBytes({
     required String pkg,
     required String url,
@@ -168,6 +201,16 @@ class ExtensionBridge {
   }) async {
     if (!_isAndroidSupported || url.trim().isEmpty) return null;
     try {
+      // Prefer disk-backed native file fetch to avoid multi-MB MethodChannel ByteArray copies
+      final diskPath = await fetchImageFilePath(pkg: pkg, url: url, pageUrl: pageUrl);
+      if (diskPath != null && diskPath.isNotEmpty) {
+        final f = File(diskPath);
+        if (await f.exists()) {
+          final bytes = await f.readAsBytes();
+          if (bytes.isNotEmpty) return bytes;
+        }
+      }
+
       final basePkg = pkg.split('@').first.trim();
       final lowerBase = basePkg.toLowerCase();
       final hasLocal = ExtensionService.instance.deviceExtensionsMap.containsKey(lowerBase) ||

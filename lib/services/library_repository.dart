@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/app_logger.dart';
+import 'package:manga_reader/services/local_database.dart';
 import 'package:manga_reader/services/source_resolver.dart';
 import 'package:manga_reader/widgets/common.dart';
 
@@ -166,8 +167,31 @@ class LibraryRepository extends ChangeNotifier {
       }
     }
 
-    // 6. Persisted Local Chapter Lists per Manga (for offline & slow internet)
+    // 6. Persisted Local Chapter Lists per Manga (SQLite-backed on device, SharedPreferences fallback in tests)
     _localChapters.clear();
+    final dbReady = await LocalDatabase.instance.init();
+    if (dbReady) {
+      final dbManga = await LocalDatabase.instance.loadLibraryManga();
+      if (dbManga.isNotEmpty) {
+        for (final m in dbManga) {
+          _localLibrary[m.id] = m;
+          _knownManga[m.id] = m;
+        }
+      } else if (_localLibrary.isNotEmpty) {
+        // One-time migration of existing SharedPreferences library into SQLite
+        for (final m in _localLibrary.values) {
+          await LocalDatabase.instance.upsertManga(m);
+        }
+      }
+
+      final dbChapters = await LocalDatabase.instance.loadAllCachedChapters(
+        maxMangas: maxCachedMangaChapters,
+      );
+      if (dbChapters.isNotEmpty) {
+        _localChapters.addAll(dbChapters);
+      }
+    }
+
     final localChapsJson = prefs.getString('shiori_local_chapters_v1');
     if (localChapsJson != null && localChapsJson.isNotEmpty) {
       try {
@@ -181,11 +205,20 @@ class LibraryRepository extends ChangeNotifier {
                 if (ch.id.isNotEmpty) parsed.add(ch);
               }
             }
-            if (parsed.isNotEmpty && _localChapters.length < maxCachedMangaChapters) {
+            if (parsed.isNotEmpty &&
+                !_localChapters.containsKey(mangaId) &&
+                _localChapters.length < maxCachedMangaChapters) {
               _localChapters[mangaId] = parsed;
             }
           }
         });
+        // Migrate legacy giant XML blob into SQLite and scrub it from SharedPreferences
+        if (dbReady && _localChapters.isNotEmpty) {
+          for (final entry in _localChapters.entries) {
+            await LocalDatabase.instance.replaceChaptersForManga(entry.key, entry.value);
+          }
+          await prefs.remove('shiori_local_chapters_v1');
+        }
       } catch (e) {
         AppLogger.warn('Failed to parse shiori_local_chapters_v1', e);
       }
@@ -252,7 +285,11 @@ class LibraryRepository extends ChangeNotifier {
       }
     }
 
-    await _persistLocalChapters();
+    if (LocalDatabase.instance.isAvailable) {
+      await LocalDatabase.instance.replaceChaptersForManga(mangaId, boundedChapters);
+    } else {
+      await _persistLocalChapters();
+    }
   }
 
   Future<void> _persistLocalChapters() async {
@@ -374,6 +411,9 @@ class LibraryRepository extends ChangeNotifier {
     _localLibrary[manga.id] = effective;
     _knownManga[manga.id] = effective;
     _deletedMangaIds.remove(manga.id);
+    if (LocalDatabase.instance.isAvailable) {
+      unawaited(LocalDatabase.instance.upsertManga(effective));
+    }
     await _persistLocalLibrary();
     await _persistDeletedMangaIds();
     notifyListeners();
@@ -412,6 +452,9 @@ class LibraryRepository extends ChangeNotifier {
     _localLibrary.remove(mangaId);
     _mangaCategories.remove(mangaId);
     _deletedMangaIds.add(mangaId);
+    if (LocalDatabase.instance.isAvailable) {
+      unawaited(LocalDatabase.instance.deleteLibraryManga(mangaId));
+    }
     await _persistLocalLibrary();
     await _persistMangaCategories();
     await _persistDeletedMangaIds();

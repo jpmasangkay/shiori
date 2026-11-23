@@ -6,6 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/extension_service.dart';
+import '../services/local_source_service.dart';
+import '../services/platform_bridge.dart';
 import '../services/source_manager.dart';
 import '../services/source_resolver.dart';
 import '../theme.dart';
@@ -419,6 +421,14 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               iconColor: Color(ds.colorValue),
               isPinned: _sourceManager.isPinned(ds.id),
             ),
+          const SizedBox(height: 12),
+          _sectionHeaderWithBadge(
+            title: 'LOCAL STORAGE',
+            badgeText: 'CBZ',
+            badgeColor: const Color(0xFFF59E0B),
+            icon: Icons.folder_zip_rounded,
+          ),
+          _buildLocalSourceCard(),
           const SizedBox(height: 24),
         ],
       ],
@@ -541,9 +551,143 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 ),
               const SizedBox(height: 10),
             ],
+          const SizedBox(height: 12),
+          _sectionHeaderWithBadge(
+            title: 'LOCAL STORAGE',
+            badgeText: 'CBZ',
+            badgeColor: const Color(0xFFF59E0B),
+            icon: Icons.folder_zip_rounded,
+          ),
+          _buildLocalSourceCard(),
           const SizedBox(height: 24),
         ],
       ],
+      ),
+    );
+  }
+
+  Future<void> _importLocalCbz() async {
+    final picked = await PlatformBridge.instance.pickFile(
+      mimeTypes: const ['application/zip', 'application/x-cbz', 'application/octet-stream', '*/*'],
+    );
+    if (picked == null || !mounted) return;
+    try {
+      final manga = await LocalSourceService.instance.importCbzArchive(
+        fileName: picked.name,
+        bytes: picked.bytes,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Imported "${manga.title}" into Local Source!')),
+      );
+      Navigator.of(context).push(
+        smoothRoute(
+          const SourceCatalogScreen(
+            sourceId: 'local',
+            sourceName: 'Local Source',
+            sourceLang: 'LOCAL',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Import failed: $e')),
+        );
+      }
+    }
+  }
+
+  Widget _buildLocalSourceCard() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.outline),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF59E0B).withValues(alpha: .16),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: .4)),
+                ),
+                child: const Icon(Icons.folder_zip_rounded, color: Color(0xFFF59E0B), size: 22),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Local Source', style: AppText.cardTitle),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Read offline .cbz / .zip comic archives & local folders',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.caption,
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: () {
+                    Navigator.of(context).push(
+                      smoothRoute(
+                        const SourceCatalogScreen(
+                          sourceId: 'local',
+                          sourceName: 'Local Source',
+                          sourceLang: 'LOCAL',
+                        ),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.folder_open_rounded, size: 16),
+                  label: Text(
+                    'Browse Local',
+                    style: AppText.chip.copyWith(color: AppColors.onPrimary, fontWeight: FontWeight.w600),
+                  ),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: AppColors.onPrimary,
+                    minimumSize: const Size(0, 42),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _importLocalCbz,
+                  icon: const Icon(Icons.file_upload_outlined, size: 16),
+                  label: Text(
+                    'Import .cbz',
+                    style: AppText.chip.copyWith(color: AppColors.primary, fontWeight: FontWeight.w600),
+                  ),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    side: const BorderSide(color: AppColors.outline),
+                    minimumSize: const Size(0, 42),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

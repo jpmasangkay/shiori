@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
@@ -16,6 +17,7 @@ import 'package:manga_reader/services/history_repository.dart';
 import 'package:manga_reader/services/http_cache.dart';
 import 'package:manga_reader/services/library_repository.dart';
 import 'package:manga_reader/services/manga_catalog_service.dart';
+import 'package:manga_reader/services/tachibk_backup_service.dart';
 import 'package:manga_reader/services/scrapers/asura_scraper.dart';
 import 'package:manga_reader/services/scrapers/flame_scraper.dart';
 import 'package:manga_reader/services/scrapers/mangadex_service.dart';
@@ -259,9 +261,12 @@ class ApiService extends ChangeNotifier {
 
   Future<void> setBaseUrl(String url) async {
     var cleaned = url.trim();
-    if (cleaned.endsWith('/'))
+    if (cleaned.endsWith('/')) {
       cleaned = cleaned.substring(0, cleaned.length - 1);
-    if (!cleaned.endsWith('/api')) cleaned = '$cleaned/api';
+    }
+    if (!cleaned.endsWith('/api')) {
+      cleaned = '$cleaned/api';
+    }
     _baseUrl = cleaned;
     final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
     await prefs.setString('api_base_url', _baseUrl);
@@ -455,9 +460,10 @@ class ApiService extends ChangeNotifier {
     if (libraryRepo.isInLibrary(mangaId)) return true;
     if (!isLoggedIn || ConnectivityService.instance.isOffline) return false;
     try {
+      final encodedId = Uri.encodeComponent(mangaId);
       final res = await httpManager.client
           .get(
-            Uri.parse('$_baseUrl/library/check/$mangaId'),
+            Uri.parse('$_baseUrl/library/check/$encodedId'),
             headers: auth.headers(withAuth: true),
           )
           .timeout(const Duration(seconds: 6));
@@ -612,9 +618,10 @@ class ApiService extends ChangeNotifier {
 
     Future<Map<String, dynamic>> fetchCloudProgress() async {
       try {
+        final encodedId = Uri.encodeComponent(mangaId);
         final res = await httpManager.client
             .get(
-              Uri.parse('$_baseUrl/progress/manga/$mangaId'),
+              Uri.parse('$_baseUrl/progress/manga/$encodedId'),
               headers: auth.headers(withAuth: true),
             )
             .timeout(const Duration(seconds: 6));
@@ -1192,18 +1199,28 @@ class ApiService extends ChangeNotifier {
     int restoredHistory = 0;
     int restoredCategories = 0;
 
+    final categoryIdRemap = <String, String>{};
     if (data['categories'] is List) {
-      final existingIds = libraryRepo.getCategories().map((c) => c.id).toSet();
+      final existingById = {
+        for (final c in libraryRepo.getCategories()) c.id: c,
+      };
       for (final item in data['categories'] as List) {
         if (item is Map) {
           final cat = CategoryItem.fromJson(Map<String, dynamic>.from(item));
-          if (cat.name.isNotEmpty && !existingIds.contains(cat.id)) {
+          if (cat.name.isEmpty) continue;
+          if (existingById.containsKey(cat.id)) {
+            categoryIdRemap[cat.id] = cat.id;
+          } else {
             final existingByName = libraryRepo
                 .getCategories()
                 .where((c) => c.name.toLowerCase() == cat.name.toLowerCase())
                 .firstOrNull;
-            if (existingByName == null) {
-              await libraryRepo.createCategory(cat.name);
+            if (existingByName != null) {
+              categoryIdRemap[cat.id] = existingByName.id;
+            } else {
+              final created = await libraryRepo.createCategory(cat.name);
+              categoryIdRemap[cat.id] = created.id;
+              existingById[created.id] = created;
               restoredCategories++;
             }
           }
@@ -1225,14 +1242,23 @@ class ApiService extends ChangeNotifier {
 
     if (data['mangaCategories'] is Map) {
       final map = data['mangaCategories'] as Map;
-      map.forEach((mangaId, cats) {
+      for (final entry in map.entries) {
+        final mangaId = entry.key;
+        final cats = entry.value;
         if (mangaId is String && cats is List) {
-          final catIds = cats.map((e) => e.toString()).toList();
+          final catIds = cats
+              .map((e) {
+                final oldId = e.toString();
+                return categoryIdRemap[oldId] ?? oldId;
+              })
+              .where((id) => id.isNotEmpty)
+              .toSet()
+              .toList();
           if (catIds.isNotEmpty) {
-            unawaited(libraryRepo.setMangaCategories(mangaId, catIds));
+            await libraryRepo.setMangaCategories(mangaId, catIds);
           }
         }
-      });
+      }
     }
 
     if (data['readChapters'] is Map) {
@@ -1318,6 +1344,55 @@ class ApiService extends ChangeNotifier {
       'history': restoredHistory,
       'categories': restoredCategories,
     };
+  }
+
+  /// Exports a Mihon / Tachiyomi compatible gzipped `.tachibk` protobuf backup.
+  Future<Uint8List> exportTachibkBytes() async {
+    return TachibkBackupService.encodeTachibk(
+      library: libraryRepo.localLibrary.values.toList(),
+      categories: libraryRepo.getCategories(),
+      mangaCategories: libraryRepo.mangaCategories,
+      readChapters: historyRepo.readChapters,
+      chapterBookmarks: historyRepo.bookmarkedChapterIds,
+    );
+  }
+
+  /// Exports a compressed Shiori JSON backup (`.shiori.json.gz`).
+  Future<Uint8List> exportCompressedBackupBytes() async {
+    final jsonStr = await exportBackupJson();
+    return Uint8List.fromList(gzip.encode(utf8.encode(jsonStr)));
+  }
+
+  /// Restores either a Mihon/Tachiyomi `.tachibk` protobuf backup, a gzipped
+  /// Shiori JSON backup, or plain UTF-8 Shiori JSON backup automatically.
+  Future<Map<String, int>> restoreBackupBytes(Uint8List rawBytes) async {
+    final bytes = TachibkBackupService.isGzipped(rawBytes)
+        ? Uint8List.fromList(gzip.decode(rawBytes))
+        : rawBytes;
+    // Detect JSON vs Protobuf by first non-whitespace byte
+    var firstNonWs = 0;
+    for (final b in bytes) {
+      if (b != 0x20 && b != 0x09 && b != 0x0A && b != 0x0D) {
+        firstNonWs = b;
+        break;
+      }
+    }
+    if (firstNonWs == 0x7B) {
+      // '{' -> Shiori JSON backup
+      return restoreBackupJson(utf8.decode(bytes));
+    }
+    // Otherwise decode as Mihon/Tachiyomi .tachibk protobuf
+    final parsed = TachibkBackupService.decodeTachibk(bytes);
+    final syntheticJson = jsonEncode({
+      'format': 'shiori_backup',
+      'version': 2,
+      'categories': parsed.categories.map((c) => c.toJson()).toList(),
+      'library': parsed.library.map((m) => m.toJson()).toList(),
+      'mangaCategories': parsed.mangaCategories,
+      'readChapters': parsed.readChapters,
+      'chapterBookmarks': parsed.chapterBookmarks,
+    });
+    return restoreBackupJson(syntheticJson);
   }
 
   // ---- Cache Eviction (#10) ----

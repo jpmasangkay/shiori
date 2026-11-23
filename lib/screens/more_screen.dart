@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
 import '../services/download_service.dart';
+import '../services/privacy_service.dart';
 import '../services/reader_settings.dart';
 import '../services/source_manager.dart';
 import '../services/tracker_service.dart';
@@ -12,6 +13,8 @@ import 'backup_screen.dart';
 import 'display_sheet.dart';
 import 'download_manager_screen.dart';
 import 'extensions_screen.dart';
+import 'reader_settings_screen.dart';
+import 'stats_screen.dart';
 
 class MoreScreen extends StatefulWidget {
   const MoreScreen({super.key});
@@ -27,6 +30,8 @@ class _MoreScreenState extends State<MoreScreen> {
     ApiService.instance.addListener(_onChange);
     DownloadService.instance.addListener(_onChange);
     TrackerService.instance.addListener(_onChange);
+    PrivacyService.instance.addListener(_onChange);
+    ThemeController.instance.addListener(_onChange);
     ApiService.instance.checkHealth();
   }
 
@@ -35,6 +40,8 @@ class _MoreScreenState extends State<MoreScreen> {
     ApiService.instance.removeListener(_onChange);
     DownloadService.instance.removeListener(_onChange);
     TrackerService.instance.removeListener(_onChange);
+    PrivacyService.instance.removeListener(_onChange);
+    ThemeController.instance.removeListener(_onChange);
     super.dispose();
   }
 
@@ -51,14 +58,18 @@ class _MoreScreenState extends State<MoreScreen> {
     final downloadedCount = ds.downloadedChapters.length;
     final totalDownloadBytes = ds.getTotalDownloadSizeBytes();
     final tracker = TrackerService.instance;
+    final privacy = PrivacyService.instance;
+    final themeCtrl = ThemeController.instance;
 
     return Column(
       children: [
         const AppTopBar(title: 'More', branded: true),
         Expanded(
-          child: ListView(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            children: [
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
               // User Account Card
               Container(
                 padding: const EdgeInsets.all(16),
@@ -74,10 +85,16 @@ class _MoreScreenState extends State<MoreScreen> {
                       children: [
                         CircleAvatar(
                           radius: 24,
-                          backgroundColor: loggedIn ? AppColors.active : AppColors.surfaceHigh,
+                          backgroundColor: loggedIn
+                              ? AppColors.active
+                              : AppColors.surfaceHigh,
                           child: Icon(
-                            loggedIn ? Icons.person_rounded : Icons.person_outline_rounded,
-                            color: loggedIn ? AppColors.primary : AppColors.muted,
+                            loggedIn
+                                ? Icons.person_rounded
+                                : Icons.person_outline_rounded,
+                            color: loggedIn
+                                ? AppColors.primary
+                                : AppColors.muted,
                             size: 26,
                           ),
                         ),
@@ -88,7 +105,9 @@ class _MoreScreenState extends State<MoreScreen> {
                             children: [
                               Text(
                                 loggedIn
-                                    ? (user?.displayName.isNotEmpty == true ? user!.displayName : user!.email)
+                                    ? (user?.displayName.isNotEmpty == true
+                                          ? user!.displayName
+                                          : user!.email)
                                     : 'Guest User',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
@@ -96,7 +115,9 @@ class _MoreScreenState extends State<MoreScreen> {
                               ),
                               const SizedBox(height: 3),
                               Text(
-                                loggedIn ? user!.email : 'Sign in to sync your library across devices',
+                                loggedIn
+                                    ? user!.email
+                                    : 'Sign in to sync your library across devices',
                                 maxLines: 2,
                                 overflow: TextOverflow.ellipsis,
                                 style: AppText.caption,
@@ -146,7 +167,10 @@ class _MoreScreenState extends State<MoreScreen> {
                           }
 
                           return Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
                             margin: const EdgeInsets.only(bottom: 12),
                             decoration: BoxDecoration(
                               color: AppColors.surfaceHigh,
@@ -159,19 +183,31 @@ class _MoreScreenState extends State<MoreScreen> {
                                 Expanded(
                                   child: Text(
                                     label,
-                                    style: AppText.caption.copyWith(color: color, fontWeight: FontWeight.w500),
+                                    style: AppText.caption.copyWith(
+                                      color: color,
+                                      fontWeight: FontWeight.w500,
+                                    ),
                                   ),
                                 ),
                                 Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
                                   decoration: BoxDecoration(
-                                    color: AppColors.primary.withValues(alpha: 0.12),
+                                    color: AppColors.primary.withValues(
+                                      alpha: 0.12,
+                                    ),
                                     borderRadius: BorderRadius.circular(4),
                                   ),
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(Icons.cloud_done_rounded, size: 14, color: AppColors.primary),
+                                      const Icon(
+                                        Icons.cloud_done_rounded,
+                                        size: 14,
+                                        color: AppColors.primary,
+                                      ),
                                       const SizedBox(width: 4),
                                       Text(
                                         'Auto-Sync Active',
@@ -197,7 +233,11 @@ class _MoreScreenState extends State<MoreScreen> {
                                 if (context.mounted) {
                                   ScaffoldMessenger.of(context).showSnackBar(
                                     SnackBar(
-                                      content: Text(ok ? 'Sync completed successfully' : 'Sync error. Please check network.'),
+                                      content: Text(
+                                        ok
+                                            ? 'Sync completed successfully'
+                                            : 'Sync error. Please check network.',
+                                      ),
                                       backgroundColor: AppColors.surfaceHigh,
                                       duration: const Duration(seconds: 2),
                                     ),
@@ -208,8 +248,12 @@ class _MoreScreenState extends State<MoreScreen> {
                               label: const Text('Sync Now'),
                               style: FilledButton.styleFrom(
                                 minimumSize: const Size.fromHeight(42),
-                                padding: const EdgeInsets.symmetric(vertical: 8),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 8,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
                               ),
                             ),
                           ),
@@ -218,14 +262,22 @@ class _MoreScreenState extends State<MoreScreen> {
                             child: OutlinedButton(
                               onPressed: _confirmLogout,
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(color: AppColors.outline),
+                                side: const BorderSide(
+                                  color: AppColors.outline,
+                                ),
                                 minimumSize: const Size.fromHeight(42),
-                                padding: const EdgeInsets.symmetric(vertical: 8),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                padding: const EdgeInsets.symmetric(
+                                  vertical: 8,
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
                               ),
                               child: Text(
                                 'Sign Out',
-                                style: AppText.bodyMedium.copyWith(color: AppColors.muted),
+                                style: AppText.bodyMedium.copyWith(
+                                  color: AppColors.muted,
+                                ),
                               ),
                             ),
                           ),
@@ -239,21 +291,51 @@ class _MoreScreenState extends State<MoreScreen> {
                           foregroundColor: AppColors.onPrimary,
                           minimumSize: const Size.fromHeight(44),
                           padding: const EdgeInsets.symmetric(vertical: 10),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
                         ),
                         child: Text(
                           'Sign In / Create Account',
-                          style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary),
+                          style: AppText.bodySemiBold.copyWith(
+                            color: AppColors.onPrimary,
+                          ),
                         ),
                       ),
                   ],
                 ),
               ),
 
-              const SizedBox(height: 22),
+              const SizedBox(height: 16),
 
-              // Offline Downloads
-              _sectionHeader('DOWNLOADS & OFFLINE'),
+              // Quick Incognito Toggle
+              _settingTile(
+                icon: Icons.visibility_off_outlined,
+                title: 'Incognito Mode',
+                subtitle: privacy.incognitoMode
+                    ? 'Active • History & tracker sync are paused'
+                    : 'Pauses reading history and tracker updates',
+                trailing: Switch(
+                  value: privacy.incognitoMode,
+                  activeThumbColor: AppColors.primary,
+                  onChanged: (v) => privacy.setIncognitoMode(v),
+                ),
+                onTap: () => privacy.setIncognitoMode(!privacy.incognitoMode),
+              ),
+
+              const SizedBox(height: 18),
+
+              // Insights & Offline Downloads
+              _sectionHeader('ACTIVITY & OFFLINE'),
+              _settingTile(
+                icon: Icons.bar_chart_rounded,
+                title: 'Reading Statistics',
+                subtitle:
+                    'Chapters read, reading streak, genres & library breakdown',
+                onTap: () => Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const StatsScreen())),
+              ),
               _settingTile(
                 icon: Icons.download_for_offline_rounded,
                 title: 'Download Manager',
@@ -265,30 +347,59 @@ class _MoreScreenState extends State<MoreScreen> {
                   children: [
                     if (ds.activeTasks.isNotEmpty) ...[
                       Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
                         decoration: BoxDecoration(
                           color: AppColors.primary,
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
                           '${ds.activeTasks.length} downloading',
-                          style: AppText.badge.copyWith(color: AppColors.onPrimary),
+                          style: AppText.badge.copyWith(
+                            color: AppColors.onPrimary,
+                          ),
                         ),
                       ),
                       const SizedBox(width: 8),
                     ],
-                    const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.muted),
+                    const Icon(
+                      Icons.arrow_forward_ios_rounded,
+                      size: 14,
+                      color: AppColors.muted,
+                    ),
                   ],
                 ),
                 onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const DownloadManagerScreen()),
+                  MaterialPageRoute(
+                    builder: (_) => const DownloadManagerScreen(),
+                  ),
                 ),
               ),
 
-              const SizedBox(height: 22),
+              const SizedBox(height: 18),
 
-              // Appearance & Display Settings
-              _sectionHeader('READER & DISPLAY'),
+              // Reader & Appearance
+              _sectionHeader('READER & APPEARANCE'),
+              _settingTile(
+                icon: Icons.menu_book_rounded,
+                title: 'Global Reader Settings',
+                subtitle:
+                    'Direction defaults, volume keys, wakelock, double-page & filters',
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute(
+                    builder: (_) => const ReaderSettingsScreen(),
+                  ),
+                ),
+              ),
+              _settingTile(
+                icon: Icons.palette_outlined,
+                title: 'Appearance & Theme',
+                subtitle:
+                    '${themeCtrl.mode.label} • ${themeCtrl.accent.label} accent',
+                onTap: _showAppearanceSheet,
+              ),
               _settingTile(
                 icon: Icons.dashboard_customize_outlined,
                 title: 'Display & Library Settings',
@@ -315,7 +426,7 @@ class _MoreScreenState extends State<MoreScreen> {
                 },
               ),
 
-              const SizedBox(height: 22),
+              const SizedBox(height: 18),
 
               // Tracking Services
               _sectionHeader('TRACKING SERVICES'),
@@ -326,7 +437,10 @@ class _MoreScreenState extends State<MoreScreen> {
                     ? 'Connected as ${tracker.currentUser?.name ?? "User"} • Auto-updates chapters'
                     : 'Sync reading progress automatically to AniList',
                 trailing: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: tracker.isAuthenticated
                         ? Colors.greenAccent.withValues(alpha: .15)
@@ -336,23 +450,80 @@ class _MoreScreenState extends State<MoreScreen> {
                   child: Text(
                     tracker.isAuthenticated ? 'CONNECTED' : 'CONNECT',
                     style: AppText.badge.copyWith(
-                      color: tracker.isAuthenticated ? Colors.greenAccent : AppColors.primary,
+                      color: tracker.isAuthenticated
+                          ? Colors.greenAccent
+                          : AppColors.primary,
                     ),
                   ),
                 ),
                 onTap: _showTrackerSheet,
               ),
+              _settingTile(
+                icon: Icons.track_changes_rounded,
+                title: 'MyAnimeList (OAuth2 PKCE)',
+                subtitle: tracker.isTrackerAuthenticated('myanimelist')
+                    ? 'Connected as ${tracker.getTrackerUsername('myanimelist') ?? 'MAL User'}'
+                    : 'Sign in with MyAnimeList to auto-sync chapters & scores',
+                trailing: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: tracker.isTrackerAuthenticated('myanimelist')
+                        ? Colors.greenAccent.withValues(alpha: .15)
+                        : AppColors.surfaceHigh,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    tracker.isTrackerAuthenticated('myanimelist')
+                        ? 'CONNECTED'
+                        : 'SIGN IN',
+                    style: AppText.badge.copyWith(
+                      color: tracker.isTrackerAuthenticated('myanimelist')
+                          ? Colors.greenAccent
+                          : AppColors.primary,
+                    ),
+                  ),
+                ),
+                onTap: () async {
+                  if (tracker.isTrackerAuthenticated('myanimelist')) {
+                    await tracker.logoutTracker('myanimelist');
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Disconnected from MyAnimeList'),
+                        ),
+                      );
+                    }
+                  } else {
+                    final ok = await tracker.startMalOAuthFlow();
+                    if (!ok && context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Could not open browser for MyAnimeList OAuth.',
+                          ),
+                        ),
+                      );
+                    }
+                  }
+                },
+              ),
 
               // Sources & Extensions (Android only; iOS uses built-in Direct Sources in Browse)
               if (!SourceManager.isIOSPlatform) ...[
-                const SizedBox(height: 22),
+                const SizedBox(height: 18),
                 _sectionHeader('EXTENSIONS'),
                 _settingTile(
                   icon: Icons.extension_outlined,
                   title: 'Extensions',
                   subtitle: 'Manage installed Tachiyomi / Keiyoushi extensions',
                   trailing: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.active,
                       borderRadius: BorderRadius.circular(6),
@@ -368,7 +539,29 @@ class _MoreScreenState extends State<MoreScreen> {
                 ),
               ],
 
-              const SizedBox(height: 22),
+              const SizedBox(height: 18),
+
+              // Privacy, Security & Networking
+              _sectionHeader('PRIVACY & NETWORK'),
+              _settingTile(
+                icon: Icons.lock_outline_rounded,
+                title: 'Security & App Lock',
+                subtitle: privacy.appLockEnabled
+                    ? 'App Lock active${privacy.secureScreen ? ' • Secure Screen on' : ''}'
+                    : (privacy.secureScreen
+                          ? 'Secure Screen enabled'
+                          : 'Biometric lock, PIN & screenshot protection'),
+                onTap: _showSecuritySheet,
+              ),
+              _settingTile(
+                icon: Icons.dns_outlined,
+                title: 'Networking & Sync Server',
+                subtitle:
+                    'DoH: ${privacy.dohProvider.toUpperCase()} • Custom sync host',
+                onTap: _showNetworkingSheet,
+              ),
+
+              const SizedBox(height: 18),
 
               // Data & Backup (Cloud sync entry hidden when signed in; silent background sync)
               _sectionHeader('DATA & BACKUP'),
@@ -376,9 +569,13 @@ class _MoreScreenState extends State<MoreScreen> {
                 _settingTile(
                   icon: Icons.cloud_upload_outlined,
                   title: 'Sign in to sync',
-                  subtitle: 'Save bookmarks & history to the cloud across devices',
+                  subtitle:
+                      'Save bookmarks & history to the cloud across devices',
                   trailing: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
                       color: AppColors.surfaceHigh,
                       borderRadius: BorderRadius.circular(6),
@@ -393,42 +590,402 @@ class _MoreScreenState extends State<MoreScreen> {
               _settingTile(
                 icon: Icons.sync_alt_rounded,
                 title: 'Offline Backup & File Export',
-                subtitle: 'Optional JSON file export for offline local storage',
-                trailing: const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: AppColors.muted),
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => const BackupScreen()),
+                subtitle:
+                    'Export/import .tachibk, .shiori.json.gz & automatic snapshots',
+                trailing: const Icon(
+                  Icons.arrow_forward_ios_rounded,
+                  size: 14,
+                  color: AppColors.muted,
                 ),
+                onTap: () => Navigator.of(
+                  context,
+                ).push(MaterialPageRoute(builder: (_) => const BackupScreen())),
               ),
 
-              const SizedBox(height: 22),
+              const SizedBox(height: 18),
 
               // Storage & Cache
               _sectionHeader('STORAGE & CACHE'),
               _settingTile(
                 icon: Icons.cleaning_services_outlined,
                 title: 'Clear Cache',
-                subtitle: 'Free up local cover and reader cache',
+                subtitle:
+                    'Free up local cover and reader cache (${ds.formatBytes(totalDownloadBytes)} downloaded)',
                 onTap: () async {
                   await ApiService.instance.clearAllCaches();
                   if (context.mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Cache cleared successfully.')),
+                      const SnackBar(
+                        content: Text('Cache cleared successfully.'),
+                      ),
                     );
                   }
                 },
               ),
 
-              const SizedBox(height: 32),
+              const SizedBox(height: 28),
               Center(
                 child: Text(
-                  'Shiori v1.0.0 • Material 3 Dark',
+                  'Shiori v1.0.0 • Material 3',
                   style: AppText.caption.copyWith(color: AppColors.read),
                 ),
               ),
             ],
+            ),
           ),
         ),
       ],
+    );
+  }
+
+  void _showAppearanceSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => ListenableBuilder(
+        listenable: ThemeController.instance,
+        builder: (ctx, _) {
+          final tc = ThemeController.instance;
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Appearance & Theme', style: AppText.sheetTitle),
+                  const SizedBox(height: 14),
+                  Text('THEME SURFACE', style: AppText.sectionHeader),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final mode in ShioriThemeMode.values)
+                        ChoiceChip(
+                          label: Text(mode.label),
+                          selected: tc.mode == mode,
+                          onSelected: (_) => tc.setThemeMode(mode),
+                          selectedColor: AppColors.active,
+                          backgroundColor: AppColors.surfaceHigh,
+                          labelStyle: AppText.chip.copyWith(
+                            color: tc.mode == mode
+                                ? AppColors.primary
+                                : AppColors.muted,
+                          ),
+                          showCheckmark: false,
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  Text('ACCENT COLOR', style: AppText.sectionHeader),
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final acc in ShioriAccent.values)
+                        ChoiceChip(
+                          avatar: CircleAvatar(
+                            radius: 8,
+                            backgroundColor: acc.primary,
+                          ),
+                          label: Text(acc.label),
+                          selected: tc.accent == acc,
+                          onSelected: (_) => tc.setAccent(acc),
+                          selectedColor: acc.primary.withValues(alpha: 0.22),
+                          backgroundColor: AppColors.surfaceHigh,
+                          labelStyle: AppText.chip.copyWith(
+                            color: tc.accent == acc
+                                ? acc.primary
+                                : AppColors.muted,
+                          ),
+                          showCheckmark: false,
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _showSecuritySheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => ListenableBuilder(
+        listenable: PrivacyService.instance,
+        builder: (ctx, _) {
+          final p = PrivacyService.instance;
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Security & App Lock', style: AppText.sheetTitle),
+                  const SizedBox(height: 12),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: p.secureScreen,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Secure Screen', style: AppText.bodyMedium),
+                    subtitle: Text(
+                      'Hides app content in recent apps switcher & blocks screenshots',
+                      style: AppText.caption,
+                    ),
+                    onChanged: p.setSecureScreen,
+                  ),
+                  const Divider(color: AppColors.outline),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: p.appLockEnabled,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('App Lock', style: AppText.bodyMedium),
+                    subtitle: Text(
+                      'Require biometric authentication or PIN when resuming Shiori',
+                      style: AppText.caption,
+                    ),
+                    onChanged: p.setAppLockEnabled,
+                  ),
+                  if (p.appLockEnabled) ...[
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      value: p.useBiometric,
+                      activeThumbColor: AppColors.primary,
+                      title: Text(
+                        'Biometric Unlock',
+                        style: AppText.bodyMedium,
+                      ),
+                      subtitle: Text(
+                        'Fingerprint / Face unlock when available',
+                        style: AppText.caption,
+                      ),
+                      onChanged: p.setUseBiometric,
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text(
+                        p.hasPin ? 'Change Fallback PIN' : 'Set Fallback PIN',
+                        style: AppText.bodyMedium,
+                      ),
+                      subtitle: Text(
+                        p.hasPin
+                            ? 'PIN configured (SHA-256 protected)'
+                            : 'Recommended if biometrics are unavailable',
+                        style: AppText.caption,
+                      ),
+                      trailing: const Icon(
+                        Icons.pin_outlined,
+                        color: AppColors.primary,
+                      ),
+                      onTap: () => _promptSetPin(ctx),
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('Lock Timeout', style: AppText.bodyMedium),
+                      subtitle: Text(
+                        p.lockTimeoutSeconds == 0
+                            ? 'Immediately'
+                            : '${p.lockTimeoutSeconds} seconds after leaving app',
+                        style: AppText.caption.copyWith(
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      trailing: DropdownButton<int>(
+                        value:
+                            const [
+                              0,
+                              30,
+                              60,
+                              300,
+                            ].contains(p.lockTimeoutSeconds)
+                            ? p.lockTimeoutSeconds
+                            : 0,
+                        dropdownColor: AppColors.surfaceHigh,
+                        underline: const SizedBox(),
+                        style: AppText.body,
+                        items: const [
+                          DropdownMenuItem(value: 0, child: Text('Always')),
+                          DropdownMenuItem(value: 30, child: Text('30s')),
+                          DropdownMenuItem(value: 60, child: Text('1 min')),
+                          DropdownMenuItem(value: 300, child: Text('5 min')),
+                        ],
+                        onChanged: (v) {
+                          if (v != null) p.setLockTimeoutSeconds(v);
+                        },
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _promptSetPin(BuildContext sheetCtx) {
+    final pinCtrl = TextEditingController();
+    showDialog<void>(
+      context: sheetCtx,
+      builder: (dCtx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('Set App Lock PIN', style: AppText.sheetTitle),
+        content: TextField(
+          controller: pinCtrl,
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          maxLength: 8,
+          autofocus: true,
+          style: AppText.body,
+          decoration: const InputDecoration(hintText: '4–8 digits'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dCtx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              final pin = pinCtrl.text.trim();
+              if (pin.length < 4) return;
+              await PrivacyService.instance.setPin(pin);
+              if (dCtx.mounted) Navigator.pop(dCtx);
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('App Lock PIN saved securely.')),
+                );
+              }
+            },
+            child: const Text('Save PIN'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showNetworkingSheet() {
+    final urlCtrl = TextEditingController(text: ApiService.instance.baseUrl);
+    const dohProviders = [
+      ('none', 'System Default (Off)'),
+      ('cloudflare', 'Cloudflare (1.1.1.1)'),
+      ('google', 'Google (8.8.8.8)'),
+      ('quad9', 'Quad9 (9.9.9.9)'),
+      ('adguard', 'AdGuard DNS'),
+    ];
+
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => ListenableBuilder(
+        listenable: PrivacyService.instance,
+        builder: (ctx, _) {
+          final p = PrivacyService.instance;
+          return SafeArea(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.fromLTRB(
+                20,
+                20,
+                20,
+                MediaQuery.viewInsetsOf(ctx).bottom + 20,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Networking & Sync Server', style: AppText.sheetTitle),
+                  const SizedBox(height: 14),
+                  Text(
+                    'DNS OVER HTTPS (ANDROID EXTENSIONS)',
+                    style: AppText.sectionHeader,
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      for (final (id, label) in dohProviders)
+                        ChoiceChip(
+                          label: Text(label),
+                          selected: p.dohProvider == id,
+                          onSelected: (_) => p.setDohProvider(id),
+                          selectedColor: AppColors.active,
+                          backgroundColor: AppColors.surfaceHigh,
+                          labelStyle: AppText.chip.copyWith(
+                            color: p.dohProvider == id
+                                ? AppColors.primary
+                                : AppColors.muted,
+                          ),
+                          showCheckmark: false,
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 18),
+                  Text('SYNC BACKEND HOST URL', style: AppText.sectionHeader),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: urlCtrl,
+                    style: AppText.mono,
+                    decoration: InputDecoration(
+                      hintText: 'https://your-shiori-server.example/api',
+                      filled: true,
+                      fillColor: AppColors.surfaceHigh,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: () async {
+                      final u = urlCtrl.text.trim();
+                      if (u.startsWith('http://') || u.startsWith('https://')) {
+                        await ApiService.instance.setBaseUrl(u);
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Sync server updated to ${ApiService.instance.baseUrl}',
+                              ),
+                            ),
+                          );
+                        }
+                      }
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: AppColors.primary,
+                      foregroundColor: AppColors.onPrimary,
+                      minimumSize: const Size.fromHeight(44),
+                    ),
+                    child: const Text('Save Backend URL'),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -437,7 +994,7 @@ class _MoreScreenState extends State<MoreScreen> {
     final tokenController = TextEditingController();
     var isSubmitting = false;
 
-    showModalBottomSheet(
+    showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.surface,
       isScrollControlled: true,
@@ -469,17 +1026,18 @@ class _MoreScreenState extends State<MoreScreen> {
                           color: const Color(0xFF02A9FF).withValues(alpha: .2),
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(Icons.sync_rounded, color: Color(0xFF02A9FF), size: 24),
+                        child: const Icon(
+                          Icons.sync_rounded,
+                          color: Color(0xFF02A9FF),
+                          size: 24,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              'AniList Tracking',
-                              style: AppText.sheetTitle,
-                            ),
+                            Text('AniList Tracking', style: AppText.sheetTitle),
                             const SizedBox(height: 2),
                             Text(
                               'Automatically update read chapters on AniList',
@@ -502,8 +1060,12 @@ class _MoreScreenState extends State<MoreScreen> {
                         children: [
                           CircleAvatar(
                             radius: 20,
-                            backgroundImage: user?.avatarUrl != null ? NetworkImage(user!.avatarUrl!) : null,
-                            child: user?.avatarUrl == null ? const Icon(Icons.person) : null,
+                            backgroundImage: user?.avatarUrl != null
+                                ? NetworkImage(user!.avatarUrl!)
+                                : null,
+                            child: user?.avatarUrl == null
+                                ? const Icon(Icons.person)
+                                : null,
                           ),
                           const SizedBox(width: 12),
                           Expanded(
@@ -517,14 +1079,22 @@ class _MoreScreenState extends State<MoreScreen> {
                                 const SizedBox(height: 2),
                                 Text(
                                   'Status: Connected',
-                                  style: AppText.caption.copyWith(color: Colors.greenAccent),
+                                  style: AppText.caption.copyWith(
+                                    color: Colors.greenAccent,
+                                  ),
                                 ),
                               ],
                             ),
                           ),
                           IconButton(
-                            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                            icon: const Icon(Icons.logout_rounded, color: Colors.redAccent),
+                            constraints: const BoxConstraints(
+                              minWidth: 44,
+                              minHeight: 44,
+                            ),
+                            icon: const Icon(
+                              Icons.logout_rounded,
+                              color: Colors.redAccent,
+                            ),
                             tooltip: 'Disconnect AniList',
                             onPressed: () async {
                               await tracker.logout();
@@ -566,30 +1136,48 @@ class _MoreScreenState extends State<MoreScreen> {
                                 if (mounted) {
                                   setState(() {});
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('Connected to AniList successfully!')),
+                                    const SnackBar(
+                                      content: Text(
+                                        'Connected to AniList successfully!',
+                                      ),
+                                    ),
                                   );
                                 }
                               }
                             },
                       icon: const Icon(Icons.open_in_browser_rounded, size: 18),
-                      label: Text('Sign in with AniList (OAuth)', style: AppText.bodySemiBold),
+                      label: Text(
+                        'Sign in with AniList (OAuth)',
+                        style: AppText.bodySemiBold,
+                      ),
                       style: FilledButton.styleFrom(
                         backgroundColor: const Color(0xFF02A9FF),
                         foregroundColor: Colors.white,
                         minimumSize: const Size.fromHeight(44),
                         padding: const EdgeInsets.symmetric(vertical: 12),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 16),
                     Row(
                       children: [
-                        const Expanded(child: Divider(color: AppColors.outline)),
+                        const Expanded(
+                          child: Divider(color: AppColors.outline),
+                        ),
                         Padding(
                           padding: const EdgeInsets.symmetric(horizontal: 10),
-                          child: Text('OR USE TOKEN', style: AppText.badge.copyWith(color: AppColors.muted)),
+                          child: Text(
+                            'OR USE TOKEN',
+                            style: AppText.badge.copyWith(
+                              color: AppColors.muted,
+                            ),
+                          ),
                         ),
-                        const Expanded(child: Divider(color: AppColors.outline)),
+                        const Expanded(
+                          child: Divider(color: AppColors.outline),
+                        ),
                       ],
                     ),
                     const SizedBox(height: 14),
@@ -610,7 +1198,10 @@ class _MoreScreenState extends State<MoreScreen> {
                           borderRadius: BorderRadius.circular(10),
                           borderSide: BorderSide.none,
                         ),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
                       ),
                       obscureText: true,
                     ),
@@ -630,7 +1221,9 @@ class _MoreScreenState extends State<MoreScreen> {
                                 if (tok.isEmpty) return;
 
                                 setSheetState(() => isSubmitting = true);
-                                final success = await tracker.loginWithToken(tok);
+                                final success = await tracker.loginWithToken(
+                                  tok,
+                                );
                                 setSheetState(() => isSubmitting = false);
 
                                 if (success) {
@@ -638,13 +1231,21 @@ class _MoreScreenState extends State<MoreScreen> {
                                   if (mounted) {
                                     setState(() {});
                                     ScaffoldMessenger.of(context).showSnackBar(
-                                      const SnackBar(content: Text('Connected to AniList successfully!')),
+                                      const SnackBar(
+                                        content: Text(
+                                          'Connected to AniList successfully!',
+                                        ),
+                                      ),
                                     );
                                   }
                                 } else {
                                   if (ctx.mounted) {
                                     ScaffoldMessenger.of(ctx).showSnackBar(
-                                      const SnackBar(content: Text('Invalid AniList token. Please try again.')),
+                                      const SnackBar(
+                                        content: Text(
+                                          'Invalid AniList token. Please try again.',
+                                        ),
+                                      ),
                                     );
                                   }
                                 }
@@ -653,15 +1254,25 @@ class _MoreScreenState extends State<MoreScreen> {
                           side: const BorderSide(color: Color(0xFF02A9FF)),
                           minimumSize: const Size.fromHeight(44),
                           padding: const EdgeInsets.symmetric(vertical: 12),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
                         ),
                         child: isSubmitting
                             ? const SizedBox(
                                 width: 20,
                                 height: 20,
-                                child: CircularProgressIndicator(color: Color(0xFF02A9FF), strokeWidth: 2),
+                                child: CircularProgressIndicator(
+                                  color: Color(0xFF02A9FF),
+                                  strokeWidth: 2,
+                                ),
                               )
-                            : Text('Connect with Token', style: AppText.bodySemiBold.copyWith(color: const Color(0xFF02A9FF))),
+                            : Text(
+                                'Connect with Token',
+                                style: AppText.bodySemiBold.copyWith(
+                                  color: const Color(0xFF02A9FF),
+                                ),
+                              ),
                       ),
                     ),
                   ],
@@ -677,10 +1288,7 @@ class _MoreScreenState extends State<MoreScreen> {
   Widget _sectionHeader(String text) {
     return Padding(
       padding: const EdgeInsets.only(left: 4, bottom: 8),
-      child: Text(
-        text,
-        style: AppText.sectionHeader,
-      ),
+      child: Text(text, style: AppText.sectionHeader),
     );
   }
 
@@ -733,7 +1341,11 @@ class _MoreScreenState extends State<MoreScreen> {
                     trailing,
                   ] else if (onTap != null) ...[
                     const SizedBox(width: 8),
-                    const Icon(Icons.chevron_right_rounded, color: AppColors.muted, size: 20),
+                    const Icon(
+                      Icons.chevron_right_rounded,
+                      color: AppColors.muted,
+                      size: 20,
+                    ),
                   ],
                 ],
               ),
@@ -746,7 +1358,7 @@ class _MoreScreenState extends State<MoreScreen> {
 
   void _confirmLogout() {
     var clearLocalData = false;
-    showDialog(
+    showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -766,8 +1378,14 @@ class _MoreScreenState extends State<MoreScreen> {
                 contentPadding: EdgeInsets.zero,
                 value: clearLocalData,
                 activeColor: AppColors.primary,
-                title: Text('Clear local library & history from this device', style: AppText.bodyMedium),
-                subtitle: Text('Removes cached local data from this device for privacy. Cloud backup remains intact.', style: AppText.caption),
+                title: Text(
+                  'Clear local library & history from this device',
+                  style: AppText.bodyMedium,
+                ),
+                subtitle: Text(
+                  'Removes cached local data from this device for privacy. Cloud backup remains intact.',
+                  style: AppText.caption,
+                ),
                 onChanged: (val) {
                   setDialogState(() => clearLocalData = val ?? false);
                 },
@@ -778,7 +1396,10 @@ class _MoreScreenState extends State<MoreScreen> {
             TextButton(
               onPressed: () => Navigator.pop(ctx),
               style: TextButton.styleFrom(minimumSize: const Size(44, 44)),
-              child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+              child: Text(
+                'Cancel',
+                style: AppText.bodyMedium.copyWith(color: AppColors.muted),
+              ),
             ),
             FilledButton(
               onPressed: () {
@@ -789,7 +1410,12 @@ class _MoreScreenState extends State<MoreScreen> {
                 backgroundColor: AppColors.primary,
                 minimumSize: const Size(64, 44),
               ),
-              child: Text('Sign Out', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
+              child: Text(
+                'Sign Out',
+                style: AppText.bodySemiBold.copyWith(
+                  color: AppColors.onPrimary,
+                ),
+              ),
             ),
           ],
         ),

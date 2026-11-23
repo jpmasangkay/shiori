@@ -5,6 +5,7 @@ import '../services/extension_service.dart';
 import '../services/source_manager.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/extension_sheets.dart';
 import '../widgets/skeleton.dart';
 import 'source_catalog_screen.dart';
 
@@ -50,81 +51,152 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
 
   void _addRepoDialog() {
     final controller = TextEditingController(text: _service.repoUrl);
-    showDialog(
+    final extraController = TextEditingController();
+    showDialog<void>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        scrollable: true,
-        title: Row(
-          children: [
-            const Icon(Icons.hub_rounded, color: AppColors.primary, size: 20),
-            const SizedBox(width: 8),
-            Expanded(
-              child: Text(
-                'Extension Repository',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppText.sheetTitle,
-              ),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Keiyoushi repo.json / index_v2 (index.pb):',
-              style: AppText.caption.copyWith(color: AppColors.muted),
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: controller,
-              style: AppText.body,
-              maxLines: 2,
-              decoration: InputDecoration(
-                hintText: 'https://raw.githubusercontent.com/keiyoushi/extensions/repo/repo.json',
-                hintStyle: AppText.caption.copyWith(color: AppColors.read),
-                filled: true,
-                fillColor: AppColors.surfaceHigh,
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-              ),
-            ),
-            const SizedBox(height: 8),
-            if (_service.repoMetadata != null && _service.repoMetadata!.signingKeyFingerprint.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 6),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          scrollable: true,
+          title: Row(
+            children: [
+              const Icon(Icons.hub_rounded, color: AppColors.primary, size: 20),
+              const SizedBox(width: 8),
+              Expanded(
                 child: Text(
-                  'Signing key: ${_service.repoMetadata!.signingKeyFingerprint.substring(0, 16)}…',
-                  style: AppText.mono.copyWith(fontSize: 10.5, color: AppColors.muted),
+                  'Extension Repositories',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.sheetTitle,
                 ),
               ),
-            Text(
-              'Supports Keiyoushi repo.json (index_v2 protobuf) with 1,400+ extensions and PackageInstaller support.',
-              style: AppText.caption.copyWith(color: AppColors.muted, fontStyle: FontStyle.italic),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Primary Repository (Keiyoushi repo.json / index.pb):',
+                style: AppText.caption.copyWith(color: AppColors.muted),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: controller,
+                style: AppText.body,
+                maxLines: 2,
+                decoration: InputDecoration(
+                  hintText: 'https://raw.githubusercontent.com/keiyoushi/extensions/repo/repo.json',
+                  hintStyle: AppText.caption.copyWith(color: AppColors.read),
+                  filled: true,
+                  fillColor: AppColors.surfaceHigh,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                ),
+              ),
+              const SizedBox(height: 8),
+              if (_service.repoMetadata != null && _service.repoMetadata!.signingKeyFingerprint.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text(
+                    'Signing key: ${_service.repoMetadata!.signingKeyFingerprint.substring(0, 16)}…',
+                    style: AppText.mono.copyWith(fontSize: 10.5, color: AppColors.muted),
+                  ),
+                ),
+              const Divider(color: AppColors.outline, height: 22),
+              Text(
+                'Additional Repositories (${_service.extraRepoUrls.length}):',
+                style: AppText.caption.copyWith(color: AppColors.muted),
+              ),
+              const SizedBox(height: 8),
+              for (final extra in _service.extraRepoUrls)
+                Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AppColors.surfaceHigh,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          extra,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.mono.copyWith(fontSize: 11),
+                        ),
+                      ),
+                      IconButton(
+                        constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+                        padding: EdgeInsets.zero,
+                        icon: const Icon(Icons.close_rounded, size: 16, color: Colors.redAccent),
+                        onPressed: () async {
+                          await _service.removeExtraRepoUrl(extra);
+                          setDlg(() {});
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: extraController,
+                      style: AppText.body,
+                      decoration: InputDecoration(
+                        hintText: 'https://.../index.min.json or repo.json',
+                        hintStyle: AppText.caption.copyWith(color: AppColors.read),
+                        filled: true,
+                        fillColor: AppColors.surfaceHigh,
+                        isDense: true,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle_rounded, color: AppColors.primary),
+                    tooltip: 'Add repository',
+                    onPressed: () async {
+                      final u = extraController.text.trim();
+                      if (u.startsWith('http://') || u.startsWith('https://')) {
+                        extraController.clear();
+                        await _service.addExtraRepoUrl(u);
+                        setDlg(() {});
+                      }
+                    },
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Supports Keiyoushi repo.json (index_v2 protobuf) & Mihon index.min.json repositories.',
+                style: AppText.caption.copyWith(color: AppColors.muted, fontStyle: FontStyle.italic),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                controller.text = ExtensionService.defaultRepoUrl;
+              },
+              child: Text('Reset Default', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+            ),
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () {
+                final newUrl = controller.text.trim();
+                Navigator.pop(ctx);
+                _service.setRepoUrl(newUrl);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Syncing repositories...')),
+                );
+              },
+              child: const Text('Save & Sync'),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              controller.text = ExtensionService.defaultRepoUrl;
-            },
-            child: Text('Reset Default', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
-          ),
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          FilledButton(
-            onPressed: () {
-              final newUrl = controller.text.trim();
-              Navigator.pop(ctx);
-              _service.setRepoUrl(newUrl);
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Syncing repository...')),
-              );
-            },
-            child: const Text('Save & Sync'),
-          ),
-        ],
       ),
     );
   }
@@ -416,6 +488,29 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                               style: FilledButton.styleFrom(
                                 backgroundColor: ext.hasUpdate ? AppColors.surfaceHigh : AppColors.primary,
                                 foregroundColor: ext.hasUpdate ? AppColors.primary : AppColors.onPrimary,
+                                minimumSize: const Size.fromHeight(46),
+                                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: () {
+                                Navigator.pop(ctx);
+                                showExtensionPreferencesSheet(
+                                  context,
+                                  pkg: ext.pkg,
+                                  name: ext.name,
+                                );
+                              },
+                              icon: const Icon(Icons.tune_rounded, size: 20),
+                              label: const Text('Extension Settings'),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: AppColors.text,
+                                side: const BorderSide(color: AppColors.outline),
                                 minimumSize: const Size.fromHeight(46),
                                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -1117,6 +1212,17 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                                 'Update',
                                 style: AppText.chip.copyWith(color: AppColors.onPrimary, fontWeight: FontWeight.w700),
                               ),
+                            ),
+                          ),
+                        if (ext.isCompatible)
+                          IconButton(
+                            constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                            icon: const Icon(Icons.tune_rounded, size: 19, color: AppColors.muted),
+                            tooltip: '${ext.name} Settings',
+                            onPressed: () => showExtensionPreferencesSheet(
+                              context,
+                              pkg: ext.pkg,
+                              name: ext.name,
                             ),
                           ),
                         if (ext.isCompatible)

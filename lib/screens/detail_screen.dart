@@ -56,6 +56,8 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _searchingChapters = false;
   String _chapterSearchQuery = '';
   final TextEditingController _chapterSearchController = TextEditingController();
+  List<MangaRecommendation> _recommendations = const [];
+  bool _loadedRecommendations = false;
 
   bool get _hasActiveFilters =>
       _filterDownloaded ||
@@ -349,6 +351,20 @@ class _DetailScreenState extends State<DetailScreen> {
     _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
     _loadChapterFilters();
     _loadMangaData();
+    _loadRecommendations();
+  }
+
+  Future<void> _loadRecommendations() async {
+    if (_loadedRecommendations) return;
+    _loadedRecommendations = true;
+    final title = _manga.displayTitle.trim();
+    if (title.isEmpty || title == 'Untitled') return;
+    try {
+      final recs = await TrackerService.instance.fetchRecommendations(title);
+      if (mounted && recs.isNotEmpty) {
+        setState(() => _recommendations = recs);
+      }
+    } catch (_) {}
   }
 
   @override
@@ -1251,7 +1267,109 @@ class _DetailScreenState extends State<DetailScreen> {
                 );
               },
             ),
+          if (_recommendations.isNotEmpty)
+            SliverToBoxAdapter(child: _recommendationsRail()),
           const SliverToBoxAdapter(child: SizedBox(height: 88)),
+        ],
+      ),
+    );
+  }
+
+  Widget _recommendationsRail() {
+    final targetSource = SourceResolver.isBuiltIn(_manga.source)
+        ? _manga.source
+        : 'mangadex';
+    final targetName = SourceResolver.displayName(targetSource);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.auto_awesome_rounded, size: 15, color: AppColors.primary),
+              const SizedBox(width: 6),
+              Text('SIMILAR MANGA', style: AppText.sectionHeader),
+            ],
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 186,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _recommendations.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 10),
+              itemBuilder: (_, i) {
+                final rec = _recommendations[i];
+                return InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      smoothRoute(
+                        SourceCatalogScreen(
+                          sourceId: targetSource,
+                          sourceName: targetName,
+                          initialQuery: rec.title,
+                        ),
+                      ),
+                    );
+                  },
+                  child: SizedBox(
+                    width: 104,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(8),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                const ColoredBox(color: AppColors.surfaceHigh),
+                                if (rec.coverUrl != null && rec.coverUrl!.isNotEmpty)
+                                  CoverImage(
+                                    imageUrl: rec.coverUrl!,
+                                    mangaId: 'rec_${rec.title.hashCode}',
+                                    memCacheWidth: 160,
+                                    memCacheHeight: 240,
+                                  ),
+                                if (rec.score != null && rec.score! > 0)
+                                  Positioned(
+                                    top: 4,
+                                    right: 4,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withValues(alpha: 0.78),
+                                        borderRadius: BorderRadius.circular(5),
+                                      ),
+                                      child: Text(
+                                        '★ ${rec.score!.toStringAsFixed(1)}',
+                                        style: AppText.badge.copyWith(color: Colors.amber),
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Text(
+                          rec.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption.copyWith(
+                            color: AppColors.text,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
         ],
       ),
     );
@@ -1755,6 +1873,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       SourceCatalogScreen(
                         sourceId: srcId,
                         sourceName: srcName,
+                        initialQuery: t,
                       ),
                     ),
                   );
@@ -1776,14 +1895,14 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
-  void _showScanlatorDialog() {
+  Future<void> _showScanlatorDialog() async {
     final scanlators = _availableScanlators.toList()
       ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
     if (scanlators.isEmpty) return;
 
     final tempExcluded = Set<String>.from(_excludedScanlators);
 
-    showDialog(
+    await showDialog<void>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
@@ -2005,9 +2124,9 @@ class _DetailScreenState extends State<DetailScreen> {
                                         : Text('None available', style: AppText.caption)),
                                 trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
                                 enabled: scanlatorCount > 0,
-                                onTap: () {
-                                  _showScanlatorDialog();
-                                  setSheetState(() {});
+                                onTap: () async {
+                                  await _showScanlatorDialog();
+                                  if (ctx.mounted) setSheetState(() {});
                                 },
                               ),
                             ],

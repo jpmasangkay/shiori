@@ -33,7 +33,7 @@ class MangaItem {
     if (cover.contains('uploads.mangadex.org/covers/') &&
         !cover.contains('.512.jpg') &&
         !cover.contains('.256.jpg')) {
-      cover = '.512.jpg';
+      cover = '$cover.512.jpg';
     }
     final rawTitle = json['title'] as String? ?? '';
     final title = (rawTitle.isNotEmpty &&
@@ -654,6 +654,34 @@ class DuplicateDetector {
     }
 
     return false;
+  }
+
+  /// Returns a canonical O(1)-hashable key with bracketed tags and trailing
+  /// cosmetic descriptors stripped (e.g. "Ao Ashi Digital Colored" -> "ao ashi").
+  static String canonicalKey(String title) {
+    final norm = normalize(title);
+    if (norm.isEmpty) return '';
+    final words = norm.split(' ').where((w) => w.isNotEmpty).toList();
+    while (words.length > 1 && _cosmeticDescriptors.contains(words.last)) {
+      words.removeLast();
+    }
+    return words.join(' ');
+  }
+
+  /// Groups duplicate library entries in O(n) time using [canonicalKey].
+  static Map<String, List<MangaItem>> groupDuplicates(Iterable<MangaItem> library) {
+    final byKey = <String, List<MangaItem>>{};
+    final seenIds = <String>{};
+    for (final item in library) {
+      if (!seenIds.add(item.id)) continue;
+      final key = canonicalKey(item.title);
+      if (key.length < 2) continue;
+      (byKey[key] ??= <MangaItem>[]).add(item);
+    }
+    return {
+      for (final entry in byKey.entries)
+        if (entry.value.length > 1) entry.key: entry.value,
+    };
   }
 
   static List<MangaItem> findDuplicatesInLibrary(

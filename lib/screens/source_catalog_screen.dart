@@ -6,8 +6,12 @@ import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/extension_bridge.dart';
 import '../services/extension_service.dart';
+import '../services/local_source_service.dart';
+import '../services/platform_bridge.dart';
+import '../services/source_resolver.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/extension_sheets.dart';
 import '../widgets/skeleton.dart';
 import 'detail_screen.dart';
 
@@ -18,6 +22,7 @@ class SourceCatalogScreen extends StatefulWidget {
     required this.sourceName,
     this.sourceLang = 'EN',
     this.initialOrder = 'popular',
+    this.initialQuery,
     this.autofocusSearch = false,
   });
 
@@ -25,6 +30,7 @@ class SourceCatalogScreen extends StatefulWidget {
   final String sourceName;
   final String sourceLang;
   final String initialOrder;
+  final String? initialQuery;
   final bool autofocusSearch;
 
   @override
@@ -47,6 +53,13 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   int _page = 1;
   int _fetchToken = 0;
   int _contentGeneration = 0;
+  List<Map<String, dynamic>>? _activeExtensionFilters;
+
+  bool get _isLocalSource => widget.sourceId == 'local';
+  bool get _isAndroidExtension =>
+      !_isLocalSource &&
+      !SourceResolver.isBuiltIn(widget.sourceId) &&
+      ExtensionBridge.instance.isAndroidSupported;
 
   static const _types = [
     ('all', 'All'),
@@ -58,6 +71,9 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.initialQuery != null && widget.initialQuery!.trim().isNotEmpty) {
+      _searchController.text = widget.initialQuery!.trim();
+    }
     _scrollController.addListener(_onScroll);
     ApiService.instance.addListener(_onLibraryChanged);
     _initTypeAndFetch();
@@ -153,28 +169,41 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
 
     try {
       final query = _searchController.text.trim();
-      var results = await ApiService.instance.searchManga(
-        query: query,
-        type: _selectedType == 'all' ? null : _selectedType,
-        order: _selectedOrder,
-        page: 1,
-        limit: 24,
-        source: widget.sourceId,
-      );
-
-      // If user searched for a keyword but the type filter caused 0 results,
-      // fallback to searching all types so titles are never hidden or limited
-      if (results.isEmpty && query.isNotEmpty && _selectedType != 'all') {
-        final allResults = await ApiService.instance.searchManga(
+      List<MangaItem> results;
+      if (_isAndroidExtension &&
+          _activeExtensionFilters != null &&
+          _activeExtensionFilters!.isNotEmpty) {
+        final rawList = await PlatformBridge.instance.searchExtensionWithFilters(
+          pkg: widget.sourceId,
           query: query,
-          type: null,
+          page: 1,
+          filters: _activeExtensionFilters!,
+        );
+        results = _mapFilteredResults(rawList);
+      } else {
+        results = await ApiService.instance.searchManga(
+          query: query,
+          type: _selectedType == 'all' ? null : _selectedType,
           order: _selectedOrder,
           page: 1,
           limit: 24,
           source: widget.sourceId,
         );
-        if (allResults.isNotEmpty) {
-          results = allResults;
+
+        // If user searched for a keyword but the type filter caused 0 results,
+        // fallback to searching all types so titles are never hidden or limited
+        if (results.isEmpty && query.isNotEmpty && _selectedType != 'all') {
+          final allResults = await ApiService.instance.searchManga(
+            query: query,
+            type: null,
+            order: _selectedOrder,
+            page: 1,
+            limit: 24,
+            source: widget.sourceId,
+          );
+          if (allResults.isNotEmpty) {
+            results = allResults;
+          }
         }
       }
 
@@ -245,6 +274,73 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
     }
   }
 
+  List<MangaItem> _mapFilteredResults(List<Map<String, dynamic>> rawList) {
+    final pkg = widget.sourceId;
+    return rawList.map((m) {
+      final rawUrl = m['url']?.toString() ?? '';
+      final id = rawUrl.startsWith('ext:')
+          ? rawUrl
+          : 'ext:$pkg:${Uri.encodeComponent(rawUrl)}';
+      return MangaItem(
+        id: id,
+        title: m['title']?.toString() ?? 'Untitled',
+        cover: m['cover']?.toString() ?? m['thumbnail_url']?.toString() ?? '',
+        description: m['description']?.toString() ?? '',
+        status: m['status']?.toString() ?? '',
+        type: 'manga',
+        source: pkg,
+      );
+    }).toList();
+  }
+
+  Future<void> _openExtensionFilters() async {
+    final result = await showExtensionFiltersSheet(
+      context,
+      pkg: widget.sourceId,
+      name: widget.sourceName,
+      initialFilters: _activeExtensionFilters,
+    );
+    if (result != null && mounted) {
+      setState(() => _activeExtensionFilters = result);
+      _fetch();
+    }
+  }
+
+  Future<void> _openExtensionSettings() async {
+    final changed = await showExtensionPreferencesSheet(
+      context,
+      pkg: widget.sourceId,
+      name: widget.sourceName,
+    );
+    if (changed && mounted) {
+      _fetch(isRefresh: true);
+    }
+  }
+
+  Future<void> _importLocalCbz() async {
+    final picked = await PlatformBridge.instance.pickFile(
+      mimeTypes: const ['application/zip', 'application/x-cbz', 'application/octet-stream', '*/*'],
+    );
+    if (picked == null || !mounted) return;
+    try {
+      final manga = await LocalSourceService.instance.importCbzArchive(
+        fileName: picked.name,
+        bytes: picked.bytes,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Imported "${manga.title}" into Local Source!')),
+      );
+      _fetch(isRefresh: true);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Import failed: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -268,21 +364,44 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           ],
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.public_rounded, size: 20),
-            tooltip: 'Open in WebView',
-            onPressed: () async {
-              final baseUrl = await ExtensionBridge.instance.getSourceBaseUrl(pkg: widget.sourceId);
-              final ext = ExtensionService.instance.getExtensionByPkg(widget.sourceId);
-              final url = (baseUrl != null && baseUrl.isNotEmpty)
-                  ? baseUrl
-                  : (ext != null && ext.homeUrl.isNotEmpty ? ext.homeUrl : null);
-              if (url != null && url.isNotEmpty) {
-                await ExtensionBridge.instance.openInWebView(url: url, title: widget.sourceName);
-                if (mounted) _fetch();
-              }
-            },
-          ),
+          if (_isLocalSource)
+            IconButton(
+              icon: const Icon(Icons.file_upload_outlined, size: 22),
+              tooltip: 'Import .cbz / .zip',
+              onPressed: _importLocalCbz,
+            ),
+          if (_isAndroidExtension) ...[
+            IconButton(
+              icon: Icon(
+                Icons.filter_list_rounded,
+                size: 21,
+                color: _activeExtensionFilters != null ? AppColors.primary : null,
+              ),
+              tooltip: 'Source Filters',
+              onPressed: _openExtensionFilters,
+            ),
+            IconButton(
+              icon: const Icon(Icons.tune_rounded, size: 20),
+              tooltip: 'Source Settings',
+              onPressed: _openExtensionSettings,
+            ),
+          ],
+          if (!_isLocalSource)
+            IconButton(
+              icon: const Icon(Icons.public_rounded, size: 20),
+              tooltip: 'Open in WebView',
+              onPressed: () async {
+                final baseUrl = await ExtensionBridge.instance.getSourceBaseUrl(pkg: widget.sourceId);
+                final ext = ExtensionService.instance.getExtensionByPkg(widget.sourceId);
+                final url = (baseUrl != null && baseUrl.isNotEmpty)
+                    ? baseUrl
+                    : (ext != null && ext.homeUrl.isNotEmpty ? ext.homeUrl : null);
+                if (url != null && url.isNotEmpty) {
+                  await ExtensionBridge.instance.openInWebView(url: url, title: widget.sourceName);
+                  if (mounted) _fetch();
+                }
+              },
+            ),
         ],
       ),
       body: Column(

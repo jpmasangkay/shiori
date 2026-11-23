@@ -3,6 +3,7 @@ import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/http_cache.dart';
 import 'package:manga_reader/services/scrapers/html_scraper_utils.dart';
 
+/// WeebCentral HTML scraper backed by `package:html` standards-compliant DOM parsing.
 class WeebScraper {
   final http.Client Function() _clientProvider;
   final LruHttpCache? _cache;
@@ -11,6 +12,9 @@ class WeebScraper {
 
   http.Client get _client => _clientProvider();
 
+  static const _ua =
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
   Future<http.Response> _getCached(
     Uri uri, {
     Map<String, String>? headers,
@@ -18,11 +22,13 @@ class WeebScraper {
   }) async {
     final key = uri.toString();
     if (_cache != null) {
-      return _cache.deduplicate(key, () async {
-        return await _client.get(uri, headers: headers).timeout(timeout);
-      });
+      return _cache.deduplicate(
+        key,
+        () async => _client.get(uri, headers: headers).timeout(timeout),
+        shouldCache: (r) => r.statusCode == 200,
+      );
     }
-    return await _client.get(uri, headers: headers).timeout(timeout);
+    return _client.get(uri, headers: headers).timeout(timeout);
   }
 
   Future<List<MangaItem>> search({
@@ -32,16 +38,12 @@ class WeebScraper {
     int page = 1,
     int limit = 24,
   }) async {
-    final String typeParam;
-    if (type == 'manhwa') {
-      typeParam = '&included_type=Manhwa';
-    } else if (type == 'manhua') {
-      typeParam = '&included_type=Manhua';
-    } else if (type == 'manga') {
-      typeParam = '&included_type=Manga';
-    } else {
-      typeParam = '';
-    }
+    final String typeParam = switch (type) {
+      'manhwa' => '&included_type=Manhwa',
+      'manhua' => '&included_type=Manhua',
+      'manga' => '&included_type=Manga',
+      _ => '',
+    };
 
     final offset = (page - 1) * limit;
     final String url;
@@ -56,8 +58,7 @@ class WeebScraper {
     final res = await _getCached(
       Uri.parse(url),
       headers: const {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'User-Agent': _ua,
         'Accept': 'text/html',
         'HX-Request': 'true',
         'Referer': 'https://weebcentral.com/search',
@@ -68,33 +69,35 @@ class WeebScraper {
     HtmlScraperUtils.checkResponseHealth(res, 'Weeb Central');
 
     if (res.statusCode == 200) {
-      final html = res.body;
-      final articles = html.split('<article').skip(1);
+      final doc = HtmlScraperUtils.parseDocument(res.body);
+      final seriesRe = RegExp(r'^(?:https://weebcentral\.com)?/series/([A-Z0-9]+)/([^#?]+)');
       final items = <MangaItem>[];
       final seen = <String>{};
 
-      for (final art in articles) {
-        final seriesMatch = RegExp(
-          r'href="(?:https://weebcentral\.com)?/series/([A-Z0-9]+)/([^"#?]+)"',
-        ).firstMatch(art);
-        if (seriesMatch == null) continue;
-        final sId = seriesMatch.group(1)!;
-        final slug = seriesMatch.group(2)!;
+      for (final art in doc.querySelectorAll('article')) {
+        String? sId;
+        String? slug;
+        for (final a in art.querySelectorAll('a[href*="/series/"]')) {
+          final m = seriesRe.firstMatch(a.attributes['href']?.trim() ?? '');
+          if (m != null) {
+            sId = m.group(1);
+            slug = m.group(2);
+            break;
+          }
+        }
+        if (sId == null || slug == null) continue;
         final itemId = 'weeb:$sId:$slug';
         if (!seen.add(itemId)) continue;
 
-        final sourceMatch = RegExp(
-          r'<source[^>]+srcset="([^"]+)"',
-        ).firstMatch(art);
-        final imgTagMatch = RegExp(r'<img\b[^>]*>').firstMatch(art);
+        final sourceEl = art.querySelector('source[srcset]');
         var coverUrl = HtmlScraperUtils.normalizeImgUrl(
-          sourceMatch?.group(1),
+          sourceEl?.attributes['srcset'],
           baseUrl: 'https://weebcentral.com',
           referer: 'https://weebcentral.com/',
         );
-        if (coverUrl.isEmpty && imgTagMatch != null) {
-          final extracted = HtmlScraperUtils.extractImgFromTag(
-            imgTagMatch.group(0)!,
+        if (coverUrl.isEmpty) {
+          final extracted = HtmlScraperUtils.extractImgFromElement(
+            art.querySelector('img'),
             baseUrl: 'https://weebcentral.com',
             referer: 'https://weebcentral.com/',
           );
@@ -107,16 +110,10 @@ class WeebScraper {
           );
         }
 
-        final titleMatch =
-            RegExp(
-              r'<a[^>]+class="[^"]*link-hover[^"]*"[^>]*>([\s\S]*?)</a>',
-            ).firstMatch(art) ??
-            RegExp(
-              r'href="(?:https://weebcentral\.com)?/series/[^/]+/[^"]+">([^<]+)</a>',
-            ).firstMatch(art);
-        final rawTitle =
-            titleMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ??
-            '';
+        final titleEl =
+            art.querySelector('a.link-hover') ??
+            art.querySelector('a[href*="/series/"]');
+        final rawTitle = titleEl?.text.trim() ?? '';
         final title = HtmlScraperUtils.unescapeHtml(
           rawTitle.isNotEmpty ? rawTitle : slug.replaceAll('-', ' '),
         );
@@ -146,39 +143,26 @@ class WeebScraper {
 
     final res = await _getCached(
       Uri.parse(url),
-      headers: const {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
-      },
+      headers: const {'User-Agent': _ua, 'Accept': 'text/html'},
       timeout: const Duration(seconds: 10),
     );
 
     HtmlScraperUtils.checkResponseHealth(res, 'Weeb Central');
 
     if (res.statusCode == 200) {
-      final html = res.body;
-      final titleMatch = RegExp(r'<h1[^>]*>([^<]+)</h1>').firstMatch(html);
+      final doc = HtmlScraperUtils.parseDocument(res.body);
       final title = HtmlScraperUtils.unescapeHtml(
-        titleMatch?.group(1)?.trim() ?? slug.replaceAll('-', ' '),
+        doc.querySelector('h1')?.text.trim() ?? slug.replaceAll('-', ' '),
       );
-
-      final descMatch = RegExp(
-        r'<p class="whitespace-pre-line[^"]*">([\s\S]*?)</p>',
-      ).firstMatch(html);
       final desc = HtmlScraperUtils.unescapeHtml(
-        descMatch?.group(1)?.replaceAll(RegExp(r'<[^>]*>'), '').trim() ?? '',
+        doc.querySelector('p.whitespace-pre-line')?.text.trim() ?? '',
       );
 
-      final picMatch =
-          RegExp(
-            r'<picture[^>]*>[\s\S]*?<source[^>]+srcset="([^"]+)"',
-          ).firstMatch(html) ??
-          RegExp(
-            r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"',
-          ).firstMatch(html);
+      final rawCover =
+          doc.querySelector('picture source[srcset]')?.attributes['srcset'] ??
+          doc.querySelector('meta[property="og:image"]')?.attributes['content'];
       var coverUrl = HtmlScraperUtils.normalizeImgUrl(
-        picMatch?.group(1),
+        rawCover,
         baseUrl: 'https://weebcentral.com',
         referer: 'https://weebcentral.com/',
       );
@@ -189,15 +173,15 @@ class WeebScraper {
         );
       }
 
-      final authors = RegExp(r'href="[^"]*author=[^"]*"[^>]*>([^<]+)</a>')
-          .allMatches(html)
-          .map((m) => HtmlScraperUtils.unescapeHtml(m.group(1)!.trim()))
+      final authors = doc
+          .querySelectorAll('a[href*="author="]')
+          .map((e) => HtmlScraperUtils.unescapeHtml(e.text.trim()))
           .where((s) => s.isNotEmpty)
           .toSet()
           .toList();
-      final tags = RegExp(r'href="[^"]*included_tag=[^"]*"[^>]*>([^<]+)</a>')
-          .allMatches(html)
-          .map((m) => HtmlScraperUtils.unescapeHtml(m.group(1)!.trim()))
+      final tags = doc
+          .querySelectorAll('a[href*="included_tag="]')
+          .map((e) => HtmlScraperUtils.unescapeHtml(e.text.trim()))
           .where((s) => s.isNotEmpty)
           .toSet()
           .toList();
@@ -223,8 +207,7 @@ class WeebScraper {
     final res = await _getCached(
       Uri.parse(url),
       headers: {
-        'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'User-Agent': _ua,
         'Accept': 'text/html',
         'HX-Request': 'true',
         'Referer': 'https://weebcentral.com/series/$sId',
@@ -235,39 +218,37 @@ class WeebScraper {
     HtmlScraperUtils.checkResponseHealth(res, 'Weeb Central');
 
     if (res.statusCode == 200) {
-      final html = res.body;
-      final regex = RegExp(
-        r'<a[^>]+href="(?:https://weebcentral\.com)?/chapters/([A-Z0-9]+)"[^>]*>([\s\S]*?)</a>',
+      final doc = HtmlScraperUtils.parseDocument(res.body);
+      final hrefRe = RegExp(
+        r'^(?:https://weebcentral\.com)?/chapters/([A-Z0-9]+)',
         caseSensitive: false,
       );
-      final matches = regex.allMatches(html);
+      final numRe = RegExp(
+        r'(?:Chapter|Episode|Ch\.?)\s*([\d\.]+)',
+        caseSensitive: false,
+      );
       final list = <ChapterItem>[];
       final seen = <String>{};
 
-      for (final m in matches) {
+      for (final a in doc.querySelectorAll('a[href*="/chapters/"]')) {
+        final href = a.attributes['href']?.trim() ?? '';
+        final m = hrefRe.firstMatch(href);
+        if (m == null) continue;
         final chId = m.group(1)!;
         if (!seen.add(chId)) continue;
-        final block = m.group(2)!;
-        final spanMatch = RegExp(
-          r'<span class="">([^<]+)</span>',
-        ).firstMatch(block);
-        final chText = HtmlScraperUtils.unescapeHtml(
-          (spanMatch?.group(1) ?? block.replaceAll(RegExp(r'<[^>]*>'), ''))
-              .trim(),
-        );
-        final numMatch = RegExp(
-          r'(?:Chapter|Episode|Ch\.?)\s*([\d\.]+)',
-          caseSensitive: false,
-        ).firstMatch(chText);
-        final chNum = numMatch?.group(1);
-        final timeMatch = RegExp(r'datetime="([^"]+)"').firstMatch(block);
+
+        final spanEl = a.querySelector('span[class=""]') ?? a.querySelector('span');
+        final rawText = (spanEl?.text ?? a.text).trim();
+        final chText = HtmlScraperUtils.unescapeHtml(rawText);
+        final chNum = numRe.firstMatch(chText)?.group(1);
+        final publishAt = a.querySelector('time[datetime]')?.attributes['datetime'];
 
         list.add(
           ChapterItem(
             id: 'weeb:$chId',
             number: chNum,
             title: chText.isNotEmpty ? chText : 'Chapter',
-            publishAt: timeMatch?.group(1),
+            publishAt: publishAt,
             group: 'Weeb Central',
             source: 'weebcentral',
           ),
@@ -287,8 +268,7 @@ class WeebScraper {
         .get(
           Uri.parse(url),
           headers: {
-            'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'User-Agent': _ua,
             'Accept': 'text/html',
             'HX-Request': 'true',
             'Referer': 'https://weebcentral.com/chapters/$cleanId',
@@ -299,16 +279,12 @@ class WeebScraper {
     HtmlScraperUtils.checkResponseHealth(res, 'Weeb Central');
 
     if (res.statusCode == 200) {
-      final html = res.body;
-      final imgTags = RegExp(
-        r'<img\b[^>]*>',
-        caseSensitive: false,
-      ).allMatches(html);
+      final doc = HtmlScraperUtils.parseDocument(res.body);
       final pagesList = <String>[];
       final seen = <String>{};
-      for (final m in imgTags) {
-        final u = HtmlScraperUtils.extractImgFromTag(
-          m.group(0)!,
+      for (final img in doc.querySelectorAll('img')) {
+        final u = HtmlScraperUtils.extractImgFromElement(
+          img,
           baseUrl: 'https://weebcentral.com',
           referer: 'https://weebcentral.com/',
         );

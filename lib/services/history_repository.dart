@@ -5,6 +5,8 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/app_logger.dart';
+import 'package:manga_reader/services/local_database.dart';
+import 'package:manga_reader/services/privacy_service.dart';
 
 /// Repository managing reading progress, history entries, chapter bookmarks, and read states
 /// (#1, #3, #4, #6, #18, #31, #33, #34, #38)
@@ -245,9 +247,15 @@ class HistoryRepository extends ChangeNotifier {
     String? baseUrl,
     Map<String, String>? headers,
   }) async {
+    // Incognito mode pauses history, reading progress, and cloud sync writes
+    if (PrivacyService.instance.incognitoMode) return;
+
     if (completed) {
       _readChapters.putIfAbsent(mangaId, () => <String>{}).add(chapterId);
       _persistReadChapters();
+      if (LocalDatabase.instance.isAvailable) {
+        unawaited(LocalDatabase.instance.setChaptersRead(mangaId, [chapterId], true));
+      }
     }
 
     final entry = ReadProgress(
@@ -265,6 +273,9 @@ class HistoryRepository extends ChangeNotifier {
     );
 
     _localProgress[mangaId] = entry;
+    if (LocalDatabase.instance.isAvailable) {
+      unawaited(LocalDatabase.instance.upsertProgress(entry));
+    }
     await _persistLocalProgress();
 
     final histEntry = ReadHistoryEntry(
@@ -567,9 +578,10 @@ class HistoryRepository extends ChangeNotifier {
 
     if (client != null && baseUrl != null && headers != null) {
       try {
+        final encodedId = Uri.encodeComponent(chapterId);
         await client
             .delete(
-              Uri.parse('$baseUrl/progress/history/$chapterId'),
+              Uri.parse('$baseUrl/progress/history/$encodedId'),
               headers: headers,
             )
             .timeout(const Duration(seconds: 8));

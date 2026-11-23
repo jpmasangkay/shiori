@@ -46,7 +46,12 @@ class LruHttpCache {
     _cache[key] = _CacheEntry(data, DateTime.now().add(ttl));
   }
 
-  Future<T> deduplicate<T>(String key, Future<T> Function() fetcher) {
+  Future<T> deduplicate<T>(
+    String key,
+    Future<T> Function() fetcher, {
+    Duration ttl = const Duration(minutes: 15),
+    bool Function(T value)? shouldCache,
+  }) {
     final cached = get(key);
     if (cached != null && cached is T) {
       return Future.value(cached);
@@ -58,6 +63,9 @@ class LruHttpCache {
 
     final future = fetcher().then((res) {
       _inflight.remove(key);
+      if (res != null && (shouldCache == null || shouldCache(res))) {
+        put(key, res, ttl: ttl);
+      }
       return res;
     }).catchError((err, st) {
       _inflight.remove(key);

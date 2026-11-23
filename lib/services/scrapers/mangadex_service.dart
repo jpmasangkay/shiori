@@ -21,18 +21,60 @@ class MangaDexService {
   String get _baseUrl =>
       _baseUrlProvider?.call() ?? 'https://shiori-n5hd.onrender.com/api';
 
+  static const int _maxChapterFeedPages = 30;
+  static const int _chapterFeedPageSize = 100;
+
+  static List<String> contentRatings = ['safe', 'suggestive', 'erotica'];
+  static String defaultLanguage = 'en';
+
   Future<http.Response> _getCached(
     Uri uri, {
     Map<String, String>? headers,
     Duration timeout = const Duration(seconds: 8),
+    Duration ttl = const Duration(minutes: 10),
   }) async {
     final key = uri.toString();
     if (_cache != null) {
-      return _cache.deduplicate(key, () async {
-        return await _client.get(uri, headers: headers).timeout(timeout);
-      });
+      return _cache.deduplicate(
+        key,
+        () async {
+          return await _client.get(uri, headers: headers).timeout(timeout);
+        },
+        ttl: ttl,
+        shouldCache: (res) => res.statusCode == 200,
+      );
     }
     return await _client.get(uri, headers: headers).timeout(timeout);
+  }
+
+  /// Reports MangaDex@Home image load health for decentralized nodes per
+  /// MangaDex API v5 guidelines (never reports core uploads.mangadex.org URLs).
+  Future<void> reportAtHomeResult({
+    required String url,
+    required bool success,
+    int bytes = 0,
+    int durationMs = 0,
+    bool cached = false,
+  }) async {
+    if (url.isEmpty || url.contains('uploads.mangadex.org')) return;
+    try {
+      await _client
+          .post(
+            Uri.parse('https://api.mangadex.network/report'),
+            headers: const {
+              'Content-Type': 'application/json',
+              'User-Agent': 'ShioriApp/1.0',
+            },
+            body: jsonEncode({
+              'url': url,
+              'success': success,
+              'cached': cached,
+              'bytes': bytes,
+              'duration': durationMs,
+            }),
+          )
+          .timeout(const Duration(seconds: 4));
+    } catch (_) {}
   }
 
   Future<List<MangaItem>> searchCatalog({
@@ -170,36 +212,59 @@ class MangaDexService {
 
   Future<List<ChapterItem>> getChapters(
     String actualId, {
-    String lang = 'en',
+    String? lang,
   }) async {
-    // 1. Direct MangaDex API first
+    final effectiveLang = lang ?? defaultLanguage;
+    // 1. Direct MangaDex API first with bounded pagination (up to 3,000 chapters)
     try {
-      final qParams = <String, dynamic>{
-        'limit': '300',
-        'order[chapter]': 'desc',
-        'contentRating[]': ['safe', 'suggestive', 'erotica'],
-        'includes[]': ['scanlation_group'],
-      };
-      if (lang.isNotEmpty && lang != 'all') {
-        qParams['translatedLanguage[]'] = [lang];
-      }
-      final uri = Uri.https(
-        'api.mangadex.org',
-        '/manga/$actualId/feed',
-        qParams,
-      );
-      final res = await _getCached(
-        uri,
-        headers: const {
-          'User-Agent': 'ShioriApp/1.0',
-          'Accept': 'application/json',
-        },
-        timeout: const Duration(seconds: 9),
-      );
-      if (res.statusCode == 200) {
+      final parsed = <ChapterItem>[];
+      var offset = 0;
+      var total = -1;
+
+      for (var page = 0; page < _maxChapterFeedPages; page++) {
+        if (page > 0) {
+          // Stay cleanly below MangaDex's 5 req/s global rate limit
+          await Future<void>.delayed(const Duration(milliseconds: 220));
+        }
+
+        final qParams = <String, dynamic>{
+          'limit': _chapterFeedPageSize.toString(),
+          'offset': offset.toString(),
+          'order[chapter]': 'desc',
+          'contentRating[]': contentRatings,
+          'includes[]': ['scanlation_group'],
+        };
+        if (effectiveLang.isNotEmpty && effectiveLang != 'all') {
+          qParams['translatedLanguage[]'] = [effectiveLang];
+        }
+        final uri = Uri.https(
+          'api.mangadex.org',
+          '/manga/$actualId/feed',
+          qParams,
+        );
+        final res = await _getCached(
+          uri,
+          headers: const {
+            'User-Agent': 'ShioriApp/1.0',
+            'Accept': 'application/json',
+          },
+          timeout: const Duration(seconds: 9),
+          ttl: const Duration(minutes: 5),
+        );
+        if (res.statusCode == 429) {
+          final retryAfter = int.tryParse(res.headers['retry-after'] ?? '') ?? 1;
+          await Future<void>.delayed(Duration(seconds: retryAfter.clamp(1, 3)));
+          break;
+        }
+        if (res.statusCode != 200) {
+          if (parsed.isNotEmpty) return parsed;
+          break;
+        }
+
         final data = jsonDecode(res.body) as Map<String, dynamic>;
         final list = (data['data'] as List<dynamic>?) ?? [];
-        final parsed = <ChapterItem>[];
+        total = (data['total'] as num?)?.toInt() ?? list.length;
+
         for (final c in list) {
           final a = c['attributes'] as Map<String, dynamic>? ?? {};
           final pagesCount = (a['pages'] as num?)?.toInt() ?? 0;
@@ -228,6 +293,14 @@ class MangaDexService {
             ),
           );
         }
+
+        offset += list.length;
+        if (list.length < _chapterFeedPageSize || offset >= total) {
+          break;
+        }
+      }
+
+      if (parsed.isNotEmpty || total == 0) {
         return parsed;
       }
     } catch (_) {}
@@ -236,7 +309,9 @@ class MangaDexService {
     try {
       final uri = Uri.parse(
         '$_baseUrl/manga/$actualId/chapters',
-      ).replace(queryParameters: {if (lang.isNotEmpty) 'lang': lang});
+      ).replace(queryParameters: {
+        if (effectiveLang.isNotEmpty) 'lang': effectiveLang,
+      });
       final res = await _client
           .get(uri, headers: const {'Accept': 'application/json'})
           .timeout(const Duration(seconds: 6));

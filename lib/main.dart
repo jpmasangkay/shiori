@@ -10,6 +10,7 @@ import 'screens/updates_screen.dart';
 import 'services/api_service.dart';
 import 'services/connectivity_service.dart';
 import 'services/download_service.dart';
+import 'services/privacy_service.dart';
 import 'services/reader_settings.dart';
 import 'services/tracker_service.dart';
 import 'theme.dart';
@@ -17,10 +18,11 @@ import 'widgets/auth_modal.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Performance tuning for low-end phones: constrain decoded image cache to prevent OOM
-  PaintingBinding.instance.imageCache.maximumSize = 250;
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 64 * 1024 * 1024; // 64 MB
+  // Balanced decoded image cache: crisp multi-page webtoon strips without low-RAM OOM
+  PaintingBinding.instance.imageCache.maximumSize = 300;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 128 * 1024 * 1024; // 128 MB
   await ThemeController.instance.init();
+  await PrivacyService.instance.init();
   await DisplaySettings.instance.init();
   await ReaderSettings.instance.init();
   await ConnectivityService.instance.init();
@@ -35,11 +37,21 @@ class ShioriApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Shiori',
-      debugShowCheckedModeBanner: false,
-      theme: buildTheme(),
-      home: const RootShell(),
+    return ListenableBuilder(
+      listenable: ThemeController.instance,
+      builder: (context, _) {
+        final ctrl = ThemeController.instance;
+        return MaterialApp(
+          title: 'Shiori',
+          debugShowCheckedModeBanner: false,
+          themeMode: ctrl.materialThemeMode,
+          theme: ctrl.mode == ShioriThemeMode.system
+              ? buildTheme(forceLight: true)
+              : buildTheme(),
+          darkTheme: buildTheme(),
+          home: const RootShell(),
+        );
+      },
     );
   }
 }
@@ -54,34 +66,36 @@ class RootShell extends StatefulWidget {
 class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   int _index = 0;
   final Set<int> _loadedTabs = {0};
-  Timer? _autoRefreshTimer;
+  DateTime _lastAutoRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _resumeRefreshCooldown = Duration(minutes: 10);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Continuous background automatic refresh (every 60 seconds)
-    _autoRefreshTimer = Timer.periodic(const Duration(seconds: 60), (_) {
-      ApiService.instance.autoRefreshEverything();
-    });
-    // Automatic refresh on initial launch
+    // Single launch refresh (no battery-draining 60-second Timer.periodic polling)
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _lastAutoRefreshAt = DateTime.now();
       ApiService.instance.autoRefreshEverything();
     });
   }
 
   @override
   void dispose() {
-    _autoRefreshTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    // When returning to app from background / another app, automatically refresh everything!
-    if (state == AppLifecycleState.resumed) {
-      ApiService.instance.autoRefreshEverything();
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      PrivacyService.instance.onAppBackgrounded();
+    } else if (state == AppLifecycleState.resumed) {
+      PrivacyService.instance.onAppResumed();
+      if (DateTime.now().difference(_lastAutoRefreshAt) >= _resumeRefreshCooldown) {
+        _lastAutoRefreshAt = DateTime.now();
+        ApiService.instance.autoRefreshEverything();
+      }
     }
   }
 
@@ -117,11 +131,58 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: PrivacyService.instance,
+      builder: (context, _) {
+        if (PrivacyService.instance.isLocked) {
+          return const _AppLockScreen();
+        }
+        return _buildMainScaffold(context);
+      },
+    );
+  }
+
+  Widget _buildMainScaffold(BuildContext context) {
     return Scaffold(
       body: SafeArea(
         bottom: false,
         child: Column(
           children: [
+            // 0. Incognito Mode active banner
+            if (PrivacyService.instance.incognitoMode)
+              Material(
+                color: const Color(0xFF312E81),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.visibility_off_rounded, size: 16, color: Colors.white),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Incognito mode — reading history & tracker sync paused',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () => PrivacyService.instance.setIncognitoMode(false),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          foregroundColor: Colors.white,
+                        ),
+                        child: const Text('Turn off', style: TextStyle(fontSize: 11.5)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
             // 1. Offline connectivity notification banner (#28)
             ListenableBuilder(
               listenable: ConnectivityService.instance,
@@ -256,6 +317,127 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
                 label: label,
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AppLockScreen extends StatefulWidget {
+  const _AppLockScreen();
+
+  @override
+  State<_AppLockScreen> createState() => _AppLockScreenState();
+}
+
+class _AppLockScreenState extends State<_AppLockScreen> {
+  final _pinController = TextEditingController();
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    if (PrivacyService.instance.useBiometric) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _tryBiometric();
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _pinController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _tryBiometric() async {
+    final ok = await PrivacyService.instance.unlockWithBiometric();
+    if (!ok && mounted) {
+      setState(() => _error = 'Biometric unlock cancelled or unavailable.');
+    }
+  }
+
+  Future<void> _submitPin() async {
+    final ok = await PrivacyService.instance.verifyPin(_pinController.text);
+    if (!ok && mounted) {
+      setState(() => _error = 'Incorrect PIN. Please try again.');
+      _pinController.clear();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final privacy = PrivacyService.instance;
+    return Scaffold(
+      backgroundColor: AppColors.bg,
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.lock_rounded, size: 52, color: AppColors.primary),
+                  const SizedBox(height: 16),
+                  Text('Shiori Locked', style: AppText.title),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Authenticate to access your library',
+                    textAlign: TextAlign.center,
+                    style: AppText.caption,
+                  ),
+                  const SizedBox(height: 24),
+                  if (privacy.hasPin) ...[
+                    TextField(
+                      controller: _pinController,
+                      obscureText: true,
+                      keyboardType: TextInputType.number,
+                      textAlign: TextAlign.center,
+                      onSubmitted: (_) => _submitPin(),
+                      decoration: InputDecoration(
+                        hintText: 'Enter PIN',
+                        filled: true,
+                        fillColor: AppColors.surface,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: const BorderSide(color: AppColors.outline),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        onPressed: _submitPin,
+                        child: const Text('Unlock with PIN'),
+                      ),
+                    ),
+                  ],
+                  if (privacy.useBiometric) ...[
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton.icon(
+                        onPressed: _tryBiometric,
+                        icon: const Icon(Icons.fingerprint_rounded),
+                        label: const Text('Unlock with Biometrics'),
+                      ),
+                    ),
+                  ],
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      _error!,
+                      textAlign: TextAlign.center,
+                      style: AppText.caption.copyWith(color: Colors.redAccent),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );

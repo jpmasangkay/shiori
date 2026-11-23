@@ -3,7 +3,9 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import mongoose from 'mongoose';
-import { config } from './config.js';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import { assertConfig, config } from './config.js';
 
 import authRouter from './routes/auth.js';
 import mangaRouter from './routes/manga.js';
@@ -11,104 +13,155 @@ import libraryRouter from './routes/library.js';
 import progressRouter from './routes/progress.js';
 import updatesRouter from './routes/updates.js';
 
-const app = express();
-
-// Trust reverse proxy (e.g. Render, Heroku) so express-rate-limit can accurately detect client IP
-app.set('trust proxy', 1);
-
-// Security and standard middlewares
-app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
-  }),
-);
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow mobile apps (no Origin header) and configured origins
-      if (!origin || config.corsOrigin === '*') return callback(null, true);
-      const allowed = config.corsOrigin.split(',').map((o) => o.trim());
-      if (allowed.includes(origin)) return callback(null, true);
-      return callback(null, true); // Fallback permissive for mobile/local dev
-    },
-    credentials: true,
-  }),
-);
-app.use(express.json({ limit: '1mb' }));
-
-// General rate limiter: 120 reqs / min
-const limiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 120,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please slow down.' },
-});
-app.use('/api/', limiter);
-
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+function logJson(level, msg, extra = {}) {
+  const line = JSON.stringify({
+    ts: new Date().toISOString(),
+    level,
+    msg,
+    ...extra,
   });
-});
+  if (level === 'error') console.error(line);
+  else if (level === 'warn') console.warn(line);
+  else console.log(line);
+}
 
-// Root welcome / API summary
-app.get('/', (req, res) => {
-  res.json({
-    app: 'Shiori Manga Reader API',
-    endpoints: {
-      health: '/api/health',
-      auth: '/api/auth',
-      manga: '/api/manga',
-      library: '/api/library',
-      progress: '/api/progress',
-      updates: '/api/updates',
-    },
+export function createApp() {
+  const app = express();
+
+  app.set('trust proxy', 1);
+
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
+
+  const corsOriginSetting = config.corsOrigin.trim();
+  const isWildcard = corsOriginSetting === '*';
+  const allowedOrigins = isWildcard
+    ? []
+    : corsOriginSetting
+        .split(',')
+        .map((o) => o.trim())
+        .filter(Boolean);
+
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        // Native mobile clients & curl omit Origin header
+        if (!origin) return callback(null, true);
+        if (isWildcard) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(null, false);
+      },
+      // Never combine credentials: true with wildcard origin
+      credentials: !isWildcard,
+    }),
+  );
+
+  app.use(express.json({ limit: '1mb' }));
+
+  const limiter = rateLimit({
+    windowMs: 60 * 1000,
+    max: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please slow down.' },
   });
-});
+  app.use('/api/', limiter);
 
-// Mount modular routes
-app.use('/api/auth', authRouter);
-app.use('/api/manga', mangaRouter);
-app.use('/api/library', libraryRouter);
-app.use('/api/progress', progressRouter);
-app.use('/api/updates', updatesRouter);
+  app.get('/api/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      mongo: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+      database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    });
+  });
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
-});
+  app.get('/', (req, res) => {
+    res.json({
+      app: 'Shiori Manga Reader API',
+      endpoints: {
+        health: '/api/health',
+        auth: '/api/auth',
+        manga: '/api/manga',
+        library: '/api/library',
+        progress: '/api/progress',
+        updates: '/api/updates',
+      },
+    });
+  });
 
-// Central error handler
-app.use((err, req, res, next) => {
-  console.error('[Error]', err);
-  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
-});
+  app.use('/api/auth', authRouter);
+  app.use('/api/manga', mangaRouter);
+  app.use('/api/library', libraryRouter);
+  app.use('/api/progress', progressRouter);
+  app.use('/api/updates', updatesRouter);
 
-// MongoDB connection with graceful degradation
+  app.use((req, res) => {
+    res.status(404).json({ error: 'Endpoint not found' });
+  });
+
+  app.use((err, req, res, next) => {
+    logJson('error', 'unhandled_route_error', { path: req.path, error: err.message });
+    res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+  });
+
+  return app;
+}
+
 async function startServer() {
+  // Fail fast if JWT_SECRET is missing or insecure
+  assertConfig({ requireMongo: false });
+
   const uri = config.mongoUri;
   if (!uri || uri.includes('<password>')) {
-    console.warn('\n⚠️ [MongoDB] MONGODB_URI is not configured in backend/.env.');
-    console.warn('   Public MangaDex browsing, search, and reading will work without MongoDB.');
-    console.warn('   To enable user accounts, saved library, and history, configure MONGODB_URI.\n');
+    logJson('warn', 'mongodb_not_configured', {
+      note: 'Public MangaDex browsing works without MongoDB; configure MONGODB_URI for sync.',
+    });
   } else {
     try {
-      console.log('Connecting to MongoDB...');
+      logJson('info', 'mongodb_connecting');
       await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
-      console.log('✅ Connected to MongoDB successfully.');
+      logJson('info', 'mongodb_connected');
     } catch (err) {
-      console.error('⚠️ [MongoDB] Connection error:', err.message);
-      console.warn('   Continuing server startup without database persistence.\n');
+      logJson('error', 'mongodb_connection_failed', { error: err.message });
     }
   }
 
-  app.listen(config.port, () => {
-    console.log(`🚀 Shiori API server listening on http://localhost:${config.port}`);
+  const app = createApp();
+  const server = app.listen(config.port, () => {
+    logJson('info', 'server_listening', { port: config.port });
   });
+
+  let shuttingDown = false;
+  async function shutdown(signal) {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logJson('info', 'shutdown_started', { signal });
+    server.close(async () => {
+      try {
+        if (mongoose.connection.readyState !== 0) {
+          await mongoose.connection.close();
+        }
+      } catch (err) {
+        logJson('error', 'mongodb_close_error', { error: err.message });
+      }
+      logJson('info', 'shutdown_complete');
+      process.exit(0);
+    });
+    setTimeout(() => process.exit(1), 10_000).unref();
+  }
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-startServer();
+const isMainModule =
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+
+if (isMainModule) {
+  startServer();
+}

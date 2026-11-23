@@ -179,7 +179,15 @@ class SourceResolver {
         s == 'mangakatana' ||
         s == 'katana' ||
         s == 'mangaread' ||
-        s == 'mread';
+        s == 'mread' ||
+        s == 'manganato' ||
+        s == 'nato' ||
+        s == 'mangafox' ||
+        s == 'fanfox' ||
+        s == 'fox' ||
+        s == 'mangademon' ||
+        s == 'demon' ||
+        s == 'local';
   }
 
   static String resolveSource(String id, [String? explicit]) =>

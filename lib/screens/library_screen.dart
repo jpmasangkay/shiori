@@ -4,6 +4,8 @@ import '../display_settings.dart';
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/download_service.dart';
+import '../services/extension_service.dart';
+import '../services/source_manager.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -301,6 +303,283 @@ class _LibraryScreenState extends State<LibraryScreen>
     }
   }
 
+  Future<void> _batchAssignCategories() async {
+    final selectedItems = _userLibrary
+        .where((m) => _selectedIds.contains(m.id))
+        .toList();
+    if (selectedItems.isEmpty) return;
+    final cats = ApiService.instance.getCategories();
+    if (cats.isEmpty) {
+      await _promptCreateCategory();
+      return;
+    }
+    final chosen = <String>{};
+    final applied = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          title: Text('Assign Categories (${selectedItems.length})', style: AppText.sheetTitle),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: cats.length,
+              itemBuilder: (_, i) {
+                final c = cats[i];
+                return CheckboxListTile(
+                  value: chosen.contains(c.id),
+                  activeColor: AppColors.primary,
+                  title: Text(c.name, style: AppText.body),
+                  onChanged: (v) {
+                    setDlg(() {
+                      if (v == true) {
+                        chosen.add(c.id);
+                      } else {
+                        chosen.remove(c.id);
+                      }
+                    });
+                  },
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (applied != true || !mounted) return;
+    for (final m in selectedItems) {
+      await ApiService.instance.setMangaCategories(m.id, chosen.toList(), manga: m);
+    }
+    setState(() => _selectedIds.clear());
+    _loadUserLibrary(silent: true);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Updated categories for ${selectedItems.length} titles')),
+      );
+    }
+  }
+
+  Future<void> _batchMarkRead() async {
+    final selectedItems = _userLibrary
+        .where((m) => _selectedIds.contains(m.id))
+        .toList();
+    if (selectedItems.isEmpty) return;
+    setState(() => _selectedIds.clear());
+    var markedChapters = 0;
+    for (final m in selectedItems) {
+      final cached = ApiService.instance.getCachedChapters(m.id);
+      if (cached.isNotEmpty) {
+        await ApiService.instance.markChaptersRead(
+          m.id,
+          cached.map((c) => c.id).toList(),
+          read: true,
+        );
+        markedChapters += cached.length;
+      }
+    }
+    if (mounted) {
+      _loadUserLibrary(silent: true);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Marked $markedChapters cached chapters read across ${selectedItems.length} titles'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _batchDownloadUnread() async {
+    final selectedItems = _userLibrary
+        .where((m) => _selectedIds.contains(m.id))
+        .toList();
+    if (selectedItems.isEmpty) return;
+    setState(() => _selectedIds.clear());
+    var queued = 0;
+    for (final m in selectedItems) {
+      final cached = ApiService.instance.getCachedChapters(m.id);
+      final unread = cached
+          .where((c) => !ApiService.instance.isChapterRead(m.id, c.id))
+          .take(5)
+          .toList();
+      for (final ch in unread) {
+        await DownloadService.instance.downloadChapter(m, ch);
+        queued++;
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Queued $queued unread chapters for download')),
+      );
+    }
+  }
+
+  Future<void> _batchMassMigrate() async {
+    final selectedItems = _userLibrary
+        .where((m) => _selectedIds.contains(m.id))
+        .toList();
+    if (selectedItems.isEmpty) return;
+
+    final targetSources = <(String id, String name)>[
+      for (final ds in SourceManager.directSources) (ds.id, ds.name),
+      if (!SourceManager.isIOSPlatform)
+        for (final ext in ExtensionService.instance.installedExtensions)
+          (ext.pkg, ext.name),
+    ];
+    if (targetSources.isEmpty) return;
+
+    String selectedSourceId = targetSources.first.$1;
+    var migrating = false;
+    var doneCount = 0;
+    var migratedCount = 0;
+    String statusText = 'Pick a destination source to migrate ${selectedItems.length} selected titles:';
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Row(
+                  children: [
+                    const Icon(Icons.swap_horiz_rounded, color: AppColors.primary, size: 22),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Mass Migrate (${selectedItems.length} titles)',
+                        style: AppText.sheetTitle,
+                      ),
+                    ),
+                    if (!migrating)
+                      IconButton(
+                        icon: const Icon(Icons.close_rounded, color: AppColors.muted),
+                        onPressed: () => Navigator.pop(ctx),
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Text(statusText, style: AppText.caption),
+                const SizedBox(height: 12),
+                if (!migrating)
+                  DropdownButtonFormField<String>(
+                    initialValue: selectedSourceId,
+                    dropdownColor: AppColors.surfaceHigh,
+                    style: AppText.body,
+                    decoration: InputDecoration(
+                      labelText: 'Target Source',
+                      filled: true,
+                      fillColor: AppColors.surfaceHigh,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                    items: [
+                      for (final src in targetSources)
+                        DropdownMenuItem(value: src.$1, child: Text(src.$2)),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) setSheet(() => selectedSourceId = v);
+                    },
+                  )
+                else ...[
+                  LinearProgressIndicator(
+                    value: selectedItems.isEmpty ? 0 : doneCount / selectedItems.length,
+                    color: AppColors.primary,
+                    backgroundColor: AppColors.surfaceHigh,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Processed $doneCount / ${selectedItems.length} ($migratedCount matched)',
+                    style: AppText.caption.copyWith(color: AppColors.primary),
+                  ),
+                ],
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: migrating
+                      ? null
+                      : () async {
+                          setSheet(() {
+                            migrating = true;
+                            doneCount = 0;
+                            migratedCount = 0;
+                            statusText = 'Searching destination source & migrating reading progress...';
+                          });
+                          for (final oldManga in selectedItems) {
+                            try {
+                              final results = await ApiService.instance
+                                  .searchManga(
+                                    query: oldManga.displayTitle,
+                                    source: selectedSourceId,
+                                    limit: 5,
+                                  )
+                                  .timeout(const Duration(seconds: 12), onTimeout: () => const []);
+                              final match = results.where((r) => r.id != oldManga.id).firstOrNull;
+                              if (match != null) {
+                                final cats = ApiService.instance.getMangaCategoryIds(oldManga.id);
+                                await ApiService.instance.addToLibrary(match);
+                                if (cats.isNotEmpty) {
+                                  await ApiService.instance.setMangaCategories(match.id, cats, manga: match);
+                                }
+                                final targetChapters = await ApiService.instance
+                                    .getChapters(match.id)
+                                    .catchError((_) => const <ChapterItem>[]);
+                                await ApiService.instance.migrateOrCopyReadingProgress(
+                                  sourceMangaId: oldManga.id,
+                                  targetManga: match,
+                                  targetChapters: targetChapters,
+                                );
+                                await ApiService.instance.removeFromLibrary(oldManga.id);
+                                migratedCount++;
+                              }
+                            } catch (_) {}
+                            doneCount++;
+                            if (ctx.mounted) setSheet(() {});
+                          }
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            setState(() => _selectedIds.clear());
+                            _loadUserLibrary(silent: true);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  'Migrated $migratedCount of ${selectedItems.length} titles!',
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                  icon: const Icon(Icons.swap_horiz_rounded, size: 18),
+                  label: Text(migrating ? 'Migrating...' : 'Start Mass Migration'),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: AppColors.onPrimary,
+                    minimumSize: const Size.fromHeight(44),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showMangaContextMenu(MangaItem manga) {
     final prog = ApiService.instance.historyRepo.localProgress[manga.id];
     final cachedChs = ApiService.instance.getCachedChapters(manga.id);
@@ -569,28 +848,8 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   Map<String, List<MangaItem>> _findDuplicateGroups() {
     if (_cachedDuplicateGroups != null) return _cachedDuplicateGroups!;
-    final groups = <String, List<MangaItem>>{};
-    for (int i = 0; i < _userLibrary.length; i++) {
-      for (int j = i + 1; j < _userLibrary.length; j++) {
-        if (DuplicateDetector.isPossibleDuplicate(
-          _userLibrary[i].title,
-          _userLibrary[j].title,
-        )) {
-          final norm = DuplicateDetector.normalize(_userLibrary[i].title);
-          groups.putIfAbsent(norm, () => []).addAll([_userLibrary[i], _userLibrary[j]]);
-        }
-      }
-    }
-    final result = <String, List<MangaItem>>{};
-    groups.forEach((key, list) {
-      final seen = <String>{};
-      final unique = list.where((m) => seen.add(m.id)).toList();
-      if (unique.length > 1) {
-        result[key] = unique;
-      }
-    });
-    _cachedDuplicateGroups = result;
-    return result;
+    _cachedDuplicateGroups = DuplicateDetector.groupDuplicates(_userLibrary);
+    return _cachedDuplicateGroups!;
   }
 
   void _showResolveDuplicatesSheet(Map<String, List<MangaItem>> duplicateGroups) {
@@ -1238,9 +1497,75 @@ class _LibraryScreenState extends State<LibraryScreen>
                       ),
               ),
             ),
+            if (_isSelectionMode)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: const BoxDecoration(
+                  color: AppColors.surface,
+                  border: Border(top: BorderSide(color: AppColors.outline)),
+                ),
+                child: SafeArea(
+                  top: false,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
+                    children: [
+                      _bulkActionBtn(
+                        icon: Icons.label_outline_rounded,
+                        label: 'Category',
+                        onTap: _batchAssignCategories,
+                      ),
+                      _bulkActionBtn(
+                        icon: Icons.done_all_rounded,
+                        label: 'Mark Read',
+                        onTap: _batchMarkRead,
+                      ),
+                      _bulkActionBtn(
+                        icon: Icons.download_rounded,
+                        label: 'Download',
+                        onTap: _batchDownloadUnread,
+                      ),
+                      _bulkActionBtn(
+                        icon: Icons.swap_horiz_rounded,
+                        label: 'Migrate',
+                        onTap: _batchMassMigrate,
+                      ),
+                      _bulkActionBtn(
+                        icon: Icons.delete_outline_rounded,
+                        label: 'Remove',
+                        color: Colors.redAccent,
+                        onTap: _batchRemoveSelected,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         );
       },
+    );
+  }
+
+  Widget _bulkActionBtn({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+    Color? color,
+  }) {
+    final c = color ?? AppColors.text;
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 20, color: c),
+            const SizedBox(height: 2),
+            Text(label, style: AppText.badge.copyWith(color: c)),
+          ],
+        ),
+      ),
     );
   }
 

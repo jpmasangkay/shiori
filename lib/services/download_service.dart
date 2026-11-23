@@ -1,15 +1,19 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
 import '../widgets/common.dart';
 import 'api_service.dart';
+import 'connectivity_service.dart';
 import 'extension_bridge.dart';
+import 'platform_bridge.dart';
 
 enum DownloadStatus { notDownloaded, queued, downloading, downloaded, failed }
 
@@ -117,6 +121,8 @@ class DownloadService extends ChangeNotifier {
   static const String _queueKey = 'shiori_downloads_queue_v1';
   static const String _autoDeleteReadKey =
       'shiori_auto_delete_read_downloads_v1';
+  static const String _wifiOnlyKey = 'shiori_downloads_wifi_only_v1';
+  static const String _autoDownloadNewKey = 'shiori_auto_download_new_v1';
   static const int maxConcurrentPageDownloads = 3;
   static const int maxQueueCapacity = 500;
 
@@ -127,6 +133,8 @@ class DownloadService extends ChangeNotifier {
   bool _isProcessing = false;
   bool _isPaused = false;
   bool _autoDeleteReadChapters = false;
+  bool _wifiOnlyDownloads = false;
+  bool _autoDownloadNewChapters = false;
   Directory? _baseDownloadDir;
 
   Map<String, DownloadedChapterInfo> get downloadedChapters =>
@@ -136,6 +144,8 @@ class DownloadService extends ChangeNotifier {
   List<DownloadTask> get failedTasks => _failedTasks.values.toList();
   bool get isPaused => _isPaused;
   bool get autoDeleteReadChapters => _autoDeleteReadChapters;
+  bool get wifiOnlyDownloads => _wifiOnlyDownloads;
+  bool get autoDownloadNewChapters => _autoDownloadNewChapters;
 
   Future<void> init() async {
     try {
@@ -144,9 +154,18 @@ class DownloadService extends ChangeNotifier {
       if (!await _baseDownloadDir!.exists()) {
         await _baseDownloadDir!.create(recursive: true);
       }
+      // Prevent downloaded manga pages from appearing in Android Gallery apps
+      final nomedia = File('${_baseDownloadDir!.path}/.nomedia');
+      if (!await nomedia.exists()) {
+        try {
+          await nomedia.create();
+        } catch (_) {}
+      }
 
       final prefs = await SharedPreferences.getInstance();
       _autoDeleteReadChapters = prefs.getBool(_autoDeleteReadKey) ?? false;
+      _wifiOnlyDownloads = prefs.getBool(_wifiOnlyKey) ?? false;
+      _autoDownloadNewChapters = prefs.getBool(_autoDownloadNewKey) ?? false;
 
       _downloadedManifest.clear();
       final raw = prefs.getString(_manifestKey);
@@ -197,6 +216,38 @@ class DownloadService extends ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_autoDeleteReadKey, enabled);
     } catch (_) {}
+  }
+
+  Future<void> setWifiOnlyDownloads(bool enabled) async {
+    _wifiOnlyDownloads = enabled;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_wifiOnlyKey, enabled);
+    } catch (_) {}
+  }
+
+  Future<void> setAutoDownloadNewChapters(bool enabled) async {
+    _autoDownloadNewChapters = enabled;
+    notifyListeners();
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_autoDownloadNewKey, enabled);
+    } catch (_) {}
+  }
+
+  /// Packages a downloaded chapter's images into a standard `.cbz` (ZIP) archive.
+  Future<Uint8List?> exportChapterAsCbz(String chapterId) async {
+    final pages = await getDownloadedPages(chapterId);
+    if (pages.isEmpty) return null;
+    final archive = Archive();
+    for (final file in pages) {
+      final bytes = await file.readAsBytes();
+      final name = p.basename(file.path);
+      archive.addFile(ArchiveFile(name, bytes.length, bytes));
+    }
+    final encoded = ZipEncoder().encode(archive);
+    return Uint8List.fromList(encoded);
   }
 
   Future<void> onChapterFinishedReading(String chapterId) async {
@@ -305,22 +356,9 @@ class DownloadService extends ChangeNotifier {
     final info = _downloadedManifest[chapterId];
     if (info == null) return const [];
 
-    final dir = Directory(info.directoryPath);
-    if (!await dir.exists()) return const [];
-
-    final files = dir
-        .listSync()
-        .whereType<File>()
-        .where(
-          (f) =>
-              f.path.endsWith('.jpg') ||
-              f.path.endsWith('.png') ||
-              f.path.endsWith('.webp'),
-        )
-        .toList();
-
-    files.sort((a, b) => a.path.compareTo(b.path));
-    return files;
+    final dirPath = info.directoryPath;
+    final paths = await compute(_listChapterImagePathsSync, dirPath);
+    return paths.map(File.new).toList();
   }
 
   Future<void> downloadChapter(MangaItem manga, ChapterItem chapter) async {
@@ -470,15 +508,30 @@ class DownloadService extends ChangeNotifier {
 
   Future<void> _processQueue() async {
     if (_isProcessing || _isPaused) return;
+    if (_wifiOnlyDownloads && !ConnectivityService.instance.isOnWifi) {
+      return;
+    }
     _isProcessing = true;
 
     while (_queue.isNotEmpty && !_isPaused) {
+      if (_wifiOnlyDownloads && !ConnectivityService.instance.isOnWifi) {
+        break;
+      }
       final chapterId = _queue.removeAt(0);
       final task = _activeTasks[chapterId];
       if (task == null) continue;
 
       task.status = DownloadStatus.downloading;
       notifyListeners();
+      unawaited(
+        PlatformBridge.instance.updateDownloadNotification(
+          title: 'Downloading ${task.manga.displayTitle}',
+          body: task.chapter.displayTitle,
+          progress: 0,
+          max: 100,
+          ongoing: true,
+        ),
+      );
 
       try {
         await _executeDownloadTask(task);
@@ -496,6 +549,7 @@ class DownloadService extends ChangeNotifier {
       notifyListeners();
     }
 
+    unawaited(PlatformBridge.instance.cancelDownloadNotification());
     _isProcessing = false;
   }
 
@@ -727,4 +781,23 @@ class DownloadService extends ChangeNotifier {
     } catch (_) {}
     return 'jpg';
   }
+}
+
+List<String> _listChapterImagePathsSync(String dirPath) {
+  final dir = Directory(dirPath);
+  if (!dir.existsSync()) return const [];
+  final paths = dir
+      .listSync()
+      .whereType<File>()
+      .map((f) => f.path)
+      .where((pStr) {
+        final lower = pStr.toLowerCase();
+        return lower.endsWith('.jpg') ||
+            lower.endsWith('.jpeg') ||
+            lower.endsWith('.png') ||
+            lower.endsWith('.webp');
+      })
+      .toList();
+  paths.sort();
+  return paths;
 }
