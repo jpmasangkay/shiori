@@ -207,7 +207,7 @@ void main() {
     expect(find.text('In Library', skipOffstage: false), findsOneWidget);
   });
 
-  testWidgets('Titles put in a category are removed from All tab and restored when uncategorized', (tester) async {
+  testWidgets('Categorized titles move out of Default tab while All tab always shows full library', (tester) async {
     tester.view.physicalSize = const Size(390 * 3, 844 * 3);
     tester.view.devicePixelRatio = 3;
     addTearDown(tester.view.reset);
@@ -238,44 +238,50 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    // Initially both are uncategorized, so both appear in All (2)
+    // Initially no custom categories are active, so both appear in All (2)
     expect(find.text('All 2'), findsOneWidget);
     expect(find.text('Chainsaw Man'), findsOneWidget);
     expect(find.text('Solo Leveling'), findsOneWidget);
 
-    // Put mangaA into 'Reading' category
+    // Put mangaA into 'Reading' category: now All (2), Default (1), and Reading (1) appear
     await ApiService.instance.toggleMangaCategory(mangaA.id, 'reading', manga: mangaA);
     await tester.pumpAndSettle();
 
-    // mangaA should now be REMOVED from All, leaving only mangaB in All (1)
-    expect(find.text('All 1'), findsOneWidget);
+    expect(find.text('All 2'), findsOneWidget);
+    expect(find.text('Default 1'), findsOneWidget);
+    expect(find.text('Reading 1'), findsOneWidget);
+
+    // Default tab holds only uncategorized mangaB
     expect(find.text('Solo Leveling'), findsOneWidget);
     expect(find.text('Chainsaw Man'), findsNothing);
 
-    // Switch to Reading tab
+    // All tab shows the entire library (both titles)
+    await tester.tap(find.text('All 2'));
+    await tester.pumpAndSettle();
+    expect(find.text('Chainsaw Man'), findsOneWidget);
+    expect(find.text('Solo Leveling'), findsOneWidget);
+
+    // Switch to Reading tab: only mangaA
     await tester.tap(find.text('Reading 1'));
     await tester.pumpAndSettle();
-
-    // mangaA is in Reading, mangaB is not
     expect(find.text('Chainsaw Man'), findsOneWidget);
     expect(find.text('Solo Leveling'), findsNothing);
 
-    // Put mangaB into 'Completed' category
+    // Put mangaB into 'Completed' category: empty Default (0) tab is hidden
     await ApiService.instance.toggleMangaCategory(mangaB.id, 'completed', manga: mangaB);
     await tester.pumpAndSettle();
 
-    // Both are categorized, so empty categories and empty All tab (0) are hidden
-    expect(find.text('All 0'), findsNothing);
+    expect(find.text('Default 0'), findsNothing);
+    expect(find.text('All 2'), findsOneWidget);
     expect(find.text('Reading 1'), findsOneWidget);
     expect(find.text('Completed 1'), findsOneWidget);
 
-    // Remove mangaA from 'Reading' (clearing its category)
+    // Remove mangaA from 'Reading': Default (1) reappears with mangaA
     await ApiService.instance.toggleMangaCategory(mangaA.id, 'reading');
     await tester.pumpAndSettle();
 
-    // mangaA returns to All and All tab reappears with 1 title
-    expect(find.text('All 1'), findsOneWidget);
-    await tester.tap(find.text('All 1'));
+    expect(find.text('Default 1'), findsOneWidget);
+    await tester.tap(find.text('Default 1'));
     await tester.pumpAndSettle();
     expect(find.text('Chainsaw Man'), findsOneWidget);
     expect(find.text('Solo Leveling'), findsNothing);

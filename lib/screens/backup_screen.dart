@@ -14,12 +14,72 @@ import '../widgets/auth_modal.dart';
 class BackupScreen extends StatefulWidget {
   const BackupScreen({super.key});
 
+  static const _autoBackupKey = 'shiori_auto_backup_enabled_v1';
+  static const _autoBackupLastRunKey = 'shiori_auto_backup_last_run_ms_v1';
+
+  /// Triggers a rotating compressed local backup automatically if the user has
+  /// enabled Automatic Local Snapshots and at least [interval] has elapsed.
+  static Future<bool> runScheduledAutoBackupIfDue({
+    Duration interval = const Duration(hours: 24),
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final enabled = prefs.getBool(_autoBackupKey) ?? false;
+      if (!enabled) return false;
+      final lastMs = prefs.getInt(_autoBackupLastRunKey) ?? 0;
+      final nowMs = DateTime.now().millisecondsSinceEpoch;
+      if (lastMs > 0 && (nowMs - lastMs) < interval.inMilliseconds) {
+        return false;
+      }
+      final ok = await _writeRotatingSnapshot();
+      if (ok) {
+        await prefs.setInt(_autoBackupLastRunKey, nowMs);
+      }
+      return ok;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> _writeRotatingSnapshot() async {
+    try {
+      final bytes = await ApiService.instance.exportCompressedBackupBytes();
+      final docDir = await getApplicationDocumentsDirectory();
+      final dir = Directory(p.join(docDir.path, 'shiori_backups'));
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      final now = DateTime.now();
+      final tag =
+          '${now.year.toString().padLeft(4, '0')}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}';
+      final fileName = 'shiori_auto_$tag.shiori.json.gz';
+      await File(p.join(dir.path, fileName)).writeAsBytes(bytes, flush: true);
+
+      final autoFiles = <File>[];
+      await for (final entity in dir.list()) {
+        if (entity is File &&
+            p.basename(entity.path).startsWith('shiori_auto_')) {
+          autoFiles.add(entity);
+        }
+      }
+      autoFiles.sort((a, b) => b.path.compareTo(a.path));
+      for (final old in autoFiles.skip(3)) {
+        try {
+          await old.delete();
+        } catch (_) {}
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   @override
   State<BackupScreen> createState() => _BackupScreenState();
 }
 
 class _BackupScreenState extends State<BackupScreen> {
-  static const _autoBackupKey = 'shiori_auto_backup_enabled_v1';
+  static const _autoBackupKey = BackupScreen._autoBackupKey;
   static const _maxClipboardChars =
       450 * 1024; // Avoid Android 1MB Binder crash
 
@@ -29,6 +89,7 @@ class _BackupScreenState extends State<BackupScreen> {
   bool _restoring = false;
   bool _autoBackupEnabled = false;
   String? _lastSavedFilePath;
+  List<File> _localSnapshots = [];
 
   @override
   void initState() {
@@ -68,7 +129,79 @@ class _BackupScreenState extends State<BackupScreen> {
       if (autoBk) {
         await _runRotatingLocalBackup();
       }
+      await _loadLocalSnapshots();
     } catch (_) {}
+  }
+
+  Future<void> _loadLocalSnapshots() async {
+    try {
+      final docDir = await getApplicationDocumentsDirectory();
+      final dir = Directory(p.join(docDir.path, 'shiori_backups'));
+      if (!await dir.exists()) {
+        if (mounted) setState(() => _localSnapshots = []);
+        return;
+      }
+      final files = <File>[];
+      await for (final entity in dir.list()) {
+        if (entity is File && p.basename(entity.path).startsWith('shiori_auto_')) {
+          files.add(entity);
+        }
+      }
+      files.sort((a, b) => b.path.compareTo(a.path));
+      if (mounted) {
+        setState(() => _localSnapshots = files.take(3).toList());
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _restoreSnapshot(File file) async {
+    final name = p.basename(file.path);
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('Restore Snapshot?', style: AppText.sheetTitle),
+        content: Text(
+          'Merge bookmarks, categories, and reading history from "$name"?',
+          style: AppText.body,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+            child: Text('Restore', style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true || !mounted) return;
+    setState(() => _restoring = true);
+    try {
+      final bytes = await file.readAsBytes();
+      final result = await _api.restoreBackupBytes(bytes);
+      if (!mounted) return;
+      setState(() => _restoring = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Restored ${result['bookmarks'] ?? 0} titles, ${result['categories'] ?? 0} categories & ${result['history'] ?? 0} history entries from $name',
+          ),
+          backgroundColor: Colors.green.shade800,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _restoring = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Restore failed: $e')),
+        );
+      }
+    }
   }
 
   String _timestampTag() {
@@ -98,31 +231,17 @@ class _BackupScreenState extends State<BackupScreen> {
   }
 
   Future<void> _runRotatingLocalBackup() async {
-    try {
-      final bytes = await _api.exportCompressedBackupBytes();
-      final docDir = await getApplicationDocumentsDirectory();
-      final dir = Directory(p.join(docDir.path, 'shiori_backups'));
-      if (!await dir.exists()) {
-        await dir.create(recursive: true);
-      }
-      final fileName = 'shiori_auto_${_timestampTag()}.shiori.json.gz';
-      await File(p.join(dir.path, fileName)).writeAsBytes(bytes, flush: true);
-
-      // Keep only the 3 most recent auto-backups
-      final autoFiles = <File>[];
-      await for (final entity in dir.list()) {
-        if (entity is File &&
-            p.basename(entity.path).startsWith('shiori_auto_')) {
-          autoFiles.add(entity);
-        }
-      }
-      autoFiles.sort((a, b) => b.path.compareTo(a.path));
-      for (final old in autoFiles.skip(3)) {
-        try {
-          await old.delete();
-        } catch (_) {}
-      }
-    } catch (_) {}
+    final ok = await BackupScreen._writeRotatingSnapshot();
+    if (ok) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt(
+          BackupScreen._autoBackupLastRunKey,
+          DateTime.now().millisecondsSinceEpoch,
+        );
+      } catch (_) {}
+      await _loadLocalSnapshots();
+    }
   }
 
   Future<void> _toggleAutoBackup(bool enabled) async {
@@ -673,18 +792,55 @@ class _BackupScreenState extends State<BackupScreen> {
               side: const BorderSide(color: AppColors.outline),
             ),
             clipBehavior: Clip.antiAlias,
-            child: SwitchListTile(
-              value: _autoBackupEnabled,
-              activeThumbColor: AppColors.primary,
-              title: Text(
-                'Automatic Local Snapshots',
-                style: AppText.cardTitle,
-              ),
-              subtitle: Text(
-                'Keeps the last 3 compressed backups automatically in app storage',
-                style: AppText.caption,
-              ),
-              onChanged: _toggleAutoBackup,
+            child: Column(
+              children: [
+                SwitchListTile(
+                  value: _autoBackupEnabled,
+                  activeThumbColor: AppColors.primary,
+                  title: Text(
+                    'Automatic Local Snapshots',
+                    style: AppText.cardTitle,
+                  ),
+                  subtitle: Text(
+                    'Runs daily on app open and keeps the last 3 compressed backups',
+                    style: AppText.caption,
+                  ),
+                  onChanged: _toggleAutoBackup,
+                ),
+                if (_localSnapshots.isNotEmpty) ...[
+                  const Divider(color: AppColors.outline, height: 1),
+                  for (final snap in _localSnapshots)
+                    ListTile(
+                      dense: true,
+                      leading: const Icon(
+                        Icons.history_rounded,
+                        size: 18,
+                        color: AppColors.primary,
+                      ),
+                      title: Text(
+                        p.basename(snap.path),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.caption.copyWith(color: AppColors.text),
+                      ),
+                      trailing: TextButton(
+                        onPressed: _restoring ? null : () => _restoreSnapshot(snap),
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.primary,
+                          minimumSize: const Size(44, 34),
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                        ),
+                        child: Text(
+                          'Restore',
+                          style: AppText.chip.copyWith(
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ],
             ),
           ),
 

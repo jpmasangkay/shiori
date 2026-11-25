@@ -17,11 +17,13 @@ const String _imageAccept =
 
 typedef NativeImageLoader = Future<Uint8List?> Function(String url);
 typedef CoverLookup = Future<String?> Function(String mangaId);
-typedef NativeLoaderProvider = NativeImageLoader? Function(String url, String? mangaId);
+typedef NativeLoaderProvider =
+    NativeImageLoader? Function(String url, String? mangaId);
 typedef RefererProvider = String? Function(String url, String? mangaId);
 
 Future<void> evictCachedImageUrl(String url) async {
   ImageReferers.evictNativeCache(url);
+  RetryingNetworkImage.forgetSessionLoaded(url);
   try {
     await CachedNetworkImage.evictFromCache(url);
   } catch (_) {
@@ -47,8 +49,10 @@ class ImageReferers {
 
   static final LinkedHashMap<String, Uint8List> _nativeBytesCache =
       LinkedHashMap();
+  static int _nativeCacheTotalBytes = 0;
   static final Map<String, Future<Uint8List?>> _inFlightNative = {};
-  static const int _maxNativeCacheEntries = 48;
+  static const int _maxNativeCacheEntries = 200;
+  static const int _maxNativeCacheBytes = 96 * 1024 * 1024; // 96 MB LRU
   static const int _maxTrackedUrls = 1500;
 
   /// Optional global resolver wired by [ApiService] to backfill missing/expired covers.
@@ -176,9 +180,60 @@ class ImageReferers {
     return bytes;
   }
 
+  static void _putNativeBytes(String url, Uint8List bytes) {
+    final existing = _nativeBytesCache.remove(url);
+    if (existing != null) {
+      _nativeCacheTotalBytes -= existing.lengthInBytes;
+    }
+    _nativeBytesCache[url] = bytes;
+    _nativeCacheTotalBytes += bytes.lengthInBytes;
+    while (_nativeBytesCache.length > _maxNativeCacheEntries ||
+        (_nativeCacheTotalBytes > _maxNativeCacheBytes &&
+            _nativeBytesCache.length > 1)) {
+      final oldestKey = _nativeBytesCache.keys.first;
+      final removed = _nativeBytesCache.remove(oldestKey);
+      if (removed != null) {
+        _nativeCacheTotalBytes -= removed.lengthInBytes;
+      }
+    }
+  }
+
+  static String _nativeDiskKey(String url) {
+    // Fast deterministic 64-bit FNV-1a hex hash for safe cache filenames
+    var h1 = 0x811c9dc5;
+    var h2 = 0x9e3779b9;
+    for (var i = 0; i < url.length; i++) {
+      final c = url.codeUnitAt(i);
+      h1 = ((h1 ^ c) * 0x01000193) & 0xFFFFFFFF;
+      h2 = ((h2 ^ (c + i)) * 0x01000193) & 0xFFFFFFFF;
+    }
+    return 'p_${h1.toRadixString(16)}_${h2.toRadixString(16)}.img';
+  }
+
+  static File? _nativeDiskFile(String url) {
+    if (kIsWeb) return null;
+    try {
+      return File(
+        '${Directory.systemTemp.path}/shiori_native_pages/${_nativeDiskKey(url)}',
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
   static void evictNativeCache(String url) {
-    _nativeBytesCache.remove(url);
+    final removed = _nativeBytesCache.remove(url);
+    if (removed != null) {
+      _nativeCacheTotalBytes = (_nativeCacheTotalBytes - removed.lengthInBytes)
+          .clamp(0, 1 << 30);
+    }
     _inFlightNative.remove(url);
+    final file = _nativeDiskFile(url);
+    if (file != null) {
+      try {
+        if (file.existsSync()) file.deleteSync();
+      } catch (_) {}
+    }
   }
 
   static Future<Uint8List?> fetchNativeBytes(String url) {
@@ -191,17 +246,41 @@ class ImageReferers {
     final loader = lookupNativeLoader(url);
     if (loader == null) return SynchronousFuture<Uint8List?>(null);
 
+    // Check fast local disk cache synchronously first so going back across
+    // 100+ strip chapters never hits the network AND misses add zero async hops.
+    final diskFile = _nativeDiskFile(url);
+    if (diskFile != null) {
+      try {
+        if (diskFile.existsSync()) {
+          final diskBytes = diskFile.readAsBytesSync();
+          if (diskBytes.isNotEmpty) {
+            _putNativeBytes(url, diskBytes);
+            return SynchronousFuture<Uint8List?>(diskBytes);
+          }
+        }
+      } catch (_) {}
+    }
+
     late final Future<Uint8List?> fut;
     fut = () async {
       try {
-        final bytes = await loader(
-          url,
+        final bytes = await Future<Uint8List?>.value(
+          loader(url),
         ).timeout(const Duration(seconds: 15), onTimeout: () => null);
         if (bytes != null && bytes.isNotEmpty) {
-          if (_nativeBytesCache.length >= _maxNativeCacheEntries) {
-            _nativeBytesCache.remove(_nativeBytesCache.keys.first);
+          _putNativeBytes(url, bytes);
+          // Persist asynchronously to temp disk cache so even RAM eviction stays local.
+          if (diskFile != null) {
+            unawaited(() async {
+              try {
+                final parent = diskFile.parent;
+                if (!await parent.exists()) {
+                  await parent.create(recursive: true);
+                }
+                await diskFile.writeAsBytes(bytes, flush: false);
+              } catch (_) {}
+            }());
           }
-          _nativeBytesCache[url] = bytes;
           return bytes;
         }
       } catch (_) {}
@@ -295,7 +374,17 @@ class ImageReferers {
     _preferNativeUrls.clear();
     _preferNativeHosts.clear();
     _nativeBytesCache.clear();
+    _nativeCacheTotalBytes = 0;
     _inFlightNative.clear();
+    RetryingNetworkImage.clearSessionLoadedForTesting();
+    if (!kIsWeb) {
+      try {
+        final dir = Directory(
+          '${Directory.systemTemp.path}/shiori_native_pages',
+        );
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+      } catch (_) {}
+    }
     _resolvedCovers.clear();
     _failedCoverIds.clear();
     _inFlightCoverLookups.clear();
@@ -311,7 +400,8 @@ Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
   final host = uri?.host.toLowerCase() ?? '';
   if (host.contains('mangadex')) {
     return const {
-      'User-Agent': 'Shiori/1.0 (Android; Mobile; +https://github.com/jpmasangkay/shiori)',
+      'User-Agent':
+          'Shiori/1.0 (Android; Mobile; +https://github.com/jpmasangkay/shiori)',
       'Referer': 'https://mangadex.org/',
       'Accept': _imageAccept,
     };
@@ -382,7 +472,9 @@ Map<String, String> imageHeadersForUrl(String url, {String? mangaId}) {
     referer = 'https://tcbscans.me/';
   } else if (host.contains('reaperscans')) {
     referer = 'https://reaperscans.com/';
-  } else if (host.contains('fanfox') || host.contains('mangafox') || host.contains('mfcdn')) {
+  } else if (host.contains('fanfox') ||
+      host.contains('mangafox') ||
+      host.contains('mfcdn')) {
     referer = 'https://fanfox.net/';
   } else if (host.contains('readdetectiveconan') ||
       host.contains('mangapill')) {
@@ -474,7 +566,8 @@ List<Map<String, String>> imageHeaderVariants(String url, {String? mangaId}) {
   if (host.contains('mangadex')) {
     return const [
       {
-        'User-Agent': 'Shiori/1.0 (Android; Mobile; +https://github.com/jpmasangkay/shiori)',
+        'User-Agent':
+            'Shiori/1.0 (Android; Mobile; +https://github.com/jpmasangkay/shiori)',
         'Referer': 'https://mangadex.org/',
         'Accept': _imageAccept,
       },
@@ -586,6 +679,31 @@ class RetryingNetworkImage extends StatefulWidget {
   /// same CDN load on the first try.
   static final Map<String, int> _workingVariantByHost = {};
 
+  /// Bounded LRU of URLs that already finished loading in this session so
+  /// remounted reader pages skip fade/skeleton flashes on back-navigation.
+  static final LinkedHashSet<String> _sessionLoadedUrls = LinkedHashSet();
+  static const int _maxSessionLoadedUrls = 600;
+
+  static bool isSessionLoaded(String url) => _sessionLoadedUrls.contains(url);
+
+  static void markSessionLoaded(String url) {
+    if (url.isEmpty) return;
+    _sessionLoadedUrls.remove(url);
+    _sessionLoadedUrls.add(url);
+    while (_sessionLoadedUrls.length > _maxSessionLoadedUrls) {
+      _sessionLoadedUrls.remove(_sessionLoadedUrls.first);
+    }
+  }
+
+  static void forgetSessionLoaded(String url) {
+    _sessionLoadedUrls.remove(url);
+  }
+
+  @visibleForTesting
+  static void clearSessionLoadedForTesting() {
+    _sessionLoadedUrls.clear();
+  }
+
   @override
   State<RetryingNetworkImage> createState() => _RetryingNetworkImageState();
 }
@@ -667,7 +785,10 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
     ];
     final attempts = <_ImageAttempt>[];
     for (final u in urls) {
-      final hasNative = ImageReferers.hasNativeLoader(u, mangaId: widget.mangaId);
+      final hasNative = ImageReferers.hasNativeLoader(
+        u,
+        mangaId: widget.mangaId,
+      );
       final preferNative = hasNative && ImageReferers.prefersNative(u);
 
       if (preferNative) {
@@ -758,6 +879,7 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
     _retryScheduled = true;
     _watchdogTimer?.cancel();
     final failed = _attempts[_attempt];
+    RetryingNetworkImage.forgetSessionLoaded(failed.url);
     if (failed.kind == _AttemptKind.http) {
       evictCachedImageUrl(failed.url);
     } else {
@@ -839,6 +961,7 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
     if (current.kind == _AttemptKind.native) {
       final bytes = _nativeBytes;
       if (bytes != null && bytes.isNotEmpty) {
+        RetryingNetworkImage.markSessionLoaded(current.url);
         return Image.memory(
           bytes,
           key: ValueKey('native_${current.url}#$_generation'),
@@ -859,6 +982,7 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
       return progressBuilder?.call(context, null) ?? _placeholder(context);
     }
 
+    final alreadyLoaded = RetryingNetworkImage.isSessionLoaded(current.url);
     return CachedNetworkImage(
       key: ValueKey('${current.url}#$_attempt#$_generation'),
       imageUrl: current.url,
@@ -870,17 +994,23 @@ class _RetryingNetworkImageState extends State<RetryingNetworkImage> {
       memCacheHeight: widget.memCacheHeight,
       maxWidthDiskCache: widget.maxWidthDiskCache,
       maxHeightDiskCache: widget.maxHeightDiskCache,
-      fadeInDuration: widget.fadeInDuration,
-      fadeOutDuration: const Duration(milliseconds: 120),
+      fadeInDuration: alreadyLoaded ? Duration.zero : widget.fadeInDuration,
+      fadeOutDuration: alreadyLoaded
+          ? Duration.zero
+          : const Duration(milliseconds: 120),
       placeholder: progressBuilder == null
-          ? (ctx, _) => _placeholder(ctx)
+          ? (ctx, _) =>
+                alreadyLoaded ? const SizedBox.shrink() : _placeholder(ctx)
           : null,
       progressIndicatorBuilder: progressBuilder == null
           ? null
-          : (ctx, _, p) => progressBuilder(ctx, p.progress),
+          : (ctx, _, p) => alreadyLoaded
+                ? const SizedBox.shrink()
+                : progressBuilder(ctx, p.progress),
       imageBuilder: (ctx, provider) {
         _loadedCurrentAttempt = true;
         _watchdogTimer?.cancel();
+        RetryingNetworkImage.markSessionLoaded(current.url);
         final host = Uri.tryParse(current.url)?.host.toLowerCase() ?? '';
         if (host.isNotEmpty) {
           RetryingNetworkImage._workingVariantByHost[host] =
@@ -955,7 +1085,9 @@ class _CoverImageState extends State<CoverImage> {
     var u = raw.trim();
     if (u.isEmpty) return null;
     if (u.startsWith('//')) u = 'https:$u';
-    if (u.contains('uploads.mangadex.org/covers/') && !u.contains('.512.jpg') && !u.contains('.256.jpg')) {
+    if (u.contains('uploads.mangadex.org/covers/') &&
+        !u.contains('.512.jpg') &&
+        !u.contains('.256.jpg')) {
       u = '$u.512.jpg';
     }
     return u;
@@ -988,31 +1120,30 @@ class _CoverImageState extends State<CoverImage> {
     final id = widget.mangaId;
     if (id == null || id.isEmpty || _resolving) return;
     _resolving = true;
-    ImageReferers.resolveCoverForManga(id, force: force).then((fresh) {
-      if (!mounted) return;
-      final normalized = _normalizeUrl(fresh);
-      setState(() {
-        _resolving = false;
-        if (normalized != null &&
-            normalized.isNotEmpty &&
-            normalized != _resolvedUrl) {
-          _resolvedUrl = normalized;
-          _retryGeneration++;
-          _triedRefreshOnError = false;
-        }
-      });
-    }).catchError((_) {
-      if (mounted) setState(() => _resolving = false);
-    });
+    ImageReferers.resolveCoverForManga(id, force: force)
+        .then((fresh) {
+          if (!mounted) return;
+          final normalized = _normalizeUrl(fresh);
+          setState(() {
+            _resolving = false;
+            if (normalized != null &&
+                normalized.isNotEmpty &&
+                normalized != _resolvedUrl) {
+              _resolvedUrl = normalized;
+              _retryGeneration++;
+              _triedRefreshOnError = false;
+            }
+          });
+        })
+        .catchError((_) {
+          if (mounted) setState(() => _resolving = false);
+        });
   }
 
   Widget _wrapSaturation(Widget child) {
     final filtered = (widget.saturation - 1.0).abs() < 0.01
         ? child
-        : ColorFiltered(
-            colorFilter: saturate(widget.saturation),
-            child: child,
-          );
+        : ColorFiltered(colorFilter: saturate(widget.saturation), child: child);
     return RepaintBoundary(child: filtered);
   }
 
@@ -1142,11 +1273,7 @@ class EmptyState extends StatelessWidget {
           children: [
             Icon(icon, size: 56, color: AppColors.read),
             const SizedBox(height: 16),
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: AppText.sheetTitle,
-            ),
+            Text(title, textAlign: TextAlign.center, style: AppText.sheetTitle),
             if (message != null) ...[
               const SizedBox(height: 8),
               Text(

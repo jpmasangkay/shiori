@@ -248,22 +248,30 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     final Map<String, List<MangaItem>> accumulated = {};
     int remaining = targetIds.length;
 
-    for (final sourceId in targetIds) {
-      ApiService.instance
-          .searchManga(query: q, source: sourceId)
-          .timeout(const Duration(seconds: 25), onTimeout: () => <MangaItem>[])
-          .then((res) {
-            if (!mounted || token != _searchToken) return;
-            if (res.isNotEmpty) {
-              accumulated[sourceId] = res;
-              setState(() {
-                _searchResults = Map<String, List<MangaItem>>.from(accumulated);
-              });
-            }
-          })
-          .catchError((_) {})
-          .whenComplete(() {
-            if (!mounted || token != _searchToken) return;
+    // Cap concurrent source searches so mobile connections aren't saturated
+    // and Cloudflare/rate-limit errors are dramatically reduced.
+    const maxConcurrent = 5;
+    var nextIndex = 0;
+
+    Future<void> runWorker() async {
+      while (nextIndex < targetIds.length) {
+        if (!mounted || token != _searchToken) return;
+        final sourceId = targetIds[nextIndex++];
+        try {
+          final res = await ApiService.instance
+              .searchManga(query: q, source: sourceId)
+              .timeout(const Duration(seconds: 25), onTimeout: () => <MangaItem>[]);
+          if (!mounted || token != _searchToken) return;
+          if (res.isNotEmpty) {
+            accumulated[sourceId] = res;
+            setState(() {
+              _searchResults = Map<String, List<MangaItem>>.from(accumulated);
+            });
+          }
+        } catch (_) {
+          // Ignore individual source failures so other sources still complete
+        } finally {
+          if (mounted && token == _searchToken) {
             remaining--;
             setState(() {
               _pendingSourcesCount = remaining < 0 ? 0 : remaining;
@@ -277,7 +285,14 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 }
               }
             });
-          });
+          }
+        }
+      }
+    }
+
+    final workerCount = targetIds.length < maxConcurrent ? targetIds.length : maxConcurrent;
+    for (var w = 0; w < workerCount; w++) {
+      unawaited(runWorker());
     }
   }
 

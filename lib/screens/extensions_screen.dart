@@ -930,7 +930,14 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     controller: _searchController,
                     onChanged: (v) {
                       _searchDebounce?.cancel();
-                      setState(() => _query = v.trim());
+                      final trimmed = v.trim();
+                      if (trimmed.isEmpty) {
+                        if (_query.isNotEmpty) setState(() => _query = '');
+                        return;
+                      }
+                      _searchDebounce = Timer(const Duration(milliseconds: 150), () {
+                        if (mounted) setState(() => _query = trimmed);
+                      });
                     },
                     style: AppText.body,
                     decoration: InputDecoration(

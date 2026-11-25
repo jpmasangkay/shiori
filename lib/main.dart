@@ -1,8 +1,11 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'display_settings.dart';
+import 'screens/backup_screen.dart';
 import 'screens/browse_screen.dart';
+import 'screens/download_manager_screen.dart';
 import 'screens/history_screen.dart';
 import 'screens/library_screen.dart';
 import 'screens/more_screen.dart';
@@ -10,17 +13,20 @@ import 'screens/updates_screen.dart';
 import 'services/api_service.dart';
 import 'services/connectivity_service.dart';
 import 'services/download_service.dart';
+import 'services/extension_service.dart';
 import 'services/privacy_service.dart';
 import 'services/reader_settings.dart';
+import 'services/source_manager.dart';
 import 'services/tracker_service.dart';
 import 'theme.dart';
 import 'widgets/auth_modal.dart';
+import 'widgets/common.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Balanced decoded image cache: crisp multi-page webtoon strips without low-RAM OOM
-  PaintingBinding.instance.imageCache.maximumSize = 300;
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 128 * 1024 * 1024; // 128 MB
+  // Generous decoded image cache so going back across pages & webtoon strips stays 0ms instant
+  PaintingBinding.instance.imageCache.maximumSize = 500;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 256 * 1024 * 1024; // 256 MB
   await ThemeController.instance.init();
   await PrivacyService.instance.init();
   await DisplaySettings.instance.init();
@@ -67,6 +73,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   int _index = 0;
   final Set<int> _loadedTabs = {0};
   DateTime _lastAutoRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime? _lastBackPressedAt;
   Timer? _startupSyncTimer;
   static const _resumeRefreshCooldown = Duration(minutes: 30);
 
@@ -74,11 +81,12 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Defer lightweight cooldown-gated sync until after initial frames & covers settle
+    // Defer lightweight cooldown-gated sync & daily auto-backup until after initial frames settle
     _startupSyncTimer = Timer(const Duration(seconds: 2), () {
       if (!mounted) return;
       _lastAutoRefreshAt = DateTime.now();
       ApiService.instance.autoRefreshEverything();
+      unawaited(BackupScreen.runScheduledAutoBackupIfDue());
     });
   }
 
@@ -145,8 +153,147 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     );
   }
 
+  int _unreadUpdatesBadgeCount() {
+    final cached = ApiService.instance.getCachedUpdates();
+    final groups = cached['groups'];
+    if (groups is! Map) return 0;
+    var unread = 0;
+    for (final list in groups.values) {
+      if (list is! List) continue;
+      for (final item in list) {
+        if (item is Map) {
+          final mId = item['mangaId']?.toString() ?? '';
+          final chId = item['id']?.toString() ?? '';
+          if (mId.isNotEmpty &&
+              chId.isNotEmpty &&
+              !ApiService.instance.isChapterRead(mId, chId)) {
+            unread++;
+          }
+        }
+      }
+    }
+    return unread;
+  }
+
+  Widget _badgedNavIcon(IconData icon, int count) {
+    if (count <= 0) return Icon(icon, size: 26);
+    return Badge(
+      label: Text(count > 99 ? '99+' : '$count'),
+      backgroundColor: AppColors.primary,
+      textColor: AppColors.onPrimary,
+      child: Icon(icon, size: 26),
+    );
+  }
+
+  Widget _buildActiveDownloadsMiniBar() {
+    return ListenableBuilder(
+      listenable: DownloadService.instance,
+      builder: (context, _) {
+        final ds = DownloadService.instance;
+        final active = ds.activeTasks;
+        if (active.isEmpty) return const SizedBox.shrink();
+        final current = active.first;
+        final pct = current.totalPages > 0
+            ? (current.downloadedPages / current.totalPages).clamp(0.0, 1.0)
+            : null;
+        return Material(
+          color: AppColors.surface,
+          child: InkWell(
+            onTap: () => Navigator.of(context).push(
+              smoothRoute(const DownloadManagerScreen()),
+            ),
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+              decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: AppColors.outline)),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        ds.isPaused ? Icons.pause_circle_outline_rounded : Icons.downloading_rounded,
+                        size: 18,
+                        color: AppColors.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          ds.isPaused
+                              ? 'Downloads paused (${active.length} queued)'
+                              : 'Downloading ${current.manga.displayTitle} • ${current.chapter.displayTitle}${active.length > 1 ? ' (+${active.length - 1})' : ''}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption.copyWith(
+                            color: AppColors.text,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          ds.isPaused ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                          size: 18,
+                          color: AppColors.primary,
+                        ),
+                        tooltip: ds.isPaused ? 'Resume downloads' : 'Pause downloads',
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        padding: EdgeInsets.zero,
+                        onPressed: () {
+                          if (ds.isPaused) {
+                            ds.resumeQueue();
+                          } else {
+                            ds.pauseQueue();
+                          }
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(2),
+                    child: LinearProgressIndicator(
+                      value: ds.isPaused ? (pct ?? 0.0) : pct,
+                      minHeight: 2.5,
+                      color: AppColors.primary,
+                      backgroundColor: AppColors.surfaceHigh,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildMainScaffold(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        if (_index != 0) {
+          _onSelectTab(0);
+          return;
+        }
+        final now = DateTime.now();
+        if (_lastBackPressedAt != null &&
+            now.difference(_lastBackPressedAt!) < const Duration(seconds: 2)) {
+          SystemNavigator.pop();
+          return;
+        }
+        _lastBackPressedAt = now;
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Press back again to exit'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      },
+      child: Scaffold(
       body: SafeArea(
         bottom: false,
         child: Column(
@@ -300,28 +447,51 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
                 ],
               ),
             ),
+            // 4. Compact active downloads indicator bar
+            _buildActiveDownloadsMiniBar(),
           ],
         ),
       ),
-      bottomNavigationBar: DecoratedBox(
-        decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: AppColors.outline, width: 0.8)),
-        ),
-        child: NavigationBar(
-          height: 74,
-          selectedIndex: _index,
-          onDestinationSelected: _onSelectTab,
-          labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-          destinations: [
-            for (final (icon, selected, label) in _destinations)
-              NavigationDestination(
-                icon: Icon(icon, size: 26),
-                selectedIcon: Icon(selected, size: 26),
-                label: label,
-              ),
-          ],
-        ),
+      bottomNavigationBar: ListenableBuilder(
+        listenable: Listenable.merge([
+          ApiService.instance,
+          ExtensionService.instance,
+        ]),
+        builder: (context, _) {
+          final unreadUpdates = _unreadUpdatesBadgeCount();
+          final extUpdates = SourceManager.isIOSPlatform
+              ? 0
+              : ExtensionService.instance.updatesAvailableExtensions
+                  .where((e) => e.isCompatible)
+                  .length;
+          return DecoratedBox(
+            decoration: const BoxDecoration(
+              border: Border(top: BorderSide(color: AppColors.outline, width: 0.8)),
+            ),
+            child: NavigationBar(
+              height: 74,
+              selectedIndex: _index,
+              onDestinationSelected: _onSelectTab,
+              labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+              destinations: [
+                for (var i = 0; i < _destinations.length; i++)
+                  NavigationDestination(
+                    icon: _badgedNavIcon(
+                      _destinations[i].$1,
+                      i == 1 ? unreadUpdates : (i == 3 ? extUpdates : 0),
+                    ),
+                    selectedIcon: _badgedNavIcon(
+                      _destinations[i].$2,
+                      i == 1 ? unreadUpdates : (i == 3 ? extUpdates : 0),
+                    ),
+                    label: _destinations[i].$3,
+                  ),
+              ],
+            ),
+          );
+        },
       ),
+    ),
     );
   }
 }

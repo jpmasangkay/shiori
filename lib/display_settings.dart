@@ -33,24 +33,30 @@ class DisplaySettings extends ChangeNotifier {
   static const _keyColumns = 'library_display_columns';
   static const _keyCategoryTabs = 'library_display_category_tabs';
   static const _keySort = 'library_display_sort';
+  static const _keySortAscending = 'library_display_sort_ascending';
   static const _keyFilterDownloaded = 'library_filter_downloaded';
   static const _keyFilterUnread = 'library_filter_unread';
   static const _keyFilterCompleted = 'library_filter_completed';
   static const _keyFilterTracked = 'library_filter_tracked';
   static const _keyShowDownloadBadges = 'library_show_download_badges';
+  static const _keyShowContinueReadingButton = 'library_show_continue_reading_btn';
   static const _keyShowEmptyCategories = 'library_show_empty_categories';
+  static const _keyExcludedUpdateCategories = 'library_excluded_update_categories';
 
   DisplayMode mode = DisplayMode.compactGrid;
   int columns = 3;
   bool categoryTabs = true;
   LibrarySort sort = LibrarySort.dateAdded;
+  bool sortAscending = false;
 
   bool filterDownloaded = false;
   bool filterUnread = false;
   bool filterCompleted = false;
   bool filterTracked = false;
   bool showDownloadBadges = true;
+  bool showContinueReadingButton = true;
   bool showEmptyCategories = false;
+  Set<String> excludedUpdateCategoryIds = {};
 
   bool get hasActiveFilters =>
       filterDownloaded || filterUnread || filterCompleted || filterTracked;
@@ -61,6 +67,28 @@ class DisplaySettings extends ChangeNotifier {
       filterUnread = false;
       filterCompleted = false;
       filterTracked = false;
+    });
+  }
+
+  /// Selects [next], or toggles ascending/descending if already selected.
+  Future<void> setSort(LibrarySort next) {
+    return update(() {
+      if (sort == next) {
+        sortAscending = !sortAscending;
+      } else {
+        sort = next;
+        sortAscending = next == LibrarySort.alphabetical;
+      }
+    });
+  }
+
+  Future<void> toggleExcludedUpdateCategory(String categoryId) {
+    return update(() {
+      if (excludedUpdateCategoryIds.contains(categoryId)) {
+        excludedUpdateCategoryIds.remove(categoryId);
+      } else {
+        excludedUpdateCategoryIds.add(categoryId);
+      }
     });
   }
 
@@ -102,12 +130,19 @@ class DisplaySettings extends ChangeNotifier {
               orElse: () => null,
             ) ?? sort;
       }
+      sortAscending = _prefs?.getBool(_keySortAscending) ??
+          (sort == LibrarySort.alphabetical);
       filterDownloaded = _prefs?.getBool(_keyFilterDownloaded) ?? false;
       filterUnread = _prefs?.getBool(_keyFilterUnread) ?? false;
       filterCompleted = _prefs?.getBool(_keyFilterCompleted) ?? false;
       filterTracked = _prefs?.getBool(_keyFilterTracked) ?? false;
       showDownloadBadges = _prefs?.getBool(_keyShowDownloadBadges) ?? true;
+      showContinueReadingButton =
+          _prefs?.getBool(_keyShowContinueReadingButton) ?? true;
       showEmptyCategories = _prefs?.getBool(_keyShowEmptyCategories) ?? false;
+      excludedUpdateCategoryIds =
+          (_prefs?.getStringList(_keyExcludedUpdateCategories) ?? const [])
+              .toSet();
       notifyListeners();
     } catch (_) {}
   }
@@ -119,12 +154,21 @@ class DisplaySettings extends ChangeNotifier {
       await _prefs?.setInt(_keyColumns, columns);
       await _prefs?.setBool(_keyCategoryTabs, categoryTabs);
       await _prefs?.setString(_keySort, sort.name);
+      await _prefs?.setBool(_keySortAscending, sortAscending);
       await _prefs?.setBool(_keyFilterDownloaded, filterDownloaded);
       await _prefs?.setBool(_keyFilterUnread, filterUnread);
       await _prefs?.setBool(_keyFilterCompleted, filterCompleted);
       await _prefs?.setBool(_keyFilterTracked, filterTracked);
       await _prefs?.setBool(_keyShowDownloadBadges, showDownloadBadges);
+      await _prefs?.setBool(
+        _keyShowContinueReadingButton,
+        showContinueReadingButton,
+      );
       await _prefs?.setBool(_keyShowEmptyCategories, showEmptyCategories);
+      await _prefs?.setStringList(
+        _keyExcludedUpdateCategories,
+        excludedUpdateCategoryIds.toList(),
+      );
     } catch (_) {}
   }
 

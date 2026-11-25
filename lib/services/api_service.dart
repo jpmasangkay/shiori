@@ -6,6 +6,7 @@ import 'package:flutter/painting.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:manga_reader/display_settings.dart';
 import 'package:manga_reader/models/manga_models.dart';
 import 'package:manga_reader/services/app_logger.dart';
 import 'package:manga_reader/services/auth_service.dart';
@@ -32,6 +33,24 @@ import 'package:manga_reader/services/scrapers/mangademon_scraper.dart';
 import 'package:manga_reader/widgets/common.dart';
 
 enum SyncStatus { idle, syncing, success, error }
+
+class LibraryUpdateProgress {
+  final bool isRunning;
+  final int completed;
+  final int total;
+  final String? currentTitle;
+  final int newChaptersFound;
+
+  const LibraryUpdateProgress({
+    this.isRunning = false,
+    this.completed = 0,
+    this.total = 0,
+    this.currentTitle,
+    this.newChaptersFound = 0,
+  });
+
+  double get fraction => total > 0 ? (completed / total).clamp(0.0, 1.0) : 0.0;
+}
 
 class SyncState {
   final SyncStatus status;
@@ -1133,42 +1152,93 @@ class ApiService extends ChangeNotifier {
     return cached;
   }
 
+  final ValueNotifier<LibraryUpdateProgress> libraryUpdateProgress =
+      ValueNotifier<LibraryUpdateProgress>(const LibraryUpdateProgress());
+
   Future<int> checkForLibraryUpdates() async {
     if (ConnectivityService.instance.isOffline) return 0;
+    if (libraryUpdateProgress.value.isRunning) return 0;
     final library = libraryRepo.getLibraryItems();
     if (library.isEmpty) return 0;
 
-    // Skip completed titles to save bandwidth on slow connections
+    final excludedCatIds = DisplaySettings.instance.excludedUpdateCategoryIds;
+
+    // Skip completed titles & titles belonging solely to update-excluded categories
     final activeLibrary = library.where((m) {
       final st = m.status.trim().toLowerCase();
-      return !st.contains('completed') && !st.contains('complete');
+      if (st.contains('completed') || st.contains('complete')) return false;
+      if (excludedCatIds.isNotEmpty) {
+        final cats = getMangaCategoryIds(m.id);
+        if (cats.isNotEmpty && cats.every(excludedCatIds.contains)) {
+          return false;
+        }
+      }
+      return true;
     }).toList();
 
     final targets = activeLibrary.isNotEmpty ? activeLibrary : library;
 
     int newChaptersCount = 0;
-    for (var i = 0; i < targets.length; i += 4) {
-      final chunk = targets.skip(i).take(4);
-      await Future.wait(
-        chunk.map((manga) async {
-          try {
-            final oldCount = historyRepo.getChapterCount(manga.id);
-            final chapters = await getChapters(manga.id, forceRefresh: true);
-            if (oldCount > 0 && chapters.length > oldCount) {
-              newChaptersCount += (chapters.length - oldCount);
+    int doneCount = 0;
+    libraryUpdateProgress.value = LibraryUpdateProgress(
+      isRunning: true,
+      completed: 0,
+      total: targets.length,
+      currentTitle: targets.first.displayTitle,
+      newChaptersFound: 0,
+    );
+
+    try {
+      for (var i = 0; i < targets.length; i += 4) {
+        final chunk = targets.skip(i).take(4).toList();
+        await Future.wait(
+          chunk.map((manga) async {
+            try {
+              final oldCount = historyRepo.getChapterCount(manga.id);
+              final oldIds = getCachedChapters(manga.id).map((c) => c.id).toSet();
+              final chapters = await getChapters(manga.id, forceRefresh: true);
+              if (oldCount > 0 && chapters.length > oldCount) {
+                final diff = chapters.length - oldCount;
+                newChaptersCount += diff;
+                if (DownloadService.instance.autoDownloadNewChapters) {
+                  final freshChapters = chapters
+                      .where((c) => !oldIds.contains(c.id) && !isChapterRead(manga.id, c.id))
+                      .take(diff)
+                      .toList();
+                  if (freshChapters.isNotEmpty) {
+                    unawaited(DownloadService.instance.downloadChapters(manga, freshChapters));
+                  }
+                }
+              }
+            } catch (_) {} finally {
+              doneCount++;
+              libraryUpdateProgress.value = LibraryUpdateProgress(
+                isRunning: true,
+                completed: doneCount,
+                total: targets.length,
+                currentTitle: manga.displayTitle,
+                newChaptersFound: newChaptersCount,
+              );
             }
-          } catch (_) {}
-        }),
+          }),
+        );
+      }
+      final now = DateTime.now();
+      _lastLibraryChapterCheck = now;
+      final p = _cachedPrefs ?? await SharedPreferences.getInstance();
+      unawaited(
+        p.setInt(_keyLastLibraryChapterCheckAt, now.millisecondsSinceEpoch),
+      );
+      notifyListeners();
+      return newChaptersCount;
+    } finally {
+      libraryUpdateProgress.value = LibraryUpdateProgress(
+        isRunning: false,
+        completed: doneCount,
+        total: targets.length,
+        newChaptersFound: newChaptersCount,
       );
     }
-    final now = DateTime.now();
-    _lastLibraryChapterCheck = now;
-    final p = _cachedPrefs ?? await SharedPreferences.getInstance();
-    unawaited(
-      p.setInt(_keyLastLibraryChapterCheckAt, now.millisecondsSinceEpoch),
-    );
-    notifyListeners();
-    return newChaptersCount;
   }
 
   bool _isAutoRefreshing = false;

@@ -201,9 +201,37 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
+  static String _historyDateBucket(DateTime? dt) {
+    if (dt == null) return 'Earlier';
+    final local = dt.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final entryDay = DateTime(local.year, local.month, local.day);
+    final diffDays = today.difference(entryDay).inDays;
+    if (diffDays <= 0) return 'Today';
+    if (diffDays == 1) return 'Yesterday';
+    if (diffDays < 7) return 'This Week';
+    return 'Earlier';
+  }
+
+  List<Object> _buildGroupedHistoryItems(List<ReadHistoryEntry> entries) {
+    final grouped = <Object>[];
+    String? currentHeader;
+    for (final entry in entries) {
+      final bucket = _historyDateBucket(entry.updatedAt);
+      if (bucket != currentHeader) {
+        currentHeader = bucket;
+        grouped.add(bucket);
+      }
+      grouped.add(entry);
+    }
+    return grouped;
+  }
+
   @override
   Widget build(BuildContext context) {
     final filtered = _filteredHistory;
+    final groupedItems = _buildGroupedHistoryItems(filtered);
     final sources = _availableSources;
 
     return Column(
@@ -336,10 +364,24 @@ class _HistoryScreenState extends State<HistoryScreen> {
                               onRefresh: () => _fetch(silent: true),
                               child: ListView.builder(
                                 padding: const EdgeInsets.symmetric(vertical: 8),
-                                itemCount: filtered.length,
+                                itemCount: groupedItems.length,
                                 addRepaintBoundaries: true,
                                 addAutomaticKeepAlives: false,
-                                itemBuilder: (_, i) => _buildHistoryRow(filtered[i]),
+                                itemBuilder: (_, i) {
+                                  final item = groupedItems[i];
+                                  if (item is String) {
+                                    return Padding(
+                                      padding: const EdgeInsets.fromLTRB(14, 10, 14, 4),
+                                      child: Text(
+                                        item,
+                                        style: AppText.sectionHeader.copyWith(
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    );
+                                  }
+                                  return _buildHistoryRow(item as ReadHistoryEntry);
+                                },
                               ),
                             ),
                           ),

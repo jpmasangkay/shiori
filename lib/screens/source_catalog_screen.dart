@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/manga_models.dart';
@@ -236,25 +237,38 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
 
     try {
       final query = _searchController.text.trim();
-      var results = await ApiService.instance.searchManga(
-        query: query,
-        type: _selectedType == 'all' ? null : _selectedType,
-        order: _selectedOrder,
-        page: nextPage,
-        limit: 24,
-        source: widget.sourceId,
-      );
-      if (results.isEmpty && query.isNotEmpty && _selectedType != 'all') {
-        final allResults = await ApiService.instance.searchManga(
+      List<MangaItem> results;
+      if (_isAndroidExtension &&
+          _activeExtensionFilters != null &&
+          _activeExtensionFilters!.isNotEmpty) {
+        final rawList = await PlatformBridge.instance.searchExtensionWithFilters(
+          pkg: widget.sourceId,
           query: query,
-          type: null,
+          page: nextPage,
+          filters: _activeExtensionFilters!,
+        );
+        results = _mapFilteredResults(rawList);
+      } else {
+        results = await ApiService.instance.searchManga(
+          query: query,
+          type: _selectedType == 'all' ? null : _selectedType,
           order: _selectedOrder,
           page: nextPage,
           limit: 24,
           source: widget.sourceId,
         );
-        if (allResults.isNotEmpty) {
-          results = allResults;
+        if (results.isEmpty && query.isNotEmpty && _selectedType != 'all') {
+          final allResults = await ApiService.instance.searchManga(
+            query: query,
+            type: null,
+            order: _selectedOrder,
+            page: nextPage,
+            limit: 24,
+            source: widget.sourceId,
+          );
+          if (allResults.isNotEmpty) {
+            results = allResults;
+          }
         }
       }
       if (mounted && token == _fetchToken) {
@@ -521,6 +535,55 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
             ),
           ),
 
+          if (_activeExtensionFilters != null && _activeExtensionFilters!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 6, 14, 2),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppColors.primary.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.primary.withValues(alpha: 0.35)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.filter_list_rounded, size: 16, color: AppColors.primary),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Source filters active',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.caption.copyWith(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        setState(() => _activeExtensionFilters = null);
+                        _fetch();
+                      },
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColors.primary,
+                        minimumSize: Size.zero,
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        'Clear',
+                        style: AppText.chip.copyWith(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
           AnimatedContainer(
             duration: const Duration(milliseconds: 180),
             height: (_isTyping || _refreshing) ? 2 : 0,
@@ -705,10 +768,43 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
               return const MangaCardSkeleton();
             }
             final manga = _items[i];
+            final inLibrary = ApiService.instance.isInLibrary(manga.id);
             return InkWell(
               onTap: () {
                 Navigator.of(context).push(
                   smoothRoute(DetailScreen(manga: manga)),
+                );
+              },
+              onLongPress: () async {
+                HapticFeedback.mediumImpact();
+                final wasInLib = ApiService.instance.isInLibrary(manga.id);
+                if (wasInLib) {
+                  await ApiService.instance.removeFromLibrary(manga.id);
+                } else {
+                  await ApiService.instance.addToLibrary(manga);
+                }
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).clearSnackBars();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      wasInLib
+                          ? 'Removed "${manga.displayTitle}" from library'
+                          : 'Added "${manga.displayTitle}" to library',
+                    ),
+                    duration: const Duration(seconds: 3),
+                    action: SnackBarAction(
+                      label: 'Undo',
+                      textColor: AppColors.primary,
+                      onPressed: () {
+                        if (wasInLib) {
+                          ApiService.instance.addToLibrary(manga);
+                        } else {
+                          ApiService.instance.removeFromLibrary(manga.id);
+                        }
+                      },
+                    ),
+                  ),
                 );
               },
               borderRadius: BorderRadius.circular(6),
@@ -718,7 +814,15 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                   fit: StackFit.expand,
                   children: [
                     const ColoredBox(color: AppColors.surfaceHigh),
-                    CoverImage(imageUrl: manga.cover, mangaId: manga.id, saturation: .75),
+                    CoverImage(
+                      imageUrl: manga.cover,
+                      mangaId: manga.id,
+                      saturation: inLibrary ? .35 : .75,
+                    ),
+                    if (inLibrary)
+                      ColoredBox(
+                        color: Colors.black.withValues(alpha: .32),
+                      ),
                     const Align(
                       alignment: Alignment.bottomCenter,
                       child: FractionallySizedBox(
@@ -750,6 +854,25 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                         ),
                       ),
                     ),
+                    if (inLibrary)
+                      Positioned(
+                        top: 5,
+                        right: 5,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: AppColors.primary,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            'IN LIBRARY',
+                            style: AppText.badge.copyWith(
+                              color: AppColors.onPrimary,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ),
                     Positioned(
                       left: 7,
                       right: 7,

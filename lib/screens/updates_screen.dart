@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/connectivity_service.dart';
+import '../services/download_service.dart';
 import '../services/source_resolver.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -25,6 +26,7 @@ class _UpdatesScreenState extends State<UpdatesScreen>
   Map<String, dynamic> _groups = {};
   bool _loading = false;
   bool _dirty = false;
+  bool _unreadOnly = false;
   DateTime _lastFetchAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const _resumeCooldown = Duration(minutes: 10);
 
@@ -39,6 +41,7 @@ class _UpdatesScreenState extends State<UpdatesScreen>
     }
     _fetch(silent: _groups.values.any((list) => (list as List).isNotEmpty));
     ApiService.instance.addListener(_onServiceChanged);
+    DownloadService.instance.addListener(_onDownloadChanged);
   }
 
   @override
@@ -54,7 +57,12 @@ class _UpdatesScreenState extends State<UpdatesScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     ApiService.instance.removeListener(_onServiceChanged);
+    DownloadService.instance.removeListener(_onDownloadChanged);
     super.dispose();
+  }
+
+  void _onDownloadChanged() {
+    if (mounted) setState(() {});
   }
 
   void _onServiceChanged() {
@@ -111,12 +119,47 @@ class _UpdatesScreenState extends State<UpdatesScreen>
 
   @override
   Widget build(BuildContext context) {
-    final hasUpdates = _groups.values.any((list) => (list as List).isNotEmpty);
+    final filteredGroups = <String, List<Map<String, dynamic>>>{};
+    for (final entry in _groups.entries) {
+      final rawList = entry.value;
+      if (rawList is! List) continue;
+      final kept = <Map<String, dynamic>>[];
+      for (final item in rawList) {
+        if (item is! Map<String, dynamic>) continue;
+        if (_unreadOnly) {
+          final mId = item['mangaId']?.toString() ?? '';
+          final chId = item['id']?.toString() ?? '';
+          if (mId.isNotEmpty &&
+              chId.isNotEmpty &&
+              ApiService.instance.isChapterRead(mId, chId)) {
+            continue;
+          }
+        }
+        kept.add(item);
+      }
+      if (kept.isNotEmpty) {
+        filteredGroups[entry.key] = kept;
+      }
+    }
+    final hasAnyUpdates = _groups.values.any((list) => (list as List).isNotEmpty);
+    final hasUpdates = filteredGroups.isNotEmpty;
 
     return Column(
       children: [
-        const AppTopBar(
+        AppTopBar(
           title: 'Updates',
+          actions: [
+            if (hasAnyUpdates)
+              IconButton(
+                tooltip: _unreadOnly ? 'Showing unread only' : 'Filter unread only',
+                icon: Icon(
+                  _unreadOnly ? Icons.filter_alt_rounded : Icons.filter_alt_outlined,
+                  size: 22,
+                  color: _unreadOnly ? AppColors.primary : AppColors.muted,
+                ),
+                onPressed: () => setState(() => _unreadOnly = !_unreadOnly),
+              ),
+          ],
         ),
         Expanded(
           child: RefreshIndicator(
@@ -125,7 +168,7 @@ class _UpdatesScreenState extends State<UpdatesScreen>
             onRefresh: _onRefresh,
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 250),
-              child: _loading && !hasUpdates
+              child: _loading && !hasAnyUpdates
                   ? ListView(
                       key: const ValueKey('updates_loading'),
                       padding: const EdgeInsets.only(top: 8, bottom: 16),
@@ -143,71 +186,71 @@ class _UpdatesScreenState extends State<UpdatesScreen>
                       padding: const EdgeInsets.only(bottom: 16),
                       children: [
                         if (hasUpdates) ...[
-                          for (final entry in _groups.entries) ...[
-                            if ((entry.value as List).isNotEmpty) ...[
-                              _DateHeader(entry.key),
-                              for (final item in (entry.value as List))
-                                if (item is Map<String, dynamic>)
-                                  _ApiUpdateRow(
-                                    item: item,
-                                    onTap: () {
-                                      final mId = item['mangaId']?.toString() ?? '';
-                                      final known = ApiService.instance.libraryRepo.knownManga[mId] ??
-                                          ApiService.instance.libraryRepo.localLibrary[mId];
-                                      final rawT = item['mangaTitle']?.toString() ?? '';
-                                      final effTitle = (rawT.isNotEmpty && rawT != 'Untitled' && !rawT.startsWith('ext:') && rawT != mId)
-                                          ? rawT
-                                          : (known?.displayTitle ?? MangaItem.cleanTitleFromIdOrSlug(mId));
-                                      final cachedChapters = ApiService.instance.getCachedChapters(mId);
-                                      Navigator.of(context).push(
-                                        smoothRoute(
-                                          ReaderScreen(
-                                            chapterId: item['id']?.toString() ?? '',
-                                            mangaId: mId,
-                                            mangaTitle: effTitle,
-                                            chapterTitle: item['chapterTitle'],
-                                            coverUrl: item['cover'],
-                                            chapterNumber: item['chapterNumber']?.toString(),
-                                            chapters: cachedChapters,
-                                            mangaType: known?.type ?? item['type']?.toString(),
-                                            tags: known?.tags,
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                    onCoverTap: () {
-                                      final mId = item['mangaId']?.toString() ?? '';
-                                      final known = ApiService.instance.libraryRepo.knownManga[mId] ??
-                                          ApiService.instance.libraryRepo.localLibrary[mId];
-                                      final rawT = item['mangaTitle']?.toString() ?? '';
-                                      final effTitle = (rawT.isNotEmpty && rawT != 'Untitled' && !rawT.startsWith('ext:') && rawT != mId)
-                                          ? rawT
-                                          : (known?.displayTitle ?? MangaItem.cleanTitleFromIdOrSlug(mId));
-                                      Navigator.of(context).push(
-                                        smoothRoute(
-                                          DetailScreen(
-                                            manga: known ??
-                                                MangaItem(
-                                                  id: mId,
-                                                  title: effTitle,
-                                                  cover: item['cover'] ?? '',
-                                                ),
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                            ],
+                          for (final entry in filteredGroups.entries) ...[
+                            _DateHeader(entry.key),
+                            for (final item in entry.value)
+                              _ApiUpdateRow(
+                                item: item,
+                                onTap: () {
+                                  final mId = item['mangaId']?.toString() ?? '';
+                                  final known = ApiService.instance.libraryRepo.knownManga[mId] ??
+                                      ApiService.instance.libraryRepo.localLibrary[mId];
+                                  final rawT = item['mangaTitle']?.toString() ?? '';
+                                  final effTitle = (rawT.isNotEmpty && rawT != 'Untitled' && !rawT.startsWith('ext:') && rawT != mId)
+                                      ? rawT
+                                      : (known?.displayTitle ?? MangaItem.cleanTitleFromIdOrSlug(mId));
+                                  final cachedChapters = ApiService.instance.getCachedChapters(mId);
+                                  Navigator.of(context).push(
+                                    smoothRoute(
+                                      ReaderScreen(
+                                        chapterId: item['id']?.toString() ?? '',
+                                        mangaId: mId,
+                                        mangaTitle: effTitle,
+                                        chapterTitle: item['chapterTitle'],
+                                        coverUrl: item['cover'],
+                                        chapterNumber: item['chapterNumber']?.toString(),
+                                        chapters: cachedChapters,
+                                        mangaType: known?.type ?? item['type']?.toString(),
+                                        tags: known?.tags,
+                                      ),
+                                    ),
+                                  );
+                                },
+                                onCoverTap: () {
+                                  final mId = item['mangaId']?.toString() ?? '';
+                                  final known = ApiService.instance.libraryRepo.knownManga[mId] ??
+                                      ApiService.instance.libraryRepo.localLibrary[mId];
+                                  final rawT = item['mangaTitle']?.toString() ?? '';
+                                  final effTitle = (rawT.isNotEmpty && rawT != 'Untitled' && !rawT.startsWith('ext:') && rawT != mId)
+                                      ? rawT
+                                      : (known?.displayTitle ?? MangaItem.cleanTitleFromIdOrSlug(mId));
+                                  Navigator.of(context).push(
+                                    smoothRoute(
+                                      DetailScreen(
+                                        manga: known ??
+                                            MangaItem(
+                                              id: mId,
+                                              title: effTitle,
+                                              cover: item['cover'] ?? '',
+                                            ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
                           ],
                         ] else ...[
                           LayoutBuilder(
-                            builder: (_, _) => const SizedBox(
+                            builder: (_, _) => SizedBox(
                               height: 400,
                               child: EmptyState(
-                                icon: Icons.new_releases_outlined,
-                                title: 'No recent updates',
-                                message:
-                                    'Only new chapters for titles bookmarked in your library will appear here. Pull down to refresh.',
+                                icon: _unreadOnly
+                                    ? Icons.done_all_rounded
+                                    : Icons.new_releases_outlined,
+                                title: _unreadOnly ? 'All caught up' : 'No recent updates',
+                                message: _unreadOnly
+                                    ? 'All recent chapters have been read. Tap the filter icon to show read updates.'
+                                    : 'Only new chapters for titles bookmarked in your library will appear here. Pull down to refresh.',
                               ),
                             ),
                           ),
@@ -250,6 +293,13 @@ class _ApiUpdateRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mId = item['mangaId']?.toString() ?? '';
+    final chId = item['id']?.toString() ?? '';
+    final isRead = mId.isNotEmpty &&
+        chId.isNotEmpty &&
+        ApiService.instance.isChapterRead(mId, chId);
+    final dlStatus = chId.isNotEmpty
+        ? DownloadService.instance.getStatus(chId)
+        : DownloadStatus.notDownloaded;
     final known = ApiService.instance.libraryRepo.knownManga[mId] ??
         ApiService.instance.libraryRepo.localLibrary[mId];
     final rawT = item['mangaTitle']?.toString() ?? '';
@@ -265,6 +315,78 @@ class _ApiUpdateRow extends StatelessWidget {
         ? SourceResolver.displayName(groupRaw.toString())
         : SourceResolver.displayName(SourceResolver.resolveSource(mId));
     final subtitle = '$chNum · $group';
+
+    void handleDownloadTap() {
+      if (chId.isEmpty || mId.isEmpty) return;
+      if (dlStatus == DownloadStatus.downloaded) {
+        DownloadService.instance.deleteDownloadedChapter(chId);
+        return;
+      }
+      if (dlStatus == DownloadStatus.downloading || dlStatus == DownloadStatus.queued) {
+        return;
+      }
+      final manga = known ??
+          MangaItem(
+            id: mId,
+            title: mangaTitle,
+            cover: item['cover']?.toString() ?? '',
+          );
+      final chapter = ChapterItem(
+        id: chId,
+        number: item['chapterNumber']?.toString(),
+        title: item['chapterTitle']?.toString() ?? '',
+        group: group,
+      );
+      DownloadService.instance.downloadChapter(manga, chapter);
+    }
+
+    Widget buildDownloadBtn() {
+      switch (dlStatus) {
+        case DownloadStatus.downloaded:
+          return IconButton(
+            constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
+            icon: const Icon(Icons.check_circle_rounded, size: 20, color: AppColors.primary),
+            tooltip: 'Downloaded (tap to delete)',
+            onPressed: handleDownloadTap,
+          );
+        case DownloadStatus.downloading:
+          return const SizedBox(
+            width: 42,
+            height: 42,
+            child: Center(
+              child: SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+              ),
+            ),
+          );
+        case DownloadStatus.queued:
+          return const SizedBox(
+            width: 42,
+            height: 42,
+            child: Icon(Icons.schedule_rounded, size: 20, color: AppColors.muted),
+          );
+        case DownloadStatus.failed:
+          return IconButton(
+            constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
+            icon: const Icon(Icons.error_outline_rounded, size: 20, color: Colors.redAccent),
+            tooltip: 'Retry download',
+            onPressed: handleDownloadTap,
+          );
+        case DownloadStatus.notDownloaded:
+          return IconButton(
+            constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
+            icon: Icon(
+              Icons.download_rounded,
+              size: 20,
+              color: AppColors.muted.withValues(alpha: isRead ? .35 : .7),
+            ),
+            tooltip: 'Download chapter',
+            onPressed: handleDownloadTap,
+          );
+      }
+    }
 
     return InkWell(
       onTap: onTap,
@@ -283,6 +405,7 @@ class _ApiUpdateRow extends StatelessWidget {
                   child: CoverImage(
                     imageUrl: item['cover']?.toString(),
                     mangaId: item['mangaId']?.toString(),
+                    saturation: isRead ? 0.3 : 1.0,
                     memCacheWidth: 90,
                     memCacheHeight: 120,
                   ),
@@ -299,18 +422,23 @@ class _ApiUpdateRow extends StatelessWidget {
                     mangaTitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: AppText.bodyMedium,
+                    style: AppText.bodyMedium.copyWith(
+                      color: isRead ? AppColors.read : AppColors.text,
+                    ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     subtitle,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: AppText.caption.copyWith(color: AppColors.muted),
+                    style: AppText.caption.copyWith(
+                      color: isRead ? AppColors.read : AppColors.muted,
+                    ),
                   ),
                 ],
               ),
             ),
+            if (chId.isNotEmpty) buildDownloadBtn(),
           ],
         ),
       ),

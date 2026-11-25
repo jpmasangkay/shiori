@@ -237,6 +237,7 @@ class _DisplayTab extends StatelessWidget {
             _ToggleRow('Category tabs', s.categoryTabs, (v) => s.update(() => s.categoryTabs = v)),
             _ToggleRow('Show empty categories', s.showEmptyCategories, (v) => s.update(() => s.showEmptyCategories = v)),
             _ToggleRow('Download count badges', s.showDownloadBadges, (v) => s.update(() => s.showDownloadBadges = v)),
+            _ToggleRow('Continue reading button', s.showContinueReadingButton, (v) => s.update(() => s.showContinueReadingButton = v)),
             if (onManageCategories != null) ...[
               const SizedBox(height: 8),
               InkWell(
@@ -382,10 +383,10 @@ class _SortTab extends StatelessWidget {
         return ListView(
           padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
           children: [
-            const _Heading('Sort by'),
+            const _Heading('Sort by (tap active to reverse)'),
             for (final o in LibrarySort.values)
               InkWell(
-                onTap: () => s.update(() => s.sort = o),
+                onTap: () => s.setSort(o),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(minHeight: 44),
                   child: Row(
@@ -393,7 +394,13 @@ class _SortTab extends StatelessWidget {
                       SizedBox(
                         width: 28,
                         child: o == s.sort
-                            ? const Icon(Icons.check_rounded, size: 18, color: AppColors.primary)
+                            ? Icon(
+                                s.sortAscending
+                                    ? Icons.arrow_upward_rounded
+                                    : Icons.arrow_downward_rounded,
+                                size: 18,
+                                color: AppColors.primary,
+                              )
                             : null,
                       ),
                       Expanded(
@@ -406,6 +413,11 @@ class _SortTab extends StatelessWidget {
                           ),
                         ),
                       ),
+                      if (o == s.sort)
+                        Text(
+                          s.sortAscending ? 'Asc' : 'Desc',
+                          style: AppText.caption.copyWith(color: AppColors.primary),
+                        ),
                     ],
                   ),
                 ),

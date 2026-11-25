@@ -115,24 +115,24 @@ void main() {
       );
     });
 
-    test('resolves other formats (manhua, comics, unknown) to Left-to-Right (LTR)', () {
-      // Chinese manhua
+    test('resolves manhua and Chinese webtoons to Webtoon mode, and western/unknown to Left-to-Right (LTR)', () {
+      // Chinese manhua -> Webtoon vertical strip by default
       expect(
         ReaderScreen.resolveAutomaticMode(type: 'manhua'),
-        equals(ReaderMode.leftToRight),
+        equals(ReaderMode.webtoon),
       );
 
       expect(
         ReaderScreen.resolveAutomaticMode(tags: ['Martial Arts', 'Manhua']),
-        equals(ReaderMode.leftToRight),
+        equals(ReaderMode.webtoon),
       );
 
       expect(
         ReaderScreen.resolveAutomaticMode(tags: ['Chinese']),
-        equals(ReaderMode.leftToRight),
+        equals(ReaderMode.webtoon),
       );
 
-      // Western comic
+      // Western comic -> LTR paged
       expect(
         ReaderScreen.resolveAutomaticMode(type: 'comic'),
         equals(ReaderMode.leftToRight),
@@ -172,10 +172,10 @@ void main() {
         equals(ReaderMode.webtoon),
       );
 
-      // Default type was 'manga', but tag indicates Manhua
+      // Default type was 'manga', but tag indicates Manhua -> Webtoon
       expect(
         ReaderScreen.resolveAutomaticMode(type: 'manga', tags: ['Cultivation', 'Manhua']),
-        equals(ReaderMode.leftToRight),
+        equals(ReaderMode.webtoon),
       );
     });
   });
@@ -210,8 +210,8 @@ void main() {
       expect(find.text('READING DIRECTION'), findsOneWidget);
       expect(find.text('Automatic'), findsOneWidget);
       expect(find.text('Right to Left (Standard Manga 🇯🇵)'), findsOneWidget);
-      expect(find.text('Webtoon (Vertical continuous scroll 🇰🇷)'), findsOneWidget);
-      expect(find.text('Left to Right (Western comics / Manhua 🇨🇳)'), findsOneWidget);
+      expect(find.text('Webtoon (Manhwa / Manhua 🇰🇷🇨🇳)'), findsOneWidget);
+      expect(find.text('Left to Right (Western Comics)'), findsOneWidget);
 
       // Checkmark is on Automatic
       final checkmarks = find.byIcon(Icons.check_rounded);
@@ -253,13 +253,29 @@ void main() {
       expect(find.text('Auto (Webtoon)'), findsAtLeastNWidgets(1));
     });
 
-    testWidgets('Other formats (e.g. Manhua / Western) open in Automatic (LTR) mode by default', (tester) async {
+    testWidgets('Manhua opens in Automatic (Webtoon) and Western comics open in Automatic (LTR)', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
           home: ReaderScreen(
             mangaId: 'manga_cn_1',
             mangaTitle: 'Martial Peak',
             mangaType: 'manhua',
+            chapters: sampleChapters,
+            initialIndex: 0,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Auto (Webtoon)'), findsAtLeastNWidgets(1));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ReaderScreen(
+            key: const ValueKey('comic_reader'),
+            mangaId: 'comic_us_1',
+            mangaTitle: 'Invincible',
+            mangaType: 'comic',
             chapters: sampleChapters,
             initialIndex: 0,
           ),
@@ -291,7 +307,7 @@ void main() {
       await tester.tap(find.text('Auto (RTL)').first);
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Webtoon (Vertical continuous scroll 🇰🇷)'));
+      await tester.tap(find.text('Webtoon (Manhwa / Manhua 🇰🇷🇨🇳)'));
       await tester.pumpAndSettle();
 
       // Label should now be 'Webtoon'

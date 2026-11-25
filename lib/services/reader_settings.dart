@@ -20,6 +20,23 @@ enum ReaderBackground {
   }
 }
 
+enum ReaderOrientation {
+  free('free', 'Free'),
+  portrait('portrait', 'Portrait'),
+  landscape('landscape', 'Landscape');
+
+  const ReaderOrientation(this.key, this.label);
+  final String key;
+  final String label;
+
+  static ReaderOrientation fromKey(String? key) {
+    for (final o in values) {
+      if (o.key == key) return o;
+    }
+    return ReaderOrientation.free;
+  }
+}
+
 class ReaderSettings extends ChangeNotifier {
   ReaderSettings._();
   static final ReaderSettings instance = ReaderSettings._();
@@ -28,6 +45,9 @@ class ReaderSettings extends ChangeNotifier {
   static const _keyFitMode = 'reader_fit_mode';
   static const _keyEnableTapZones = 'reader_enable_tap_zones';
   static const _keyInvertTapZones = 'reader_invert_tap_zones';
+  static const _keyWebtoonTapScroll = 'reader_webtoon_tap_scroll';
+  static const _keySkipDuplicateChapters = 'reader_skip_duplicate_chapters';
+  static const _keyOrientation = 'reader_orientation';
   static const _keyBrightness = 'reader_brightness';
   static const _keyTint = 'reader_tint';
   static const _keyDataSaver = 'reader_data_saver';
@@ -49,6 +69,9 @@ class ReaderSettings extends ChangeNotifier {
   BoxFit fitMode = BoxFit.fitWidth;
   bool enableTapZones = true;
   bool invertTapZones = false;
+  bool webtoonTapScroll = false;
+  bool skipDuplicateChapters = true;
+  ReaderOrientation orientation = ReaderOrientation.free;
   double brightness = 1.0;
   double tint = 0.0;
   bool dataSaver = false;
@@ -80,6 +103,9 @@ class ReaderSettings extends ChangeNotifier {
       }
       enableTapZones = _prefs?.getBool(_keyEnableTapZones) ?? true;
       invertTapZones = _prefs?.getBool(_keyInvertTapZones) ?? false;
+      webtoonTapScroll = _prefs?.getBool(_keyWebtoonTapScroll) ?? false;
+      skipDuplicateChapters = _prefs?.getBool(_keySkipDuplicateChapters) ?? true;
+      orientation = ReaderOrientation.fromKey(_prefs?.getString(_keyOrientation));
       brightness = (_prefs?.getDouble(_keyBrightness) ?? 1.0).clamp(0.2, 1.0);
       tint = (_prefs?.getDouble(_keyTint) ?? 0.0).clamp(0.0, 1.0);
       dataSaver = _prefs?.getBool(_keyDataSaver) ?? false;
@@ -316,6 +342,33 @@ class ReaderSettings extends ChangeNotifier {
     try {
       _prefs ??= await SharedPreferences.getInstance();
       await _prefs?.setBool(_keyInvertColors, val);
+    } catch (_) {}
+  }
+
+  Future<void> setWebtoonTapScroll(bool val) async {
+    webtoonTapScroll = val;
+    notifyListeners();
+    try {
+      _prefs ??= await SharedPreferences.getInstance();
+      await _prefs?.setBool(_keyWebtoonTapScroll, val);
+    } catch (_) {}
+  }
+
+  Future<void> setSkipDuplicateChapters(bool val) async {
+    skipDuplicateChapters = val;
+    notifyListeners();
+    try {
+      _prefs ??= await SharedPreferences.getInstance();
+      await _prefs?.setBool(_keySkipDuplicateChapters, val);
+    } catch (_) {}
+  }
+
+  Future<void> setOrientation(ReaderOrientation value) async {
+    orientation = value;
+    notifyListeners();
+    try {
+      _prefs ??= await SharedPreferences.getInstance();
+      await _prefs?.setString(_keyOrientation, value.key);
     } catch (_) {}
   }
 }

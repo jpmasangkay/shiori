@@ -12,8 +12,8 @@ class ReaderSettingsScreen extends StatelessWidget {
   static const _directions = [
     ('automatic', 'Automatic (Smart Detection)'),
     ('rightToLeft', 'Right to Left (Manga)'),
-    ('webtoon', 'Webtoon (Vertical Strip)'),
-    ('leftToRight', 'Left to Right (Manhua / Comics)'),
+    ('webtoon', 'Webtoon (Manhwa / Manhua)'),
+    ('leftToRight', 'Left to Right (Western Comics)'),
   ];
 
   @override
@@ -156,7 +156,52 @@ class ReaderSettingsScreen extends StatelessWidget {
                     subtitle: Text('Flip left and right edge actions', style: AppText.caption),
                     onChanged: rs.setInvertTapZones,
                   ),
+                  const Divider(color: AppColors.outline, height: 1),
+                  SwitchListTile(
+                    value: rs.webtoonTapScroll,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Webtoon Tap-to-Scroll', style: AppText.bodyMedium),
+                    subtitle: Text('Tap top/bottom edges to smoothly scroll in Webtoon mode', style: AppText.caption),
+                    onChanged: rs.setWebtoonTapScroll,
+                  ),
                 ],
+                const Divider(color: AppColors.outline, height: 1),
+                SwitchListTile(
+                  value: rs.skipDuplicateChapters,
+                  activeThumbColor: AppColors.primary,
+                  title: Text('Skip Duplicate Chapters', style: AppText.bodyMedium),
+                  subtitle: Text('Automatically skip duplicate chapter numbers from other scanlators', style: AppText.caption),
+                  onChanged: rs.setSkipDuplicateChapters,
+                ),
+                const Divider(color: AppColors.outline, height: 1),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Screen Orientation', style: AppText.bodyMedium),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final ori in ReaderOrientation.values)
+                            ChoiceChip(
+                              label: Text(ori.label),
+                              selected: rs.orientation == ori,
+                              onSelected: (_) => rs.setOrientation(ori),
+                              selectedColor: AppColors.active,
+                              backgroundColor: AppColors.surfaceHigh,
+                              labelStyle: AppText.chip.copyWith(
+                                color: rs.orientation == ori ? AppColors.primary : AppColors.muted,
+                              ),
+                              showCheckmark: false,
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
               ]),
 
               const SizedBox(height: 20),

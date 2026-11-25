@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../display_settings.dart';
 import '../models/manga_models.dart';
@@ -185,32 +186,51 @@ class _LibraryScreenState extends State<LibraryScreen>
       items = items.where((m) => TrackerService.instance.isMangaTracked(m.id)).toList();
     }
 
-    return _sortItems(items, s.sort);
+    return _sortItems(items, s.sort, ascending: s.sortAscending);
   }
 
-  List<MangaItem> _sortItems(List<MangaItem> items, LibrarySort sort) {
-    if (sort == LibrarySort.alphabetical) {
-      items.sort(
-        (a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()),
-      );
+  List<MangaItem> _sortItems(
+    List<MangaItem> items,
+    LibrarySort sort, {
+    required bool ascending,
+  }) {
+    if (sort == LibrarySort.dateAdded) {
+      if (ascending) {
+        return items.reversed.toList();
+      }
+      return items;
+    } else if (sort == LibrarySort.alphabetical) {
+      items.sort((a, b) {
+        final cmp = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+        return ascending ? cmp : -cmp;
+      });
     } else if (sort == LibrarySort.lastRead) {
       final dateMap = <String, DateTime>{
         for (final m in items)
           m.id: ApiService.instance.historyRepo.localProgress[m.id]?.updatedAt ?? DateTime(1970),
       };
-      items.sort((a, b) => (dateMap[b.id]!).compareTo(dateMap[a.id]!));
+      items.sort((a, b) {
+        final cmp = dateMap[a.id]!.compareTo(dateMap[b.id]!);
+        return ascending ? cmp : -cmp;
+      });
     } else if (sort == LibrarySort.lastUpdated) {
       final chapterMap = <String, double>{
         for (final m in items)
           m.id: double.tryParse(m.lastChapter ?? '') ?? 0.0,
       };
-      items.sort((a, b) => (chapterMap[b.id]!).compareTo(chapterMap[a.id]!));
+      items.sort((a, b) {
+        final cmp = chapterMap[a.id]!.compareTo(chapterMap[b.id]!);
+        return ascending ? cmp : -cmp;
+      });
     } else if (sort == LibrarySort.unreadCount) {
       final unreadMap = <String, int>{
         for (final m in items)
           m.id: ApiService.instance.getUnreadCount(m.id),
       };
-      items.sort((a, b) => (unreadMap[b.id]!).compareTo(unreadMap[a.id]!));
+      items.sort((a, b) {
+        final cmp = unreadMap[a.id]!.compareTo(unreadMap[b.id]!);
+        return ascending ? cmp : -cmp;
+      });
     }
     return items;
   }
@@ -291,6 +311,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   void _toggleSelection(String mangaId) {
+    HapticFeedback.selectionClick();
     setState(() {
       if (_selectedIds.contains(mangaId)) {
         _selectedIds.remove(mangaId);
@@ -992,7 +1013,9 @@ class _LibraryScreenState extends State<LibraryScreen>
                                   style: AppText.bodyMedium,
                                 ),
                                 subtitle: Text(
-                                  '$count titles',
+                                  displaySettings.excludedUpdateCategoryIds.contains(cat.id)
+                                      ? '$count titles · Excluded from updates'
+                                      : '$count titles',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: AppText.caption,
@@ -1000,6 +1023,29 @@ class _LibraryScreenState extends State<LibraryScreen>
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
+                                    IconButton(
+                                      constraints: const BoxConstraints(
+                                        minWidth: 44,
+                                        minHeight: 44,
+                                      ),
+                                      padding: EdgeInsets.zero,
+                                      tooltip: displaySettings.excludedUpdateCategoryIds.contains(cat.id)
+                                          ? 'Include in global updates'
+                                          : 'Exclude from global updates',
+                                      icon: Icon(
+                                        displaySettings.excludedUpdateCategoryIds.contains(cat.id)
+                                            ? Icons.sync_disabled_rounded
+                                            : Icons.sync_rounded,
+                                        size: 18,
+                                        color: displaySettings.excludedUpdateCategoryIds.contains(cat.id)
+                                            ? Colors.orangeAccent
+                                            : AppColors.muted,
+                                      ),
+                                      onPressed: () async {
+                                        await displaySettings.toggleExcludedUpdateCategory(cat.id);
+                                        setSheetState(() {});
+                                      },
+                                    ),
                                     IconButton(
                                       constraints: const BoxConstraints(
                                         minWidth: 44,
@@ -1219,15 +1265,22 @@ class _LibraryScreenState extends State<LibraryScreen>
           }
         }
 
-        // Categories appear when they have items (or when showEmptyCategories is toggled on)
+        // Categories appear when they have items (or when showEmptyCategories is toggled on).
+        // Label uncategorized items clearly as 'Default', and prepend a true 'All' tab
+        // whenever custom categories are active so users can always see their entire library.
         final visibleTabCategories = <(String?, String)>[];
-        if (uncategorizedCount > 0 || s.showEmptyCategories) {
-          visibleTabCategories.add((null, 'All'));
+        final activeCustomCats = [
+          for (final c in userCats)
+            if ((categoryCounts[c.id] ?? 0) > 0 || s.showEmptyCategories) c,
+        ];
+        if (activeCustomCats.isNotEmpty) {
+          visibleTabCategories.add(('__all__', 'All'));
         }
-        for (final c in userCats) {
-          if ((categoryCounts[c.id] ?? 0) > 0 || s.showEmptyCategories) {
-            visibleTabCategories.add((c.id, c.name));
-          }
+        if (uncategorizedCount > 0 || s.showEmptyCategories) {
+          visibleTabCategories.add((null, activeCustomCats.isNotEmpty ? 'Default' : 'All'));
+        }
+        for (final c in activeCustomCats) {
+          visibleTabCategories.add((c.id, c.name));
         }
 
         final validTabKeys = visibleTabCategories.map((t) => t.$1).toSet();
@@ -1297,7 +1350,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                     tooltip: 'Sort library',
                     color: AppColors.surface,
                     initialValue: s.sort,
-                    onSelected: (val) => s.update(() => s.sort = val),
+                    onSelected: (val) => s.setSort(val),
                     itemBuilder: (ctx) => [
                       for (final sortOpt in LibrarySort.values)
                         PopupMenuItem(
@@ -1305,7 +1358,13 @@ class _LibraryScreenState extends State<LibraryScreen>
                           child: Row(
                             children: [
                               if (s.sort == sortOpt)
-                                const Icon(Icons.check_rounded, size: 16, color: AppColors.primary)
+                                Icon(
+                                  s.sortAscending
+                                      ? Icons.arrow_upward_rounded
+                                      : Icons.arrow_downward_rounded,
+                                  size: 16,
+                                  color: AppColors.primary,
+                                )
                               else
                                 const SizedBox(width: 16),
                               const SizedBox(width: 8),
@@ -1466,6 +1525,67 @@ class _LibraryScreenState extends State<LibraryScreen>
                   ],
                 ),
               ),
+            ValueListenableBuilder<LibraryUpdateProgress>(
+              valueListenable: ApiService.instance.libraryUpdateProgress,
+              builder: (context, prog, _) {
+                if (!prog.isRunning || prog.total <= 0) {
+                  return const SizedBox.shrink();
+                }
+                return Container(
+                  margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: AppColors.primary.withValues(alpha: .4)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const SizedBox(
+                            width: 13,
+                            height: 13,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.primary,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Updating library (${prog.completed}/${prog.total})${prog.currentTitle != null ? ' • ${prog.currentTitle}' : ''}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: AppText.caption.copyWith(
+                                color: AppColors.text,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          if (prog.newChaptersFound > 0)
+                            Text(
+                              '+${prog.newChaptersFound}',
+                              style: AppText.badge.copyWith(color: AppColors.primary),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(3),
+                        child: LinearProgressIndicator(
+                          value: prog.fraction,
+                          minHeight: 3,
+                          color: AppColors.primary,
+                          backgroundColor: AppColors.surfaceHigh,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
             if (s.categoryTabs && _userLibrary.isNotEmpty && visibleTabCategories.isNotEmpty)
               _Tabs(
                 categories: visibleTabCategories,
@@ -1479,36 +1599,55 @@ class _LibraryScreenState extends State<LibraryScreen>
                 onManageCategories: _showCategoryManagementSheet,
               ),
             Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 250),
-                child: _loading && _userLibrary.isEmpty
-                    ? MangaGridSkeleton(
-                        key: const ValueKey('library_skeleton'),
-                        count: s.columns * 2,
-                        crossAxisCount: s.columns,
-                      )
-                    : RefreshIndicator(
-                        key: const ValueKey('library_content'),
-                        color: AppColors.primary,
-                        backgroundColor: AppColors.surface,
-                        onRefresh: _refreshLibraryWithUpdates,
-                        child: items.isEmpty
-                            ? LayoutBuilder(
-                                builder: (_, c) => SingleChildScrollView(
-                                  physics:
-                                      const AlwaysScrollableScrollPhysics(),
-                                  child: ConstrainedBox(
-                                    constraints: BoxConstraints(
-                                      minHeight: c.maxHeight,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragEnd: (!_isSelectionMode &&
+                        s.categoryTabs &&
+                        visibleTabCategories.length > 1)
+                    ? (details) {
+                        final v = details.primaryVelocity ?? 0;
+                        if (v.abs() < 320) return;
+                        final curIdx = visibleTabCategories
+                            .indexWhere((t) => t.$1 == _category);
+                        if (curIdx < 0) return;
+                        final nextIdx = v < 0 ? curIdx + 1 : curIdx - 1;
+                        if (nextIdx >= 0 && nextIdx < visibleTabCategories.length) {
+                          HapticFeedback.selectionClick();
+                          setState(() => _category = visibleTabCategories[nextIdx].$1);
+                        }
+                      }
+                    : null,
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 250),
+                  child: _loading && _userLibrary.isEmpty
+                      ? MangaGridSkeleton(
+                          key: const ValueKey('library_skeleton'),
+                          count: s.columns * 2,
+                          crossAxisCount: s.columns,
+                        )
+                      : RefreshIndicator(
+                          key: const ValueKey('library_content'),
+                          color: AppColors.primary,
+                          backgroundColor: AppColors.surface,
+                          onRefresh: _refreshLibraryWithUpdates,
+                          child: items.isEmpty
+                              ? LayoutBuilder(
+                                  builder: (_, c) => SingleChildScrollView(
+                                    physics:
+                                        const AlwaysScrollableScrollPhysics(),
+                                    child: ConstrainedBox(
+                                      constraints: BoxConstraints(
+                                        minHeight: c.maxHeight,
+                                      ),
+                                      child: _emptyState(),
                                     ),
-                                  child: _emptyState(),
                                   ),
-                                ),
-                              )
-                            : s.mode == DisplayMode.list
-                            ? _list(items)
-                            : _grid(s, items),
-                      ),
+                                )
+                              : s.mode == DisplayMode.list
+                              ? _list(items)
+                              : _grid(s, items),
+                        ),
+                ),
               ),
             ),
             if (_isSelectionMode)
@@ -1770,7 +1909,13 @@ class _LibraryScreenState extends State<LibraryScreen>
                 _openManga(manga);
               }
             },
-            onLongPress: () => _showMangaContextMenu(manga),
+            onLongPress: () {
+              HapticFeedback.mediumImpact();
+              _showMangaContextMenu(manga);
+            },
+            onQuickResume: (s.showContinueReadingButton && !_isSelectionMode)
+                ? () => _quickResumeManga(manga)
+                : null,
           ),
         );
       },
@@ -2023,6 +2168,7 @@ class CoverCard extends StatelessWidget {
     this.isSelected = false,
     this.onTap,
     this.onLongPress,
+    this.onQuickResume,
   });
 
   final String title;
@@ -2034,6 +2180,7 @@ class CoverCard extends StatelessWidget {
   final bool isSelected;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
+  final VoidCallback? onQuickResume;
 
   @override
   Widget build(BuildContext context) {
@@ -2070,7 +2217,7 @@ class CoverCard extends StatelessWidget {
           if (!comfortable && !coverOnly)
             Positioned(
               left: 7,
-              right: 7,
+              right: onQuickResume != null ? 36 : 7,
               bottom: 7,
               child: Text(
                 title,
@@ -2079,6 +2226,29 @@ class CoverCard extends StatelessWidget {
                 style: AppText.bodyMedium.copyWith(
                   fontSize: 12.5,
                   height: 16 / 12.5,
+                ),
+              ),
+            ),
+          if (onQuickResume != null && !isSelected)
+            Positioned(
+              right: 6,
+              bottom: 6,
+              child: Material(
+                color: AppColors.primary.withValues(alpha: 0.92),
+                shape: const CircleBorder(),
+                elevation: 2,
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: onQuickResume,
+                  child: const SizedBox(
+                    width: 26,
+                    height: 26,
+                    child: Icon(
+                      Icons.play_arrow_rounded,
+                      size: 16,
+                      color: AppColors.onPrimary,
+                    ),
+                  ),
                 ),
               ),
             ),

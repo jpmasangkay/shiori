@@ -159,7 +159,7 @@ void main() {
           home: ReaderScreen(
             mangaId: 'test_manga_1',
             mangaTitle: 'Test Manga',
-            mangaType: 'manhua', // LTR mode
+            mangaType: 'comic', // LTR paged mode
             chapters: sampleChapters,
             initialIndex: 0,
           ),
@@ -237,7 +237,7 @@ void main() {
                       builder: (_) => ReaderScreen(
                         mangaId: 'test_manga_1',
                         mangaTitle: 'Test Manga',
-                        mangaType: 'manhua',
+                        mangaType: 'comic',
                         chapters: sampleChapters,
                         initialIndex: 0,
                       ),
@@ -283,7 +283,7 @@ void main() {
           home: ReaderScreen(
             mangaId: 'test_manga_1',
             mangaTitle: 'Test Manga',
-            mangaType: 'manhua',
+            mangaType: 'comic',
             chapters: sampleChapters,
             initialIndex: 0,
           ),
