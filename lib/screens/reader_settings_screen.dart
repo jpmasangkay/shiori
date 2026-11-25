@@ -45,10 +45,10 @@ class ReaderSettingsScreen extends StatelessWidget {
                         .$2,
                     style: AppText.caption.copyWith(color: AppColors.primary),
                   ),
-                  trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
+                  trailing: Icon(Icons.chevron_right_rounded, color: AppColors.muted),
                   onTap: () => _pickDirection(context, rs),
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 ListTile(
                   title: Text('Image Fit Mode', style: AppText.bodyMedium),
                   subtitle: Text(
@@ -64,7 +64,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                     onSelectionChanged: (s) => rs.setFitMode(s.first),
                   ),
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                   child: Column(
@@ -105,7 +105,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   subtitle: Text('Prevents screen sleep while reading', style: AppText.caption),
                   onChanged: rs.setKeepScreenOn,
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.immersiveFullscreen,
                   activeThumbColor: AppColors.primary,
@@ -113,7 +113,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   subtitle: Text('Hide system status & navigation bars while reading', style: AppText.caption),
                   onChanged: rs.setImmersiveFullscreen,
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.showReadingStatusBar,
                   activeThumbColor: AppColors.primary,
@@ -121,7 +121,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   subtitle: Text('Show subtle page number & clock when menus are hidden', style: AppText.caption),
                   onChanged: rs.setShowReadingStatusBar,
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.volumeKeyNavigation,
                   activeThumbColor: AppColors.primary,
@@ -130,7 +130,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   onChanged: rs.setVolumeKeyNavigation,
                 ),
                 if (rs.volumeKeyNavigation) ...[
-                  const Divider(color: AppColors.outline, height: 1),
+                  Divider(color: AppColors.outline, height: 1),
                   SwitchListTile(
                     value: rs.invertVolumeKeys,
                     activeThumbColor: AppColors.primary,
@@ -139,7 +139,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                     onChanged: rs.setInvertVolumeKeys,
                   ),
                 ],
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.enableTapZones,
                   activeThumbColor: AppColors.primary,
@@ -148,7 +148,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   onChanged: rs.setEnableTapZones,
                 ),
                 if (rs.enableTapZones) ...[
-                  const Divider(color: AppColors.outline, height: 1),
+                  Divider(color: AppColors.outline, height: 1),
                   SwitchListTile(
                     value: rs.invertTapZones,
                     activeThumbColor: AppColors.primary,
@@ -156,7 +156,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                     subtitle: Text('Flip left and right edge actions', style: AppText.caption),
                     onChanged: rs.setInvertTapZones,
                   ),
-                  const Divider(color: AppColors.outline, height: 1),
+                  Divider(color: AppColors.outline, height: 1),
                   SwitchListTile(
                     value: rs.webtoonTapScroll,
                     activeThumbColor: AppColors.primary,
@@ -165,7 +165,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                     onChanged: rs.setWebtoonTapScroll,
                   ),
                 ],
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.skipDuplicateChapters,
                   activeThumbColor: AppColors.primary,
@@ -173,7 +173,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   subtitle: Text('Automatically skip duplicate chapter numbers from other scanlators', style: AppText.caption),
                   onChanged: rs.setSkipDuplicateChapters,
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                   child: Column(
@@ -214,7 +214,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   subtitle: Text('Display two pages side by side on tablets & landscape', style: AppText.caption),
                   onChanged: rs.setDualPageSpread,
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.cropBorders,
                   activeThumbColor: AppColors.primary,
@@ -222,7 +222,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   subtitle: Text('Trim excess whitespace along page edges', style: AppText.caption),
                   onChanged: rs.setCropBorders,
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.grayscaleFilter,
                   activeThumbColor: AppColors.primary,
@@ -230,7 +230,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   subtitle: Text('Render all pages in monochrome grayscale', style: AppText.caption),
                   onChanged: rs.setGrayscaleFilter,
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.invertColors,
                   activeThumbColor: AppColors.primary,
@@ -238,7 +238,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                   subtitle: Text('Invert white manga backgrounds for night reading', style: AppText.caption),
                   onChanged: rs.setInvertColors,
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
                   child: Column(
@@ -265,7 +265,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                     ],
                   ),
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
                   child: Column(
@@ -292,7 +292,7 @@ class ReaderSettingsScreen extends StatelessWidget {
                     ],
                   ),
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   value: rs.dataSaver,
                   activeThumbColor: AppColors.primary,
@@ -320,7 +320,7 @@ class ReaderSettingsScreen extends StatelessWidget {
             ListTile(
               title: Text(label, style: AppText.body),
               trailing: rs.defaultDirection == key
-                  ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                  ? Icon(Icons.check_rounded, color: AppColors.primary)
                   : null,
               onTap: () {
                 rs.setDefaultReadingDirection(key);
@@ -344,7 +344,7 @@ class ReaderSettingsScreen extends StatelessWidget {
       color: AppColors.surface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: const BorderSide(color: AppColors.outline),
+        side: BorderSide(color: AppColors.outline),
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(children: children),

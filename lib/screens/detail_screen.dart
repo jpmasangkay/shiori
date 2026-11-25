@@ -863,14 +863,14 @@ class _DetailScreenState extends State<DetailScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text(
+            child: Text(
               'Cancel',
               style: TextStyle(color: AppColors.muted),
             ),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('OK', style: TextStyle(color: AppColors.primary)),
+            child: Text('OK', style: TextStyle(color: AppColors.primary)),
           ),
         ],
       ),
@@ -1084,7 +1084,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 },
               ),
               ListTile(
-                leading: const Icon(
+                leading: Icon(
                   Icons.done_all_rounded,
                   color: AppColors.primary,
                 ),
@@ -1228,7 +1228,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           ],
                         ),
                       ),
-                      const Divider(color: AppColors.outline, height: 1),
+                      Divider(color: AppColors.outline, height: 1),
                       if (categories.isEmpty)
                         Flexible(
                           child: SingleChildScrollView(
@@ -1309,7 +1309,7 @@ class _DetailScreenState extends State<DetailScreen> {
           decoration: InputDecoration(
             hintText: 'e.g. Favorites, Reading, Shonen',
             hintStyle: AppText.caption,
-            focusedBorder: const UnderlineInputBorder(
+            focusedBorder: UnderlineInputBorder(
               borderSide: BorderSide(color: AppColors.primary),
             ),
           ),
@@ -1481,7 +1481,7 @@ class _DetailScreenState extends State<DetailScreen> {
         : null;
 
     return Container(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: AppColors.surface,
         border: Border(top: BorderSide(color: AppColors.outline)),
       ),
@@ -1539,7 +1539,7 @@ class _DetailScreenState extends State<DetailScreen> {
                     ),
                   ),
                   IconButton(
-                    icon: const Icon(
+                    icon: Icon(
                       Icons.close_rounded,
                       size: 18,
                       color: AppColors.muted,
@@ -1687,14 +1687,14 @@ class _DetailScreenState extends State<DetailScreen> {
                         decoration: InputDecoration(
                           hintText: 'Jump to chapter number or title...',
                           hintStyle: AppText.caption,
-                          prefixIcon: const Icon(
+                          prefixIcon: Icon(
                             Icons.search_rounded,
                             size: 18,
                             color: AppColors.muted,
                           ),
                           suffixIcon: _chapterSearchQuery.isNotEmpty
                               ? IconButton(
-                                  icon: const Icon(
+                                  icon: Icon(
                                     Icons.clear_rounded,
                                     size: 16,
                                     color: AppColors.muted,
@@ -1935,7 +1935,7 @@ class _DetailScreenState extends State<DetailScreen> {
         children: [
           Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.auto_awesome_rounded,
                 size: 15,
                 color: AppColors.primary,
@@ -1977,7 +1977,7 @@ class _DetailScreenState extends State<DetailScreen> {
                             child: Stack(
                               fit: StackFit.expand,
                               children: [
-                                const ColoredBox(color: AppColors.surfaceHigh),
+                                ColoredBox(color: AppColors.surfaceHigh),
                                 if (rec.coverUrl != null &&
                                     rec.coverUrl!.isNotEmpty)
                                   CoverImage(
@@ -2386,7 +2386,7 @@ class _DetailScreenState extends State<DetailScreen> {
     return Container(
       constraints: const BoxConstraints(minHeight: 74),
       padding: const EdgeInsets.symmetric(vertical: 8),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: AppColors.outline)),
       ),
       child: Row(
@@ -2554,7 +2554,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               ),
               ListTile(
-                leading: const Icon(
+                leading: Icon(
                   Icons.refresh_rounded,
                   color: AppColors.primary,
                 ),
@@ -2568,7 +2568,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 },
               ),
               ListTile(
-                leading: const Icon(
+                leading: Icon(
                   Icons.public_rounded,
                   color: AppColors.primary,
                 ),
@@ -2579,7 +2579,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 },
               ),
               ListTile(
-                leading: const Icon(
+                leading: Icon(
                   Icons.share_outlined,
                   color: AppColors.primary,
                 ),
@@ -2917,13 +2917,13 @@ class _DetailScreenState extends State<DetailScreen> {
                                   _saveChapterFilters();
                                 },
                               ),
-                              const Divider(
+                              Divider(
                                 color: AppColors.outline,
                                 height: 16,
                               ),
                               ListTile(
                                 contentPadding: EdgeInsets.zero,
-                                leading: const Icon(
+                                leading: Icon(
                                   Icons.groups_outlined,
                                   color: AppColors.muted,
                                   size: 24,
@@ -2945,7 +2945,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                               'None available',
                                               style: AppText.caption,
                                             )),
-                                trailing: const Icon(
+                                trailing: Icon(
                                   Icons.chevron_right_rounded,
                                   color: AppColors.muted,
                                 ),
@@ -3000,7 +3000,7 @@ class _DetailScreenState extends State<DetailScreen> {
                                   ],
                                 ),
                               ),
-                              const Divider(
+                              Divider(
                                 color: AppColors.outline,
                                 height: 16,
                               ),
@@ -3114,7 +3114,7 @@ class _DetailScreenState extends State<DetailScreen> {
     return Container(
       constraints: const BoxConstraints(minHeight: 48),
       padding: const EdgeInsets.only(left: 16, right: 8, top: 4, bottom: 4),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(top: BorderSide(color: AppColors.outline)),
       ),
       child: Row(
@@ -3233,7 +3233,7 @@ class _DetailScreenState extends State<DetailScreen> {
             onPressed: _showChapterFilterSheet,
           ),
           PopupMenuButton<String>(
-            icon: const Icon(
+            icon: Icon(
               Icons.download_rounded,
               size: 20,
               color: AppColors.muted,
@@ -3271,7 +3271,7 @@ class _DetailScreenState extends State<DetailScreen> {
             ],
           ),
           PopupMenuButton<String>(
-            icon: const Icon(
+            icon: Icon(
               Icons.more_vert_rounded,
               size: 20,
               color: AppColors.muted,
@@ -3421,7 +3421,7 @@ class _ApiChapterTile extends StatelessWidget {
       case DownloadStatus.downloaded:
         return IconButton(
           constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-          icon: const Icon(
+          icon: Icon(
             Icons.check_circle_rounded,
             size: 20,
             color: AppColors.primary,
@@ -3430,7 +3430,7 @@ class _ApiChapterTile extends StatelessWidget {
           onPressed: onToggleDownload,
         );
       case DownloadStatus.downloading:
-        return const SizedBox(
+        return SizedBox(
           width: 44,
           height: 44,
           child: Center(
@@ -3447,7 +3447,7 @@ class _ApiChapterTile extends StatelessWidget {
       case DownloadStatus.queued:
         return IconButton(
           constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-          icon: const Icon(
+          icon: Icon(
             Icons.schedule_rounded,
             size: 20,
             color: AppColors.muted,
@@ -3503,19 +3503,19 @@ class _ApiChapterTile extends StatelessWidget {
         padding: const EdgeInsets.only(right: 4, top: 6, bottom: 6),
         decoration: BoxDecoration(
           color: isSelected ? AppColors.primary.withValues(alpha: 0.14) : null,
-          border: const Border(bottom: BorderSide(color: AppColors.outline)),
+          border: Border(bottom: BorderSide(color: AppColors.outline)),
         ),
         child: Row(
           children: [
             if (isSelected) ...[
-              const Icon(
+              Icon(
                 Icons.check_circle_rounded,
                 size: 18,
                 color: AppColors.primary,
               ),
               const SizedBox(width: 8),
             ] else if (isBookmarked) ...[
-              const Icon(
+              Icon(
                 Icons.bookmark_rounded,
                 size: 16,
                 color: AppColors.primary,
@@ -3612,7 +3612,7 @@ class _ResumeFab extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
+              Icon(
                 Icons.play_arrow_rounded,
                 size: 22,
                 color: AppColors.onPrimary,

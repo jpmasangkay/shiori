@@ -137,7 +137,7 @@ class _MoreScreenState extends State<MoreScreen> {
                           final Color color;
                           switch (state.status) {
                             case SyncStatus.syncing:
-                              icon = const SizedBox(
+                              icon = SizedBox(
                                 width: 12,
                                 height: 12,
                                 child: CircularProgressIndicator(
@@ -203,7 +203,7 @@ class _MoreScreenState extends State<MoreScreen> {
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      const Icon(
+                                      Icon(
                                         Icons.cloud_done_rounded,
                                         size: 14,
                                         color: AppColors.primary,
@@ -262,7 +262,7 @@ class _MoreScreenState extends State<MoreScreen> {
                             child: OutlinedButton(
                               onPressed: _confirmLogout,
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(
+                                side: BorderSide(
                                   color: AppColors.outline,
                                 ),
                                 minimumSize: const Size.fromHeight(42),
@@ -364,7 +364,7 @@ class _MoreScreenState extends State<MoreScreen> {
                       ),
                       const SizedBox(width: 8),
                     ],
-                    const Icon(
+                    Icon(
                       Icons.arrow_forward_ios_rounded,
                       size: 14,
                       color: AppColors.muted,
@@ -592,7 +592,7 @@ class _MoreScreenState extends State<MoreScreen> {
                 title: 'Offline Backup & File Export',
                 subtitle:
                     'Export/import .tachibk, .shiori.json.gz & automatic snapshots',
-                trailing: const Icon(
+                trailing: Icon(
                   Icons.arrow_forward_ios_rounded,
                   size: 14,
                   color: AppColors.muted,
@@ -749,7 +749,7 @@ class _MoreScreenState extends State<MoreScreen> {
                     ),
                     onChanged: p.setSecureScreen,
                   ),
-                  const Divider(color: AppColors.outline),
+                  Divider(color: AppColors.outline),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
                     value: p.appLockEnabled,
@@ -788,7 +788,7 @@ class _MoreScreenState extends State<MoreScreen> {
                             : 'Recommended if biometrics are unavailable',
                         style: AppText.caption,
                       ),
-                      trailing: const Icon(
+                      trailing: Icon(
                         Icons.pin_outlined,
                         color: AppColors.primary,
                       ),
@@ -1163,7 +1163,7 @@ class _MoreScreenState extends State<MoreScreen> {
                     const SizedBox(height: 16),
                     Row(
                       children: [
-                        const Expanded(
+                        Expanded(
                           child: Divider(color: AppColors.outline),
                         ),
                         Padding(
@@ -1175,7 +1175,7 @@ class _MoreScreenState extends State<MoreScreen> {
                             ),
                           ),
                         ),
-                        const Expanded(
+                        Expanded(
                           child: Divider(color: AppColors.outline),
                         ),
                       ],
@@ -1341,7 +1341,7 @@ class _MoreScreenState extends State<MoreScreen> {
                     trailing,
                   ] else if (onTap != null) ...[
                     const SizedBox(width: 8),
-                    const Icon(
+                    Icon(
                       Icons.chevron_right_rounded,
                       color: AppColors.muted,
                       size: 20,

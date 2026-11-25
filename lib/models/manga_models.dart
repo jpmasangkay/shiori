@@ -280,6 +280,78 @@ class ChapterItem {
   }
 }
 
+/// Parses a numeric chapter number from [ChapterItem.number] or falls back to
+/// extracting it from [ChapterItem.title].
+double? parseChapterNumber(ChapterItem c) {
+  final raw = c.number?.trim();
+  if (raw != null && raw.isNotEmpty) {
+    final parsed = double.tryParse(raw);
+    if (parsed != null) return parsed;
+  }
+  final match = RegExp(
+    r'(?:chapter|ch\.?|ep\.?|episode)\s*(\d+(?:\.\d+)?)',
+    caseSensitive: false,
+  ).firstMatch(c.title);
+  if (match != null) return double.tryParse(match.group(1)!);
+  final matchAny = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(c.title);
+  if (matchAny != null) return double.tryParse(matchAny.group(1)!);
+  return null;
+}
+
+/// Normalizes a chapter list into chronological ascending order (oldest -> newest)
+/// so Next/Previous chapter navigation and resume logic always move forward even
+/// when sources return descending chapter lists.
+List<ChapterItem> sortChaptersChronologically(List<ChapterItem> chapters) {
+  if (chapters.length <= 1) return List<ChapterItem>.from(chapters);
+  final indexByIdentity = <ChapterItem, int>{
+    for (var i = 0; i < chapters.length; i++) chapters[i]: i,
+  };
+  final firstNum = parseChapterNumber(chapters.first);
+  final lastNum = parseChapterNumber(chapters.last);
+  final isSourceDescending =
+      firstNum != null && lastNum != null && firstNum > lastNum;
+
+  final sorted = List<ChapterItem>.from(chapters);
+  sorted.sort((a, b) {
+    final aNum = parseChapterNumber(a);
+    final bNum = parseChapterNumber(b);
+    if (aNum != null && bNum != null && aNum != bNum) {
+      return aNum.compareTo(bNum);
+    }
+    final idxA = indexByIdentity[a] ?? 0;
+    final idxB = indexByIdentity[b] ?? 0;
+    return isSourceDescending ? idxB.compareTo(idxA) : idxA.compareTo(idxB);
+  });
+  return sorted;
+}
+
+/// Resolved resume destination for a manga across Library, Detail, and History.
+class ResumeTarget {
+  const ResumeTarget({
+    required this.chapterId,
+    required this.label,
+    required this.orderedChapters,
+    this.chapter,
+    this.chapterNumber,
+    this.chapterTitle,
+    this.page = 1,
+    this.isInProgress = false,
+    this.isAfterFinishedChapter = false,
+    this.isCaughtUp = false,
+  });
+
+  final String? chapterId;
+  final ChapterItem? chapter;
+  final String? chapterNumber;
+  final String? chapterTitle;
+  final int page;
+  final String label;
+  final List<ChapterItem> orderedChapters;
+  final bool isInProgress;
+  final bool isAfterFinishedChapter;
+  final bool isCaughtUp;
+}
+
 class ChapterPages {
   final String chapterId;
   final List<String> pages;

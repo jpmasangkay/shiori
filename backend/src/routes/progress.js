@@ -72,22 +72,24 @@ router.post('/', async (req, res) => {
     const validUpdatedAt =
       parsedUpdatedAt && !Number.isNaN(parsedUpdatedAt.getTime()) ? parsedUpdatedAt : null;
 
+    const setFields = {
+      mangaId: cleanMangaId,
+      mangaTitle: typeof mangaTitle === 'string' ? mangaTitle.trim().slice(0, 200) : '',
+      cover: typeof cover === 'string' ? cover.trim() : '',
+      source: typeof source === 'string' ? source.trim().slice(0, 80) : '',
+      chapterNumber: typeof chapterNumber === 'string' ? chapterNumber.trim() : String(chapterNumber || ''),
+      chapterTitle: typeof chapterTitle === 'string' ? chapterTitle.trim().slice(0, 200) : '',
+      page: Math.max(1, Number(page) || 1),
+      totalPages: Math.max(0, Number(totalPages) || 0),
+      ...(validUpdatedAt ? { updatedAt: validUpdatedAt } : {}),
+    };
+    const updateDoc = completed
+      ? { $set: { ...setFields, completed: true } }
+      : { $set: setFields, $setOnInsert: { completed: false } };
+
     const doc = await Progress.findOneAndUpdate(
       { user: req.user.id, chapterId: cleanChapterId },
-      {
-        $set: {
-          mangaId: cleanMangaId,
-          mangaTitle: typeof mangaTitle === 'string' ? mangaTitle.trim().slice(0, 200) : '',
-          cover: typeof cover === 'string' ? cover.trim() : '',
-          source: typeof source === 'string' ? source.trim().slice(0, 80) : '',
-          chapterNumber: typeof chapterNumber === 'string' ? chapterNumber.trim() : String(chapterNumber || ''),
-          chapterTitle: typeof chapterTitle === 'string' ? chapterTitle.trim().slice(0, 200) : '',
-          page: Math.max(1, Number(page) || 1),
-          totalPages: Math.max(0, Number(totalPages) || 0),
-          completed: Boolean(completed),
-          ...(validUpdatedAt ? { updatedAt: validUpdatedAt } : {}),
-        },
-      },
+      updateDoc,
       { upsert: true, new: true, setDefaultsOnInsert: true, timestamps: !validUpdatedAt },
     );
 
@@ -155,7 +157,7 @@ router.post('/batch', async (req, res) => {
                 typeof item.chapterTitle === 'string' ? item.chapterTitle.trim().slice(0, 200) : '',
               page: Math.max(1, Number(item.page) || 1),
               totalPages: Math.max(0, Number(item.totalPages) || 0),
-              completed: Boolean(item.completed),
+              completed: Boolean(item.completed || existing?.completed),
               updatedAt: clientDate,
             },
             $setOnInsert: { createdAt: clientDate },

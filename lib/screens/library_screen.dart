@@ -492,7 +492,7 @@ class _LibraryScreenState extends State<LibraryScreen>
               children: [
                 Row(
                   children: [
-                    const Icon(Icons.swap_horiz_rounded, color: AppColors.primary, size: 22),
+                    Icon(Icons.swap_horiz_rounded, color: AppColors.primary, size: 22),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
@@ -502,7 +502,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                     ),
                     if (!migrating)
                       IconButton(
-                        icon: const Icon(Icons.close_rounded, color: AppColors.muted),
+                        icon: Icon(Icons.close_rounded, color: AppColors.muted),
                         onPressed: () => Navigator.pop(ctx),
                       ),
                   ],
@@ -668,27 +668,27 @@ class _LibraryScreenState extends State<LibraryScreen>
                   ],
                 ),
               ),
-              const Divider(color: AppColors.outline, height: 16),
+              Divider(color: AppColors.outline, height: 16),
               if (canQuickResume)
                 ListTile(
-                  leading: const Icon(Icons.play_arrow_rounded, color: AppColors.primary),
-                  title: Text(resumeLabel, style: const TextStyle(color: AppColors.text)),
+                  leading: Icon(Icons.play_arrow_rounded, color: AppColors.primary),
+                  title: Text(resumeLabel, style: TextStyle(color: AppColors.text)),
                   onTap: () {
                     Navigator.pop(ctx);
                     _quickResumeManga(manga);
                   },
                 ),
               ListTile(
-                leading: const Icon(Icons.label_outline_rounded, color: AppColors.primary),
-                title: const Text('Set Categories', style: TextStyle(color: AppColors.text)),
+                leading: Icon(Icons.label_outline_rounded, color: AppColors.primary),
+                title: Text('Set Categories', style: TextStyle(color: AppColors.text)),
                 onTap: () {
                   Navigator.pop(ctx);
                   _showMangaCategoryDialog(manga);
                 },
               ),
               ListTile(
-                leading: const Icon(Icons.checklist_rounded, color: AppColors.primary),
-                title: const Text('Select Multiple', style: TextStyle(color: AppColors.text)),
+                leading: Icon(Icons.checklist_rounded, color: AppColors.primary),
+                title: Text('Select Multiple', style: TextStyle(color: AppColors.text)),
                 onTap: () {
                   Navigator.pop(ctx);
                   _toggleSelection(manga.id);
@@ -729,7 +729,7 @@ class _LibraryScreenState extends State<LibraryScreen>
           decoration: InputDecoration(
             hintText: 'e.g. Reading, Favorites, Shonen',
             hintStyle: AppText.caption,
-            focusedBorder: const UnderlineInputBorder(
+            focusedBorder: UnderlineInputBorder(
               borderSide: BorderSide(color: AppColors.primary),
             ),
           ),
@@ -787,7 +787,7 @@ class _LibraryScreenState extends State<LibraryScreen>
           controller: textController,
           autofocus: true,
           style: AppText.body,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             focusedBorder: UnderlineInputBorder(
               borderSide: BorderSide(color: AppColors.primary),
             ),
@@ -972,7 +972,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                           ],
                         ),
                       ),
-                      const Divider(color: AppColors.outline, height: 1),
+                      Divider(color: AppColors.outline, height: 1),
                       if (cats.isEmpty)
                         Flexible(
                           child: SingleChildScrollView(
@@ -1001,7 +1001,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                                   .length;
                               return ListTile(
                                 contentPadding: const EdgeInsets.only(left: 16, right: 8),
-                                leading: const Icon(
+                                leading: Icon(
                                   Icons.folder_outlined,
                                   color: AppColors.muted,
                                   size: 20,
@@ -1053,7 +1053,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                                       ),
                                       padding: EdgeInsets.zero,
                                       tooltip: 'Rename category',
-                                      icon: const Icon(
+                                      icon: Icon(
                                         Icons.edit_outlined,
                                         size: 18,
                                         color: AppColors.muted,
@@ -1073,7 +1073,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                                       ),
                                       padding: EdgeInsets.zero,
                                       tooltip: 'Delete category',
-                                      icon: const Icon(
+                                      icon: Icon(
                                         Icons.delete_outline_rounded,
                                         size: 18,
                                         color: AppColors.muted,
@@ -1183,7 +1183,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                           ],
                         ),
                       ),
-                      const Divider(color: AppColors.outline, height: 1),
+                      Divider(color: AppColors.outline, height: 1),
                       if (cats.isEmpty)
                         Flexible(
                           child: SingleChildScrollView(
@@ -1346,7 +1346,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                       onTap: () => _showResolveDuplicatesSheet(duplicateGroups),
                     ),
                   PopupMenuButton<LibrarySort>(
-                    icon: const Icon(Icons.sort_rounded, size: 22, color: AppColors.muted),
+                    icon: Icon(Icons.sort_rounded, size: 22, color: AppColors.muted),
                     tooltip: 'Sort library',
                     color: AppColors.surface,
                     initialValue: s.sort,
@@ -1399,10 +1399,10 @@ class _LibraryScreenState extends State<LibraryScreen>
                     decoration: InputDecoration(
                       hintText: 'Search library by title, author, or tag...',
                       hintStyle: AppText.caption,
-                      prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.muted),
+                      prefixIcon: Icon(Icons.search_rounded, size: 18, color: AppColors.muted),
                       suffixIcon: _searchQuery.isNotEmpty
                           ? IconButton(
-                              icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.muted),
+                              icon: Icon(Icons.clear_rounded, size: 16, color: AppColors.muted),
                               onPressed: () {
                                 _searchController.clear();
                                 setState(() => _searchQuery = '');
@@ -1494,7 +1494,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.info_outline_rounded, size: 18, color: AppColors.primary),
+                    Icon(Icons.info_outline_rounded, size: 18, color: AppColors.primary),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
@@ -1513,7 +1513,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                       onPressed: () => _showResolveDuplicatesSheet(duplicateGroups),
-                      child: const Text(
+                      child: Text(
                         'Resolve',
                         style: TextStyle(
                           color: AppColors.primary,
@@ -1544,7 +1544,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                     children: [
                       Row(
                         children: [
-                          const SizedBox(
+                          SizedBox(
                             width: 13,
                             height: 13,
                             child: CircularProgressIndicator(
@@ -1653,7 +1653,7 @@ class _LibraryScreenState extends State<LibraryScreen>
             if (_isSelectionMode)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: AppColors.surface,
                   border: Border(top: BorderSide(color: AppColors.outline)),
                 ),
@@ -1737,7 +1737,7 @@ class _LibraryScreenState extends State<LibraryScreen>
           const SizedBox(height: 12),
           TextButton.icon(
             onPressed: _showOnboardingSheet,
-            icon: const Icon(Icons.help_outline_rounded, size: 18, color: AppColors.primary),
+            icon: Icon(Icons.help_outline_rounded, size: 18, color: AppColors.primary),
             label: Text(
               'How it works (3-step guide)',
               style: AppText.bodyMedium.copyWith(color: AppColors.primary),
@@ -2003,7 +2003,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                     ),
                   IconButton(
                     constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                    icon: const Icon(
+                    icon: Icon(
                       Icons.label_outline_rounded,
                       size: 18,
                       color: AppColors.muted,
@@ -2041,7 +2041,7 @@ class _Tabs extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       height: 48,
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         border: Border(bottom: BorderSide(color: AppColors.outline, width: 0.8)),
       ),
       child: ListView.separated(
@@ -2127,7 +2127,7 @@ class _ManageCategoryPill extends StatelessWidget {
         color: AppColors.surface,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
-          side: const BorderSide(color: AppColors.outline, width: 1.0),
+          side: BorderSide(color: AppColors.outline, width: 1.0),
         ),
         child: InkWell(
           onTap: onTap,
@@ -2137,7 +2137,7 @@ class _ManageCategoryPill extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.add_rounded, size: 14, color: AppColors.muted),
+                Icon(Icons.add_rounded, size: 14, color: AppColors.muted),
                 const SizedBox(width: 4),
                 Text(
                   'Manage',
@@ -2192,7 +2192,7 @@ class CoverCard extends StatelessWidget {
       child: Stack(
         fit: StackFit.expand,
         children: [
-          const ColoredBox(color: AppColors.surfaceHigh),
+          ColoredBox(color: AppColors.surfaceHigh),
           CoverImage(imageUrl: imageUrl, mangaId: mangaId),
           if (!comfortable && !coverOnly)
             const Align(
@@ -2240,7 +2240,7 @@ class CoverCard extends StatelessWidget {
                 child: InkWell(
                   customBorder: const CircleBorder(),
                   onTap: onQuickResume,
-                  child: const SizedBox(
+                  child: SizedBox(
                     width: 26,
                     height: 26,
                     child: Icon(
@@ -2313,7 +2313,7 @@ class CoverCard extends StatelessWidget {
                   border: Border.all(color: AppColors.primary, width: 2.5),
                   borderRadius: BorderRadius.circular(6),
                 ),
-                child: const Align(
+                child: Align(
                   alignment: Alignment.center,
                   child: Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 32),
                 ),

@@ -13,6 +13,7 @@ import 'package:manga_reader/services/privacy_service.dart';
 class HistoryRepository extends ChangeNotifier {
   final List<ReadHistoryEntry> _localHistory = [];
   final Map<String, ReadProgress> _localProgress = {};
+  final Map<String, ReadProgress> _chapterProgress = {};
   final Map<String, Set<String>> _readChapters = {};
   final Map<String, Set<String>> _readChapterCanonicalKeys = {};
   final Map<String, Set<String>> _pendingUnreadChapters = {};
@@ -93,6 +94,7 @@ class HistoryRepository extends ChangeNotifier {
     _cachedPrefs = prefs;
     _localHistory.clear();
     _localProgress.clear();
+    _chapterProgress.clear();
     _readChapters.clear();
     _readChapterCanonicalKeys.clear();
     _pendingUnreadChapters.clear();
@@ -132,6 +134,24 @@ class HistoryRepository extends ChangeNotifier {
         });
       } catch (e) {
         AppLogger.warn('Failed to parse shiori_local_progress', e);
+      }
+    }
+
+    // 2b. Per-Chapter Progress (remembers exact page per unfinished chapter)
+    final chProgJson = prefs.getString('shiori_chapter_progress_v1');
+    if (chProgJson != null && chProgJson.isNotEmpty) {
+      try {
+        final Map<String, dynamic> map = jsonDecode(chProgJson);
+        _chapterProgress.clear();
+        map.forEach((k, v) {
+          if (v is Map) {
+            _chapterProgress[k] = ReadProgress.fromMap(
+              Map<String, dynamic>.from(v),
+            );
+          }
+        });
+      } catch (e) {
+        AppLogger.warn('Failed to parse shiori_chapter_progress_v1', e);
       }
     }
 
@@ -342,6 +362,58 @@ class HistoryRepository extends ChangeNotifier {
     }
   }
 
+  Future<void> _persistChapterProgress() async {
+    try {
+      final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
+      // Cap at 500 most recent chapters
+      if (_chapterProgress.length > 500) {
+        final sorted = _chapterProgress.entries.toList()
+          ..sort((a, b) => (b.value.updatedAt ?? DateTime(1970))
+              .compareTo(a.value.updatedAt ?? DateTime(1970)));
+        _chapterProgress
+          ..clear()
+          ..addEntries(sorted.take(500));
+      }
+      final map = <String, Map<String, dynamic>>{
+        for (final entry in _chapterProgress.entries)
+          entry.key: entry.value.toMap(),
+      };
+      await prefs.setString('shiori_chapter_progress_v1', jsonEncode(map));
+    } catch (e) {
+      AppLogger.warn('Failed to persist chapter progress', e);
+    }
+  }
+
+  ReadProgress? getChapterProgress(String chapterId) {
+    if (chapterId.isEmpty) return null;
+    final direct = _chapterProgress[chapterId];
+    if (direct != null) return direct;
+    final canon = canonicalChapterKey(chapterId);
+    if (canon.isNotEmpty) {
+      return _chapterProgress[canon];
+    }
+    return null;
+  }
+
+  int? getSavedPageForChapter(String mangaId, String chapterId) {
+    if (chapterId.isEmpty) return null;
+    if (isChapterRead(mangaId, chapterId)) return null;
+    final chProg = getChapterProgress(chapterId);
+    if (chProg != null && !chProg.completed && chProg.page > 1) {
+      return chProg.page;
+    }
+    final mangaProg = _localProgress[mangaId];
+    if (mangaProg != null &&
+        !mangaProg.completed &&
+        mangaProg.page > 1 &&
+        (mangaProg.chapterId == chapterId ||
+            canonicalChapterKey(mangaProg.chapterId) ==
+                canonicalChapterKey(chapterId))) {
+      return mangaProg.page;
+    }
+    return null;
+  }
+
   Future<void> _persistReadChapters() async {
     try {
       final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
@@ -430,10 +502,17 @@ class HistoryRepository extends ChangeNotifier {
     );
 
     _localProgress[mangaId] = entry;
+    final canonChKey = canonicalChapterKey(chapterId);
+    if (canonChKey.isNotEmpty) {
+      _chapterProgress[canonChKey] = entry;
+    } else if (chapterId.isNotEmpty) {
+      _chapterProgress[chapterId] = entry;
+    }
     if (LocalDatabase.instance.isAvailable) {
       await LocalDatabase.instance.upsertProgress(entry);
     }
     await _persistLocalProgress();
+    unawaited(_persistChapterProgress());
 
     final histEntry = ReadHistoryEntry(
       mangaId: mangaId,
@@ -530,6 +609,21 @@ class HistoryRepository extends ChangeNotifier {
       _pendingUnreadChapters
           .putIfAbsent(mangaId, () => <String>{})
           .addAll(affectedIds);
+      final curProg = _localProgress[mangaId];
+      if (curProg != null &&
+          curProg.completed &&
+          (affectedIds.contains(curProg.chapterId) ||
+              (canon.isNotEmpty &&
+                  canonicalChapterKey(curProg.chapterId) == canon))) {
+        _localProgress[mangaId] = curProg.copyWith(completed: false, page: 1);
+        unawaited(_persistLocalProgress());
+      }
+      for (final cid in affectedIds) {
+        _chapterProgress.remove(cid);
+        final cKey = canonicalChapterKey(cid);
+        if (cKey.isNotEmpty) _chapterProgress.remove(cKey);
+      }
+      unawaited(_persistChapterProgress());
     }
     if (LocalDatabase.instance.isAvailable) {
       await LocalDatabase.instance.setChaptersRead(mangaId, affectedIds, read);
@@ -603,6 +697,22 @@ class HistoryRepository extends ChangeNotifier {
       _pendingUnreadChapters
           .putIfAbsent(mangaId, () => <String>{})
           .addAll(affectedIds);
+      // Clear completed flag & saved page progress for unmarked chapters
+      final curProg = _localProgress[mangaId];
+      if (curProg != null &&
+          curProg.completed &&
+          (affectedIds.contains(curProg.chapterId) ||
+              (targetCanon.isNotEmpty &&
+                  targetCanon.contains(canonicalChapterKey(curProg.chapterId))))) {
+        _localProgress[mangaId] = curProg.copyWith(completed: false, page: 1);
+        unawaited(_persistLocalProgress());
+      }
+      for (final cid in affectedIds) {
+        _chapterProgress.remove(cid);
+        final cKey = canonicalChapterKey(cid);
+        if (cKey.isNotEmpty) _chapterProgress.remove(cKey);
+      }
+      unawaited(_persistChapterProgress());
     }
     if (LocalDatabase.instance.isAvailable && affectedIds.isNotEmpty) {
       await LocalDatabase.instance.setChaptersRead(
@@ -813,11 +923,13 @@ class HistoryRepository extends ChangeNotifier {
   }) async {
     _localHistory.clear();
     _localProgress.clear();
+    _chapterProgress.clear();
     if (LocalDatabase.instance.isAvailable) {
       await LocalDatabase.instance.clearHistoryTables(includeReadChapters: false);
     }
     await _persistLocalHistory();
     await _persistLocalProgress();
+    await _persistChapterProgress();
     notifyListeners();
 
     if (client != null && baseUrl != null && headers != null) {
@@ -1207,6 +1319,7 @@ class HistoryRepository extends ChangeNotifier {
   Future<void> clearLocalData() async {
     _localHistory.clear();
     _localProgress.clear();
+    _chapterProgress.clear();
     _readChapters.clear();
     _readChapterCanonicalKeys.clear();
     _pendingUnreadChapters.clear();
@@ -1221,6 +1334,7 @@ class HistoryRepository extends ChangeNotifier {
     final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
     await prefs.remove('shiori_local_history');
     await prefs.remove('shiori_local_progress');
+    await prefs.remove('shiori_chapter_progress_v1');
     await prefs.remove('shiori_read_chapters');
     await prefs.remove('shiori_pending_unread_chapters');
     await prefs.remove('shiori_chapter_bookmarks');

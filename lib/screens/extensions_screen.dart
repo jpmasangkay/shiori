@@ -99,7 +99,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
           children: [
             Row(
               children: [
-                const SizedBox(
+                SizedBox(
                   width: 16,
                   height: 16,
                   child: CircularProgressIndicator(
@@ -162,7 +162,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
       ),
       child: Row(
         children: [
-          const Icon(Icons.system_update_rounded, size: 20, color: AppColors.primary),
+          Icon(Icons.system_update_rounded, size: 20, color: AppColors.primary),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -217,7 +217,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
           scrollable: true,
           title: Row(
             children: [
-              const Icon(Icons.hub_rounded, color: AppColors.primary, size: 20),
+              Icon(Icons.hub_rounded, color: AppColors.primary, size: 20),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
@@ -259,7 +259,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     style: AppText.mono.copyWith(fontSize: 10.5, color: AppColors.muted),
                   ),
                 ),
-              const Divider(color: AppColors.outline, height: 22),
+              Divider(color: AppColors.outline, height: 22),
               Text(
                 'Additional Repositories (${_service.extraRepoUrls.length}):',
                 style: AppText.caption.copyWith(color: AppColors.muted),
@@ -313,7 +313,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                   ),
                   const SizedBox(width: 6),
                   IconButton(
-                    icon: const Icon(Icons.add_circle_rounded, color: AppColors.primary),
+                    icon: Icon(Icons.add_circle_rounded, color: AppColors.primary),
                     tooltip: 'Add repository',
                     onPressed: () async {
                       final u = extraController.text.trim();
@@ -667,7 +667,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                               label: const Text('Extension Settings'),
                               style: OutlinedButton.styleFrom(
                                 foregroundColor: AppColors.text,
-                                side: const BorderSide(color: AppColors.outline),
+                                side: BorderSide(color: AppColors.outline),
                                 minimumSize: const Size.fromHeight(46),
                                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -755,7 +755,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                               icon: const Icon(Icons.explore_outlined, size: 20),
                               label: Text('Browse Catalog (${ext.name})'),
                               style: OutlinedButton.styleFrom(
-                                side: const BorderSide(color: AppColors.primary),
+                                side: BorderSide(color: AppColors.primary),
                                 foregroundColor: AppColors.primary,
                                 minimumSize: const Size.fromHeight(46),
                                 padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
@@ -901,7 +901,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(Icons.hub_rounded, size: 18, color: AppColors.muted),
+                  icon: Icon(Icons.hub_rounded, size: 18, color: AppColors.muted),
                   constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                   tooltip: 'Repository Settings',
                   onPressed: _addRepoDialog,
@@ -923,7 +923,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
             ),
             child: Row(
               children: [
-                const Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
+                Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
                 const SizedBox(width: 8),
                 Expanded(
                   child: TextField(
@@ -956,7 +956,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     },
                     constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                     padding: EdgeInsets.zero,
-                    icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
+                    icon: Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
                   ),
               ],
             ),
@@ -1183,7 +1183,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
               ),
             ),
           IconButton(
-            icon: const Icon(Icons.hub_rounded, color: AppColors.muted),
+            icon: Icon(Icons.hub_rounded, color: AppColors.muted),
             tooltip: 'Repository Settings',
             onPressed: _addRepoDialog,
           ),
@@ -1380,7 +1380,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                         if (ext.isCompatible)
                           IconButton(
                             constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                            icon: const Icon(Icons.tune_rounded, size: 19, color: AppColors.muted),
+                            icon: Icon(Icons.tune_rounded, size: 19, color: AppColors.muted),
                             tooltip: '${ext.name} Settings',
                             onPressed: () => showExtensionPreferencesSheet(
                               context,
@@ -1391,7 +1391,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                         if (ext.isCompatible)
                           IconButton(
                             constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                            icon: const Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
+                            icon: Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
                             tooltip: 'Browse ${ext.name} Catalog',
                             onPressed: () {
                               Navigator.of(context).push(
@@ -1442,7 +1442,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     children: [
                       IconButton(
                         constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                        icon: const Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
+                        icon: Icon(Icons.explore_outlined, size: 20, color: AppColors.primary),
                         tooltip: 'Browse ${ext.name} Catalog',
                         onPressed: () {
                           Navigator.of(context).push(

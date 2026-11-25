@@ -307,7 +307,7 @@ class _BackupScreenState extends State<BackupScreen> {
           ),
           title: Row(
             children: [
-              const Icon(
+              Icon(
                 Icons.check_circle_rounded,
                 color: AppColors.primary,
                 size: 22,
@@ -491,7 +491,7 @@ class _BackupScreenState extends State<BackupScreen> {
             children: [
               Row(
                 children: [
-                  const Icon(
+                  Icon(
                     Icons.settings_backup_restore_rounded,
                     color: AppColors.primary,
                     size: 22,
@@ -508,7 +508,7 @@ class _BackupScreenState extends State<BackupScreen> {
                       minWidth: 44,
                       minHeight: 44,
                     ),
-                    icon: const Icon(
+                    icon: Icon(
                       Icons.close_rounded,
                       size: 20,
                       color: AppColors.muted,
@@ -536,7 +536,7 @@ class _BackupScreenState extends State<BackupScreen> {
                   fillColor: AppColors.bg,
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(12),
-                    borderSide: const BorderSide(color: AppColors.outline),
+                    borderSide: BorderSide(color: AppColors.outline),
                   ),
                 ),
               ),
@@ -652,7 +652,7 @@ class _BackupScreenState extends State<BackupScreen> {
                         color: AppColors.primary.withValues(alpha: .2),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
+                      child: Icon(
                         Icons.devices_rounded,
                         color: AppColors.primary,
                         size: 24,
@@ -789,7 +789,7 @@ class _BackupScreenState extends State<BackupScreen> {
             color: AppColors.surface,
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(14),
-              side: const BorderSide(color: AppColors.outline),
+              side: BorderSide(color: AppColors.outline),
             ),
             clipBehavior: Clip.antiAlias,
             child: Column(
@@ -808,11 +808,11 @@ class _BackupScreenState extends State<BackupScreen> {
                   onChanged: _toggleAutoBackup,
                 ),
                 if (_localSnapshots.isNotEmpty) ...[
-                  const Divider(color: AppColors.outline, height: 1),
+                  Divider(color: AppColors.outline, height: 1),
                   for (final snap in _localSnapshots)
                     ListTile(
                       dense: true,
-                      leading: const Icon(
+                      leading: Icon(
                         Icons.history_rounded,
                         size: 18,
                         color: AppColors.primary,
@@ -860,7 +860,7 @@ class _BackupScreenState extends State<BackupScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(
+                    Icon(
                       Icons.cloud_queue_rounded,
                       color: AppColors.muted,
                       size: 28,
@@ -891,7 +891,7 @@ class _BackupScreenState extends State<BackupScreen> {
                   color: AppColors.surface,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(14),
-                    side: const BorderSide(color: AppColors.outline),
+                    side: BorderSide(color: AppColors.outline),
                   ),
                   clipBehavior: Clip.antiAlias,
                   child: ListTile(
@@ -907,7 +907,7 @@ class _BackupScreenState extends State<BackupScreen> {
                         borderRadius: BorderRadius.circular(10),
                       ),
                       child: syncState.isSyncing
-                          ? const Center(
+                          ? Center(
                               child: SizedBox(
                                 width: 18,
                                 height: 18,
@@ -917,7 +917,7 @@ class _BackupScreenState extends State<BackupScreen> {
                                 ),
                               ),
                             )
-                          : const Icon(
+                          : Icon(
                               Icons.cloud_sync_rounded,
                               color: AppColors.primary,
                               size: 22,
@@ -981,7 +981,7 @@ class _BackupScreenState extends State<BackupScreen> {
       color: AppColors.surface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(14),
-        side: const BorderSide(color: AppColors.outline),
+        side: BorderSide(color: AppColors.outline),
       ),
       clipBehavior: Clip.antiAlias,
       child: ListTile(
@@ -1002,7 +1002,7 @@ class _BackupScreenState extends State<BackupScreen> {
                 height: 20,
                 child: CircularProgressIndicator(strokeWidth: 2, color: color),
               )
-            : const Icon(
+            : Icon(
                 Icons.arrow_forward_ios_rounded,
                 size: 14,
                 color: AppColors.muted,

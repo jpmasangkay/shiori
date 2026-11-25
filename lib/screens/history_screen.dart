@@ -146,7 +146,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           _history = [];
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
+          SnackBar(
             content: Text('Reading history cleared'),
             backgroundColor: AppColors.surfaceHigh,
             duration: Duration(seconds: 2),
@@ -261,10 +261,10 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 decoration: InputDecoration(
                   hintText: 'Search history by title...',
                   hintStyle: AppText.caption,
-                  prefixIcon: const Icon(Icons.search_rounded, size: 18, color: AppColors.muted),
+                  prefixIcon: Icon(Icons.search_rounded, size: 18, color: AppColors.muted),
                   suffixIcon: _searchQuery.isNotEmpty
                       ? IconButton(
-                          icon: const Icon(Icons.clear_rounded, size: 16, color: AppColors.muted),
+                          icon: Icon(Icons.clear_rounded, size: 16, color: AppColors.muted),
                           onPressed: () {
                             _searchController.clear();
                             setState(() => _searchQuery = '');
@@ -347,7 +347,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 : _history.isEmpty
                     ? _buildEmptyState()
                     : filtered.isEmpty
-                        ? const Center(
+                        ? Center(
                             child: Padding(
                               padding: EdgeInsets.all(24),
                               child: Text(
@@ -523,11 +523,11 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 ),
               ),
               IconButton(
-                icon: const Icon(Icons.close_rounded, size: 16, color: AppColors.muted),
+                icon: Icon(Icons.close_rounded, size: 16, color: AppColors.muted),
                 tooltip: 'Remove from history',
                 onPressed: () => _removeEntry(item),
               ),
-              const SizedBox(
+              SizedBox(
                 width: 36,
                 height: 44,
                 child: Center(

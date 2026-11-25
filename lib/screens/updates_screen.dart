@@ -345,12 +345,12 @@ class _ApiUpdateRow extends StatelessWidget {
         case DownloadStatus.downloaded:
           return IconButton(
             constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
-            icon: const Icon(Icons.check_circle_rounded, size: 20, color: AppColors.primary),
+            icon: Icon(Icons.check_circle_rounded, size: 20, color: AppColors.primary),
             tooltip: 'Downloaded (tap to delete)',
             onPressed: handleDownloadTap,
           );
         case DownloadStatus.downloading:
-          return const SizedBox(
+          return SizedBox(
             width: 42,
             height: 42,
             child: Center(
@@ -362,7 +362,7 @@ class _ApiUpdateRow extends StatelessWidget {
             ),
           );
         case DownloadStatus.queued:
-          return const SizedBox(
+          return SizedBox(
             width: 42,
             height: 42,
             child: Icon(Icons.schedule_rounded, size: 20, color: AppColors.muted),

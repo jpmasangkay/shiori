@@ -204,7 +204,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
             ),
             child: Container(
               padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 border: Border(top: BorderSide(color: AppColors.outline)),
               ),
               child: Column(
@@ -465,7 +465,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
                   .where((e) => e.isCompatible)
                   .length;
           return DecoratedBox(
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               border: Border(top: BorderSide(color: AppColors.outline, width: 0.8)),
             ),
             child: NavigationBar(
@@ -552,7 +552,7 @@ class _AppLockScreenState extends State<_AppLockScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.lock_rounded, size: 52, color: AppColors.primary),
+                  Icon(Icons.lock_rounded, size: 52, color: AppColors.primary),
                   const SizedBox(height: 16),
                   Text('Shiori Locked', style: AppText.title),
                   const SizedBox(height: 8),
@@ -575,7 +575,7 @@ class _AppLockScreenState extends State<_AppLockScreen> {
                         fillColor: AppColors.surface,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(12),
-                          borderSide: const BorderSide(color: AppColors.outline),
+                          borderSide: BorderSide(color: AppColors.outline),
                         ),
                       ),
                     ),

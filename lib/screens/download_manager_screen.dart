@@ -75,7 +75,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
             ),
           if (downloaded.isNotEmpty)
             IconButton(
-              icon: const Icon(Icons.delete_sweep_rounded, color: AppColors.muted),
+              icon: Icon(Icons.delete_sweep_rounded, color: AppColors.muted),
               tooltip: 'Clear all downloads',
               onPressed: _confirmClearAll,
             ),
@@ -102,7 +102,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                         color: AppColors.active.withValues(alpha: .5),
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: const Icon(Icons.offline_pin_rounded, color: AppColors.primary, size: 26),
+                      child: Icon(Icons.offline_pin_rounded, color: AppColors.primary, size: 26),
                     ),
                     const SizedBox(width: 14),
                     Expanded(
@@ -129,7 +129,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                   ],
                 ),
                 const SizedBox(height: 12),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: Text('Wi-Fi only downloads', style: AppText.bodyMedium),
@@ -141,7 +141,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                   value: ds.wifiOnlyDownloads,
                   onChanged: (val) => ds.setWifiOnlyDownloads(val),
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: Text('Auto-download new chapters', style: AppText.bodyMedium),
@@ -153,7 +153,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                   value: ds.autoDownloadNewChapters,
                   onChanged: (val) => ds.setAutoDownloadNewChapters(val),
                 ),
-                const Divider(color: AppColors.outline, height: 1),
+                Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: Text('Auto-delete after reading', style: AppText.bodyMedium),
@@ -255,7 +255,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
               child: Center(
                 child: Column(
                   children: [
-                    const Icon(Icons.download_for_offline_outlined, size: 54, color: AppColors.muted),
+                    Icon(Icons.download_for_offline_outlined, size: 54, color: AppColors.muted),
                     const SizedBox(height: 14),
                     Text(
                       'No offline chapters',
@@ -341,13 +341,13 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
               if (isFailed)
                 IconButton(
                   constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                  icon: const Icon(Icons.refresh_rounded, size: 18, color: AppColors.primary),
+                  icon: Icon(Icons.refresh_rounded, size: 18, color: AppColors.primary),
                   tooltip: 'Retry download',
                   onPressed: () => ds.downloadChapter(task.manga, task.chapter),
                 ),
               IconButton(
                 constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-                icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
+                icon: Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
                 onPressed: () => ds.cancelDownload(task.chapter.id),
               ),
             ],
@@ -428,12 +428,12 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
         ),
         trailing: IconButton(
           constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-          icon: const Icon(Icons.delete_outline_rounded, size: 20, color: AppColors.muted),
+          icon: Icon(Icons.delete_outline_rounded, size: 20, color: AppColors.muted),
           tooltip: 'Delete all chapters for this title',
           onPressed: () => _confirmDeleteManga(mangaId, first.mangaTitle),
         ),
         children: [
-          const Divider(color: AppColors.outline, height: 1),
+          Divider(color: AppColors.outline, height: 1),
           for (final ch in chapters)
             ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16),
@@ -452,19 +452,19 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                 children: [
                   IconButton(
                     constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
-                    icon: const Icon(Icons.archive_outlined, size: 19, color: AppColors.muted),
+                    icon: Icon(Icons.archive_outlined, size: 19, color: AppColors.muted),
                     tooltip: 'Export chapter as .cbz',
                     onPressed: () => _exportChapterCbz(ch),
                   ),
                   IconButton(
                     constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
-                    icon: const Icon(Icons.play_circle_outline_rounded, size: 20, color: AppColors.primary),
+                    icon: Icon(Icons.play_circle_outline_rounded, size: 20, color: AppColors.primary),
                     tooltip: 'Read offline',
                     onPressed: () => _openReader(ch, chapters),
                   ),
                   IconButton(
                     constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
-                    icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.muted),
+                    icon: Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.muted),
                     tooltip: 'Delete chapter',
                     onPressed: () => ds.deleteDownloadedChapter(ch.chapterId),
                   ),

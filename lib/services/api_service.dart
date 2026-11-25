@@ -725,6 +725,258 @@ class ApiService extends ChangeNotifier {
   Set<String> getReadChapterIds(String mangaId) =>
       historyRepo.getReadChapterIds(mangaId);
 
+  int? getSavedPageForChapter(String mangaId, String chapterId) =>
+      historyRepo.getSavedPageForChapter(mangaId, chapterId);
+
+  ReadProgress? getChapterProgress(String chapterId) =>
+      historyRepo.getChapterProgress(chapterId);
+
+  /// Resolves the exact chapter & page where the user should pick up reading
+  /// for [mangaId]:
+  /// 1. If the last-read chapter is still unfinished, resumes that exact
+  ///    chapter at its saved page.
+  /// 2. If the last-read chapter was finished (all pages read), advances right
+  ///    to the next unread chapter immediately following it (leaving off where
+  ///    the reader finished, without jumping back to Chapter 1).
+  /// 3. Falls back to the next unread chapter after the highest read chapter,
+  ///    or the first chapter for unread series, or `'Read Again'` when caught up.
+  ResumeTarget resolveResumeTarget(
+    String mangaId, {
+    List<ChapterItem>? chapters,
+    bool skipDuplicateChapters = true,
+  }) {
+    final sourceChapters = chapters ?? getCachedChapters(mangaId);
+    final ordered = sortChaptersChronologically(sourceChapters);
+    final localProg = historyRepo.localProgress[mangaId];
+
+    bool sameChapter(ChapterItem c, String targetId, String? targetNum) {
+      if (c.id == targetId) return true;
+      final cCanon = HistoryRepository.canonicalChapterKey(c.id);
+      final tCanon = HistoryRepository.canonicalChapterKey(targetId);
+      if (cCanon.isNotEmpty && cCanon == tCanon) return true;
+      return false;
+    }
+
+    String? normNum(ChapterItem c) {
+      final n = parseChapterNumber(c);
+      if (n != null) return n.toString();
+      final raw = c.number?.trim();
+      return (raw != null && raw.isNotEmpty) ? raw.toLowerCase() : null;
+    }
+
+    ChapterItem? findNextUnreadAfter(int fromIdx) {
+      final baseNum = (skipDuplicateChapters &&
+              fromIdx >= 0 &&
+              fromIdx < ordered.length)
+          ? normNum(ordered[fromIdx])
+          : null;
+      for (var i = fromIdx + 1; i < ordered.length; i++) {
+        final cand = ordered[i];
+        if (baseNum != null && normNum(cand) == baseNum) continue;
+        if (!isChapterRead(mangaId, cand.id)) {
+          return cand;
+        }
+      }
+      return null;
+    }
+
+    // 1. Active in-progress chapter (not yet finished)
+    if (localProg != null &&
+        localProg.chapterId.isNotEmpty &&
+        !localProg.completed &&
+        !isChapterRead(mangaId, localProg.chapterId)) {
+      ChapterItem? matched;
+      for (final c in ordered) {
+        if (sameChapter(c, localProg.chapterId, localProg.chapterNumber)) {
+          matched = c;
+          break;
+        }
+      }
+      final num = (matched?.number?.isNotEmpty == true)
+          ? matched!.number!
+          : localProg.chapterNumber;
+      final savedPage = localProg.page > 1 ? localProg.page : 1;
+      return ResumeTarget(
+        chapterId: matched?.id ?? localProg.chapterId,
+        chapter: matched,
+        chapterNumber: num,
+        chapterTitle: matched?.title ?? localProg.chapterTitle,
+        page: savedPage,
+        label: num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading',
+        orderedChapters: ordered,
+        isInProgress: true,
+      );
+    }
+
+    // 2. Last-read chapter was finished -> pick up at the very next chapter after it
+    if (localProg != null &&
+        localProg.chapterId.isNotEmpty &&
+        ordered.isNotEmpty) {
+      var lastIdx = ordered.indexWhere(
+        (c) => sameChapter(c, localProg.chapterId, localProg.chapterNumber),
+      );
+      if (lastIdx < 0 && localProg.chapterNumber.isNotEmpty) {
+        final targetDouble = double.tryParse(localProg.chapterNumber.trim());
+        lastIdx = ordered.indexWhere((c) {
+          final cn = parseChapterNumber(c);
+          return targetDouble != null && cn != null
+              ? cn == targetDouble
+              : (c.number?.trim() == localProg.chapterNumber.trim());
+        });
+      }
+      if (lastIdx >= 0) {
+        final nextUnread = findNextUnreadAfter(lastIdx);
+        if (nextUnread != null) {
+          final savedPage =
+              getSavedPageForChapter(mangaId, nextUnread.id) ?? 1;
+          final num = nextUnread.number?.trim() ?? '';
+          return ResumeTarget(
+            chapterId: nextUnread.id,
+            chapter: nextUnread,
+            chapterNumber: nextUnread.number,
+            chapterTitle: nextUnread.title,
+            page: savedPage,
+            label: num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading',
+            orderedChapters: ordered,
+            isAfterFinishedChapter: true,
+          );
+        }
+        // User finished the latest available chapter
+        final latest = ordered[lastIdx];
+        return ResumeTarget(
+          chapterId: latest.id,
+          chapter: latest,
+          chapterNumber: latest.number,
+          chapterTitle: latest.title,
+          page: 1,
+          label: 'Read Again',
+          orderedChapters: ordered,
+          isCaughtUp: true,
+        );
+      }
+    }
+
+    // 3. No active progress record -> inspect read marks in chronological order
+    if (ordered.isNotEmpty) {
+      var highestReadIdx = -1;
+      var readCount = 0;
+      ChapterItem? firstUnread;
+      for (var i = 0; i < ordered.length; i++) {
+        if (isChapterRead(mangaId, ordered[i].id)) {
+          readCount++;
+          highestReadIdx = i;
+        } else {
+          firstUnread ??= ordered[i];
+        }
+      }
+
+      if (highestReadIdx >= 0) {
+        final afterHighest = findNextUnreadAfter(highestReadIdx);
+        if (afterHighest != null) {
+          final savedPage =
+              getSavedPageForChapter(mangaId, afterHighest.id) ?? 1;
+          final num = afterHighest.number?.trim() ?? '';
+          return ResumeTarget(
+            chapterId: afterHighest.id,
+            chapter: afterHighest,
+            chapterNumber: afterHighest.number,
+            chapterTitle: afterHighest.title,
+            page: savedPage,
+            label: num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading',
+            orderedChapters: ordered,
+            isAfterFinishedChapter: true,
+          );
+        }
+        if (highestReadIdx == ordered.length - 1 || firstUnread == null) {
+          final latest = ordered.last;
+          return ResumeTarget(
+            chapterId: latest.id,
+            chapter: latest,
+            chapterNumber: latest.number,
+            chapterTitle: latest.title,
+            page: 1,
+            label: 'Read Again',
+            orderedChapters: ordered,
+            isCaughtUp: true,
+          );
+        }
+      }
+
+      final startTarget = firstUnread ?? ordered.first;
+      final savedPage = getSavedPageForChapter(mangaId, startTarget.id) ?? 1;
+      final verb = readCount > 0 ? 'Resume' : 'Start';
+      final num = startTarget.number?.trim() ?? '';
+      return ResumeTarget(
+        chapterId: startTarget.id,
+        chapter: startTarget,
+        chapterNumber: startTarget.number,
+        chapterTitle: startTarget.title,
+        page: savedPage,
+        label: num.isNotEmpty ? '$verb Ch. $num' : '$verb Reading',
+        orderedChapters: ordered,
+      );
+    }
+
+    // 4. No cached chapters yet, fall back to localProgress if present
+    if (localProg != null && localProg.chapterId.isNotEmpty) {
+      final num = localProg.chapterNumber.trim();
+      return ResumeTarget(
+        chapterId: localProg.chapterId,
+        chapterNumber: localProg.chapterNumber,
+        chapterTitle: localProg.chapterTitle,
+        page: localProg.completed ? 1 : (localProg.page > 1 ? localProg.page : 1),
+        label: num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading',
+        orderedChapters: const [],
+        isInProgress: !localProg.completed,
+        isCaughtUp: localProg.completed,
+      );
+    }
+
+    return const ResumeTarget(
+      chapterId: null,
+      label: 'Start Reading',
+      orderedChapters: [],
+    );
+  }
+
+  /// Returns the latest chapter release timestamp (from cached chapters'
+  /// `publishAt` or cached update groups) for accurate `LibrarySort.lastUpdated`.
+  DateTime? getLatestChapterUpdatedAt(String mangaId) {
+    DateTime? latest;
+    final chapters = getCachedChapters(mangaId);
+    for (final c in chapters) {
+      final raw = c.publishAt;
+      if (raw == null || raw.isEmpty) continue;
+      final dt = DateTime.tryParse(raw);
+      if (dt != null && (latest == null || dt.isAfter(latest))) {
+        latest = dt;
+      }
+    }
+    if (latest != null) return latest;
+
+    final updates = getCachedUpdates();
+    final groups = updates['groups'];
+    if (groups is Map) {
+      for (final list in groups.values) {
+        if (list is! List) continue;
+        for (final item in list) {
+          if (item is Map && item['mangaId']?.toString() == mangaId) {
+            final raw = item['publishAt']?.toString() ??
+                item['updatedAt']?.toString() ??
+                item['createdAt']?.toString();
+            if (raw != null && raw.isNotEmpty) {
+              final dt = DateTime.tryParse(raw);
+              if (dt != null && (latest == null || dt.isAfter(latest))) {
+                latest = dt;
+              }
+            }
+          }
+        }
+      }
+    }
+    return latest;
+  }
+
   Future<void> markChapterRead(
     String mangaId,
     String chapterId, {

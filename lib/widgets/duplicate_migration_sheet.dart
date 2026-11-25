@@ -37,8 +37,8 @@ Future<DuplicateResolutionResult?> showPossibleDuplicatesSheet({
   return showModalBottomSheet<DuplicateResolutionResult>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: const Color(0xFF1E1E22),
-    barrierColor: Colors.black87,
+    backgroundColor: AppColors.surface,
+    barrierColor: Colors.black54,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
     ),
@@ -128,27 +128,26 @@ class _PossibleDuplicatesSheetWidgetState
                 height: 4,
                 margin: const EdgeInsets.only(bottom: 16),
                 decoration: BoxDecoration(
-                  color: Colors.white24,
+                  color: AppColors.read,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
             ),
-            const Text(
+            Text(
               'Possible duplicates',
-              style: TextStyle(
-                fontSize: 24,
+              style: AppText.title.copyWith(
+                fontSize: 22,
                 fontWeight: FontWeight.bold,
-                color: Colors.white,
                 letterSpacing: -0.3,
               ),
             ),
             const SizedBox(height: 12),
-            const Text(
+            Text(
               'You have entries in your library with a similar name.\n\nSelect an entry to migrate or add anyway.',
-              style: TextStyle(
+              style: AppText.body.copyWith(
                 fontSize: 14,
                 height: 1.4,
-                color: Colors.white70,
+                color: AppColors.muted,
               ),
             ),
             const SizedBox(height: 20),
@@ -180,9 +179,9 @@ class _PossibleDuplicatesSheetWidgetState
                       child: Container(
                         width: 175,
                         decoration: BoxDecoration(
-                          color: const Color(0xFF24242A),
+                          color: AppColors.surfaceHigh,
                           borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: Colors.white12, width: 1),
+                          border: Border.all(color: AppColors.outline, width: 1),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -239,19 +238,18 @@ class _PossibleDuplicatesSheetWidgetState
                                     dup.title,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
+                                    style: AppText.cardTitle.copyWith(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 14,
-                                      color: Colors.white,
                                     ),
                                   ),
                                   const SizedBox(height: 3),
                                   Row(
                                     children: [
-                                      const Icon(
+                                      Icon(
                                         Icons.person_outline_rounded,
                                         size: 13,
-                                        color: Colors.white60,
+                                        color: AppColors.muted,
                                       ),
                                       const SizedBox(width: 4),
                                       Expanded(
@@ -259,10 +257,7 @@ class _PossibleDuplicatesSheetWidgetState
                                           authorText,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontSize: 11.5,
-                                            color: Colors.white60,
-                                          ),
+                                          style: AppText.caption,
                                         ),
                                       ),
                                     ],
@@ -270,10 +265,10 @@ class _PossibleDuplicatesSheetWidgetState
                                   const SizedBox(height: 2),
                                   Row(
                                     children: [
-                                      const Icon(
+                                      Icon(
                                         Icons.done_all_rounded,
                                         size: 13,
-                                        color: Colors.white60,
+                                        color: AppColors.muted,
                                       ),
                                       const SizedBox(width: 4),
                                       Expanded(
@@ -281,10 +276,7 @@ class _PossibleDuplicatesSheetWidgetState
                                           statusText,
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
-                                          style: const TextStyle(
-                                            fontSize: 11.5,
-                                            color: Colors.white60,
-                                          ),
+                                          style: AppText.caption,
                                         ),
                                       ),
                                     ],
@@ -295,10 +287,9 @@ class _PossibleDuplicatesSheetWidgetState
                                       sourceName,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        fontSize: 12,
+                                      style: AppText.chip.copyWith(
                                         fontWeight: FontWeight.w600,
-                                        color: Colors.white70,
+                                        color: AppColors.primary,
                                       ),
                                     ),
                                   ),
@@ -314,7 +305,7 @@ class _PossibleDuplicatesSheetWidgetState
               ),
             ),
             const SizedBox(height: 16),
-            const Divider(color: Colors.white12, height: 1),
+            Divider(color: AppColors.outline, height: 1),
             const SizedBox(height: 12),
             InkWell(
               onTap: () {
@@ -330,16 +321,12 @@ class _PossibleDuplicatesSheetWidgetState
                 padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
-                  children: const [
+                  children: [
                     Icon(Icons.add_rounded, color: AppColors.primary, size: 24),
-                    SizedBox(width: 12),
+                    const SizedBox(width: 12),
                     Text(
                       'Add anyway',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.white,
-                      ),
+                      style: AppText.cardTitle.copyWith(fontSize: 16),
                     ),
                   ],
                 ),
@@ -358,19 +345,15 @@ class _PossibleDuplicatesSheetWidgetState
                   );
                 },
                 style: OutlinedButton.styleFrom(
-                  side: const BorderSide(color: Colors.white24, width: 1),
+                  side: BorderSide(color: AppColors.outline, width: 1),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(24),
                   ),
-                  backgroundColor: const Color(0xFF282830),
+                  backgroundColor: AppColors.surfaceHigh,
                 ),
-                child: const Text(
+                child: Text(
                   'Cancel',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
+                  style: AppText.bodySemiBold.copyWith(fontSize: 15),
                 ),
               ),
             ),
@@ -390,7 +373,7 @@ Future<DuplicateResolutionResult?> showSelectDataToIncludeSheet({
 }) {
   return showModalBottomSheet<DuplicateResolutionResult>(
     context: context,
-    backgroundColor: const Color(0xFF202026),
+    backgroundColor: AppColors.surface,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
     ),
@@ -508,41 +491,37 @@ class _SelectDataToIncludeSheetWidgetState
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'Select data to include',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: Colors.white,
-              ),
+              style: AppText.sheetTitle.copyWith(fontSize: 20),
             ),
             const SizedBox(height: 16),
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
               activeColor: AppColors.primary,
-              checkColor: Colors.white,
+              checkColor: AppColors.onPrimary,
               value: _includeChapters,
               onChanged: _working
                   ? null
                   : (v) => setState(() => _includeChapters = v ?? true),
-              title: const Text(
+              title: Text(
                 'Chapters',
-                style: TextStyle(fontSize: 16, color: Colors.white),
+                style: AppText.body.copyWith(fontSize: 16),
               ),
             ),
             CheckboxListTile(
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
               activeColor: AppColors.primary,
-              checkColor: Colors.white,
+              checkColor: AppColors.onPrimary,
               value: _includeCategories,
               onChanged: _working
                   ? null
                   : (v) => setState(() => _includeCategories = v ?? true),
-              title: const Text(
+              title: Text(
                 'Categories',
-                style: TextStyle(fontSize: 16, color: Colors.white),
+                style: AppText.body.copyWith(fontSize: 16),
               ),
             ),
             const SizedBox(height: 20),
@@ -550,7 +529,7 @@ class _SelectDataToIncludeSheetWidgetState
               children: [
                 TextButton(
                   onPressed: _working ? null : _showEntry,
-                  child: const Text(
+                  child: Text(
                     'Show entry',
                     style: TextStyle(
                       color: AppColors.primary,
@@ -569,7 +548,7 @@ class _SelectDataToIncludeSheetWidgetState
                 else ...[
                   TextButton(
                     onPressed: () => _applyDataTransfer(isMigrate: false),
-                    child: const Text(
+                    child: Text(
                       'Copy',
                       style: TextStyle(
                         color: AppColors.primary,
@@ -581,7 +560,7 @@ class _SelectDataToIncludeSheetWidgetState
                   const SizedBox(width: 8),
                   TextButton(
                     onPressed: () => _applyDataTransfer(isMigrate: true),
-                    child: const Text(
+                    child: Text(
                       'Migrate',
                       style: TextStyle(
                         color: AppColors.primary,
@@ -609,8 +588,8 @@ Future<void> showLibraryDuplicatesSheet({
   return showModalBottomSheet(
     context: context,
     isScrollControlled: true,
-    backgroundColor: const Color(0xFF1E1E22),
-    barrierColor: Colors.black87,
+    backgroundColor: AppColors.surface,
+    barrierColor: Colors.black54,
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
     ),
@@ -713,52 +692,45 @@ class _LibraryDuplicatesSheetWidgetState
                   height: 4,
                   margin: const EdgeInsets.only(bottom: 16),
                   decoration: BoxDecoration(
-                    color: Colors.white24,
+                    color: AppColors.read,
                     borderRadius: BorderRadius.circular(2),
                   ),
                 ),
               ),
               Row(
                 children: [
-                  const Expanded(
+                  Expanded(
                     child: Text(
                       'Resolve Duplicates',
-                      style: TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
+                      style: AppText.title.copyWith(fontSize: 22),
                     ),
                   ),
                   Text(
                     '${groupList.length} groups',
-                    style: const TextStyle(
-                      fontSize: 13,
-                      color: AppColors.muted,
-                    ),
+                    style: AppText.caption.copyWith(fontSize: 13),
                   ),
                 ],
               ),
               const SizedBox(height: 8),
-              const Text(
+              Text(
                 'Select an entry to migrate reading progress and categories into, or remove redundant versions.',
-                style: TextStyle(
+                style: AppText.body.copyWith(
                   fontSize: 13.5,
-                  color: Colors.white70,
+                  color: AppColors.muted,
                   height: 1.35,
                 ),
               ),
               const SizedBox(height: 14),
-              const Divider(color: Colors.white12, height: 1),
+              Divider(color: AppColors.outline, height: 1),
               const SizedBox(height: 12),
               Expanded(
                 child: groupList.isEmpty
-                    ? const Center(
+                    ? Center(
                         child: Padding(
-                          padding: EdgeInsets.all(32),
+                          padding: const EdgeInsets.all(32),
                           child: Text(
                             'No duplicates found in your library!',
-                            style: TextStyle(color: Colors.white70),
+                            style: AppText.body.copyWith(color: AppColors.muted),
                           ),
                         ),
                       )
@@ -773,9 +745,9 @@ class _LibraryDuplicatesSheetWidgetState
 
                           return Container(
                             decoration: BoxDecoration(
-                              color: const Color(0xFF25252B),
+                              color: AppColors.surfaceHigh,
                               borderRadius: BorderRadius.circular(16),
-                              border: Border.all(color: Colors.white12),
+                              border: Border.all(color: AppColors.outline),
                             ),
                             padding: const EdgeInsets.all(12),
                             child: Column(
@@ -783,25 +755,21 @@ class _LibraryDuplicatesSheetWidgetState
                               children: [
                                 Text(
                                   displayTitle,
-                                  style: const TextStyle(
+                                  style: AppText.cardTitle.copyWith(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 15,
-                                    color: Colors.white,
                                   ),
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
                                   '${items.length} duplicate entries',
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: AppColors.muted,
-                                  ),
+                                  style: AppText.caption,
                                 ),
                                 const SizedBox(height: 10),
                                 for (int i = 0; i < items.length; i++) ...[
                                   if (i > 0)
-                                    const Divider(
-                                      color: Colors.white10,
+                                    Divider(
+                                      color: AppColors.outline,
                                       height: 16,
                                     ),
                                   _buildItemRow(items[i], items),
@@ -854,11 +822,7 @@ class _LibraryDuplicatesSheetWidgetState
                     item.title,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
+                    style: AppText.bodySemiBold.copyWith(fontSize: 13.5),
                   ),
                   const SizedBox(height: 4),
                   Wrap(
@@ -872,12 +836,12 @@ class _LibraryDuplicatesSheetWidgetState
                           vertical: 1.5,
                         ),
                         decoration: BoxDecoration(
-                          color: AppColors.surfaceHigh,
+                          color: AppColors.surface,
                           borderRadius: BorderRadius.circular(4),
                         ),
                         child: Text(
                           src,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 10.5,
                             fontWeight: FontWeight.w600,
                             color: AppColors.primary,
@@ -887,15 +851,12 @@ class _LibraryDuplicatesSheetWidgetState
                       if (count > 0)
                         Text(
                           '$count ch',
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Colors.white60,
-                          ),
+                          style: AppText.caption,
                         ),
                       if (unread > 0)
                         Text(
                           '($unread unread)',
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11,
                             color: AppColors.muted,
                           ),
@@ -924,7 +885,7 @@ class _LibraryDuplicatesSheetWidgetState
                       vertical: 4,
                     ),
                     minimumSize: const Size(0, 30),
-                    side: const BorderSide(
+                    side: BorderSide(
                       color: AppColors.primary,
                       width: 0.9,
                     ),
@@ -933,12 +894,12 @@ class _LibraryDuplicatesSheetWidgetState
                     ),
                     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                   ),
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.swap_horiz_rounded,
                     size: 15,
                     color: AppColors.primary,
                   ),
-                  label: const Text(
+                  label: Text(
                     'Migrate to this',
                     style: TextStyle(
                       color: AppColors.primary,

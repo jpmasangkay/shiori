@@ -105,7 +105,7 @@ class _AuthModalState extends State<_AuthModal> {
                     color: AppColors.primary.withValues(alpha: .15),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: const Icon(
+                  child: Icon(
                     Icons.cloud_sync_rounded,
                     color: AppColors.primary,
                     size: 20,

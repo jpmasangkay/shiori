@@ -53,7 +53,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('OK', style: TextStyle(color: AppColors.primary)),
+            child: Text('OK', style: TextStyle(color: AppColors.primary)),
           ),
         ],
       ),
@@ -71,7 +71,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
           ListTile(
             title: Text('Always', style: AppText.body),
             trailing: current == 'Always'
-                ? const Icon(Icons.check_circle_rounded, color: AppColors.primary)
+                ? Icon(Icons.check_circle_rounded, color: AppColors.primary)
                 : null,
             onTap: () {
               _trackerService.setUpdateProgressWhenMarkedRead('Always');
@@ -81,7 +81,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
           ListTile(
             title: Text('Never', style: AppText.body),
             trailing: current == 'Never'
-                ? const Icon(Icons.check_circle_rounded, color: AppColors.primary)
+                ? Icon(Icons.check_circle_rounded, color: AppColors.primary)
                 : null,
             onTap: () {
               _trackerService.setUpdateProgressWhenMarkedRead('Never');
@@ -189,7 +189,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
               ),
             if (isAniList || isMal) ...[
               const SizedBox(height: 16),
-              const Divider(color: AppColors.outline),
+              Divider(color: AppColors.outline),
               const SizedBox(height: 10),
             ],
             Text(
@@ -219,7 +219,7 @@ class _TrackingScreenState extends State<TrackingScreen> {
                   child: OutlinedButton(
                     style: OutlinedButton.styleFrom(
                       foregroundColor: AppColors.text,
-                      side: const BorderSide(color: AppColors.outline),
+                      side: BorderSide(color: AppColors.outline),
                     ),
                     onPressed: () {
                       Navigator.pop(ctx);
@@ -350,13 +350,13 @@ class _TrackingScreenState extends State<TrackingScreen> {
         backgroundColor: AppColors.bg,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_rounded, color: AppColors.text),
+          icon: Icon(Icons.arrow_back_rounded, color: AppColors.text),
           onPressed: () => Navigator.pop(context),
         ),
         title: Text('Tracking', style: AppText.title),
         actions: [
           IconButton(
-            icon: const Icon(Icons.help_outline_rounded, color: AppColors.text),
+            icon: Icon(Icons.help_outline_rounded, color: AppColors.text),
             tooltip: 'Tracking Help',
             onPressed: _showHelpDialog,
           ),
@@ -442,8 +442,8 @@ class _TrackingScreenState extends State<TrackingScreen> {
                 ),
               ),
               trailing: isLinked
-                  ? const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 20)
-                  : const Icon(Icons.chevron_right_rounded, color: AppColors.muted, size: 20),
+                  ? Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 20)
+                  : Icon(Icons.chevron_right_rounded, color: AppColors.muted, size: 20),
               onTap: () => _handleTrackerTap(tracker),
             );
           }),
@@ -540,7 +540,7 @@ class _TrackerSearchModalState extends State<_TrackerSearchModal> {
                 child: Text('Search ${widget.tracker.name}', style: AppText.sheetTitle),
               ),
               IconButton(
-                icon: const Icon(Icons.close_rounded, color: AppColors.muted),
+                icon: Icon(Icons.close_rounded, color: AppColors.muted),
                 onPressed: () => Navigator.pop(context),
               ),
             ],
@@ -552,9 +552,9 @@ class _TrackerSearchModalState extends State<_TrackerSearchModal> {
             decoration: InputDecoration(
               hintText: 'Search manga title...',
               hintStyle: TextStyle(color: AppColors.muted.withValues(alpha: .5)),
-              prefixIcon: const Icon(Icons.search_rounded, color: AppColors.muted),
+              prefixIcon: Icon(Icons.search_rounded, color: AppColors.muted),
               suffixIcon: IconButton(
-                icon: const Icon(Icons.arrow_forward_rounded, color: AppColors.primary),
+                icon: Icon(Icons.arrow_forward_rounded, color: AppColors.primary),
                 onPressed: () => _performSearch(_searchController.text),
               ),
               filled: true,
@@ -567,7 +567,7 @@ class _TrackerSearchModalState extends State<_TrackerSearchModal> {
           const SizedBox(height: 12),
           Expanded(
             child: _loading
-                ? const Center(child: CircularProgressIndicator(color: AppColors.primary))
+                ? Center(child: CircularProgressIndicator(color: AppColors.primary))
                 : _errorMessage != null
                     ? Center(
                         child: Text(_errorMessage!, style: AppText.caption.copyWith(color: Colors.redAccent)),
@@ -597,7 +597,7 @@ class _TrackerSearchModalState extends State<_TrackerSearchModal> {
                           )
                         : ListView.separated(
                             itemCount: _results.length,
-                            separatorBuilder: (context, index) => const Divider(color: AppColors.outline, height: 1),
+                            separatorBuilder: (context, index) => Divider(color: AppColors.outline, height: 1),
                             itemBuilder: (ctx, i) {
                               final item = _results[i];
                               return ListTile(
@@ -614,7 +614,7 @@ class _TrackerSearchModalState extends State<_TrackerSearchModal> {
                                             width: 40,
                                             height: 56,
                                             color: AppColors.surfaceHigh,
-                                            child: const Icon(Icons.book_rounded, color: AppColors.muted),
+                                            child: Icon(Icons.book_rounded, color: AppColors.muted),
                                           ),
                                         ),
                                       )
@@ -625,7 +625,7 @@ class _TrackerSearchModalState extends State<_TrackerSearchModal> {
                                           color: AppColors.surfaceHigh,
                                           borderRadius: BorderRadius.circular(4),
                                         ),
-                                        child: const Icon(Icons.book_rounded, color: AppColors.muted),
+                                        child: Icon(Icons.book_rounded, color: AppColors.muted),
                                       ),
                                 title: Text(item.title, style: AppText.bodyMedium, maxLines: 2, overflow: TextOverflow.ellipsis),
                                 subtitle: Text(
@@ -732,7 +732,7 @@ class _TrackerEntryEditorSheetState extends State<_TrackerEntryEditorSheet> {
               ),
               if (!widget.isNew && widget.initialRecord.trackingUrl != null)
                 IconButton(
-                  icon: const Icon(Icons.open_in_new_rounded, size: 20, color: AppColors.muted),
+                  icon: Icon(Icons.open_in_new_rounded, size: 20, color: AppColors.muted),
                   tooltip: 'Open in web',
                   onPressed: () {
                     final u = Uri.tryParse(widget.initialRecord.trackingUrl!);
@@ -740,7 +740,7 @@ class _TrackerEntryEditorSheetState extends State<_TrackerEntryEditorSheet> {
                   },
                 ),
               IconButton(
-                icon: const Icon(Icons.close_rounded, color: AppColors.muted),
+                icon: Icon(Icons.close_rounded, color: AppColors.muted),
                 onPressed: () => Navigator.pop(context),
               ),
             ],
@@ -773,7 +773,7 @@ class _TrackerEntryEditorSheetState extends State<_TrackerEntryEditorSheet> {
               ),
             ],
           ),
-          const Divider(color: AppColors.outline),
+          Divider(color: AppColors.outline),
 
           // Chapter progress
           Row(
@@ -781,7 +781,7 @@ class _TrackerEntryEditorSheetState extends State<_TrackerEntryEditorSheet> {
               Text('Chapters read', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
               const Spacer(),
               IconButton(
-                icon: const Icon(Icons.remove_circle_outline_rounded, color: AppColors.primary),
+                icon: Icon(Icons.remove_circle_outline_rounded, color: AppColors.primary),
                 onPressed: _decrementChapter,
               ),
               Text(
@@ -789,12 +789,12 @@ class _TrackerEntryEditorSheetState extends State<_TrackerEntryEditorSheet> {
                 style: AppText.bodySemiBold,
               ),
               IconButton(
-                icon: const Icon(Icons.add_circle_outline_rounded, color: AppColors.primary),
+                icon: Icon(Icons.add_circle_outline_rounded, color: AppColors.primary),
                 onPressed: _incrementChapter,
               ),
             ],
           ),
-          const Divider(color: AppColors.outline),
+          Divider(color: AppColors.outline),
 
           // Score
           Row(

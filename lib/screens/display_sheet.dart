@@ -227,7 +227,7 @@ class _DisplayTab extends StatelessWidget {
                   (_) => Container(
                     width: 3,
                     height: 3,
-                    decoration: const BoxDecoration(color: AppColors.read, shape: BoxShape.circle),
+                    decoration: BoxDecoration(color: AppColors.read, shape: BoxShape.circle),
                   ),
                 ),
               ),
@@ -250,7 +250,7 @@ class _DisplayTab extends StatelessWidget {
                   constraints: const BoxConstraints(minHeight: 44),
                   child: Row(
                     children: [
-                      const Icon(Icons.playlist_add_rounded, size: 20, color: AppColors.primary),
+                      Icon(Icons.playlist_add_rounded, size: 20, color: AppColors.primary),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Text(
@@ -260,7 +260,7 @@ class _DisplayTab extends StatelessWidget {
                           style: AppText.body,
                         ),
                       ),
-                      const Icon(Icons.chevron_right_rounded, size: 20, color: AppColors.muted),
+                      Icon(Icons.chevron_right_rounded, size: 20, color: AppColors.muted),
                     ],
                   ),
                 ),
@@ -297,7 +297,7 @@ class _ModeButton extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 if (active) ...[
-                  const Icon(Icons.check_rounded, size: 16, color: AppColors.primary),
+                  Icon(Icons.check_rounded, size: 16, color: AppColors.primary),
                   const SizedBox(width: 6),
                 ],
                 Flexible(

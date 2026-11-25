@@ -1233,7 +1233,7 @@ class _CoverPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const box = ColoredBox(
+    final box = ColoredBox(
       color: AppColors.surfaceHigh,
       child: Center(
         child: Icon(
@@ -1244,7 +1244,7 @@ class _CoverPlaceholder extends StatelessWidget {
       ),
     );
     if (!loading) return box;
-    return const ShimmerLoading(child: SizedBox.expand(child: box));
+    return ShimmerLoading(child: SizedBox.expand(child: box));
   }
 }
 

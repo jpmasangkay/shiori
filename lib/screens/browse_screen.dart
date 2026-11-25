@@ -528,7 +528,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               ),
               child: Column(
                 children: [
-                  const Icon(Icons.extension_off_rounded, color: AppColors.muted, size: 40),
+                  Icon(Icons.extension_off_rounded, color: AppColors.muted, size: 40),
                   const SizedBox(height: 10),
                   Text(
                     'No installed extension sources',
@@ -697,7 +697,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   ),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.primary,
-                    side: const BorderSide(color: AppColors.outline),
+                    side: BorderSide(color: AppColors.outline),
                     minimumSize: const Size(0, 42),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                   ),
@@ -721,7 +721,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       ),
       child: Row(
         children: [
-          const Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
+          Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
           const SizedBox(width: 8),
           Expanded(
             child: TextField(
@@ -759,7 +759,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                 _searchController.clear();
                 _onSearchChanged('');
               },
-              icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
+              icon: Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
             ),
         ],
       ),
@@ -807,7 +807,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           children: [
             Row(
               children: [
-                const SizedBox(
+                SizedBox(
                   width: 16,
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
@@ -866,7 +866,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       ),
       child: Row(
         children: [
-          const Icon(Icons.system_update_rounded, size: 19, color: AppColors.primary),
+          Icon(Icons.system_update_rounded, size: 19, color: AppColors.primary),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -1034,7 +1034,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             children: [
               Row(
                 children: [
-                  const SizedBox(
+                  SizedBox(
                     width: 12,
                     height: 12,
                     child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
@@ -1071,7 +1071,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.search_off_rounded, size: 40, color: AppColors.muted),
+                Icon(Icons.search_off_rounded, size: 40, color: AppColors.muted),
                 const SizedBox(height: 10),
                 Text(
                   'No titles found for "$_searchQuery"$filterLabel',
@@ -1100,7 +1100,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                         icon: const Icon(Icons.extension_rounded, size: 16),
                         label: Text('Browse Extensions', style: AppText.bodySemiBold.copyWith(color: AppColors.primary)),
                         style: OutlinedButton.styleFrom(
-                          side: const BorderSide(color: AppColors.primary),
+                          side: BorderSide(color: AppColors.primary),
                           minimumSize: const Size(0, 44),
                         ),
                       ),
@@ -1131,7 +1131,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             padding: const EdgeInsets.only(bottom: 10),
             child: Row(
               children: [
-                const SizedBox(
+                SizedBox(
                   width: 12,
                   height: 12,
                   child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
@@ -1473,7 +1473,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                                 child: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
-                                    const Icon(Icons.system_update_rounded, size: 11, color: AppColors.primary),
+                                    Icon(Icons.system_update_rounded, size: 11, color: AppColors.primary),
                                     const SizedBox(width: 3),
                                     Text(
                                       'Update',
@@ -1576,7 +1576,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                     ),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: AppColors.primary,
-                      side: const BorderSide(color: AppColors.outline),
+                      side: BorderSide(color: AppColors.outline),
                       minimumSize: const Size(0, 44),
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
@@ -1612,7 +1612,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                       ),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.primary,
-                        side: const BorderSide(color: AppColors.primary),
+                        side: BorderSide(color: AppColors.primary),
                         minimumSize: const Size(0, 44),
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),

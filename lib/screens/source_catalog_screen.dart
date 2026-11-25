@@ -433,7 +433,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
               ),
               child: Row(
                 children: [
-                  const Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
+                  Icon(Icons.search_rounded, size: 20, color: AppColors.muted),
                   const SizedBox(width: 8),
                   Expanded(
                     child: TextField(
@@ -458,7 +458,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                       },
                       constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                       padding: EdgeInsets.zero,
-                      icon: const Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
+                      icon: Icon(Icons.close_rounded, size: 18, color: AppColors.muted),
                     ),
                 ],
               ),
@@ -547,7 +547,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.filter_list_rounded, size: 16, color: AppColors.primary),
+                    Icon(Icons.filter_list_rounded, size: 16, color: AppColors.primary),
                     const SizedBox(width: 6),
                     Expanded(
                       child: Text(
@@ -589,7 +589,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
             height: (_isTyping || _refreshing) ? 2 : 0,
             margin: const EdgeInsets.only(top: 4),
             child: (_isTyping || _refreshing)
-                ? const LinearProgressIndicator(
+                ? LinearProgressIndicator(
                     minHeight: 2,
                     color: AppColors.primary,
                     backgroundColor: Colors.transparent,
@@ -634,7 +634,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.cloud_off_rounded, size: 44, color: AppColors.muted),
+              Icon(Icons.cloud_off_rounded, size: 44, color: AppColors.muted),
               const SizedBox(height: 12),
               Text(
                 'Could not load ${widget.sourceName} catalog',
@@ -696,7 +696,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.search_off_rounded, size: 48, color: AppColors.muted),
+              Icon(Icons.search_off_rounded, size: 48, color: AppColors.muted),
               const SizedBox(height: 12),
               Text(
                 'No $typeLabel found on ${widget.sourceName}',
@@ -813,7 +813,7 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    const ColoredBox(color: AppColors.surfaceHigh),
+                    ColoredBox(color: AppColors.surfaceHigh),
                     CoverImage(
                       imageUrl: manga.cover,
                       mangaId: manga.id,

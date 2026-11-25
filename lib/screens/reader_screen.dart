@@ -637,13 +637,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   Text('CHAPTERS (${_chapters.length})', style: AppText.sectionHeader),
                   const Spacer(),
                   IconButton(
-                    icon: const Icon(Icons.close_rounded, color: AppColors.muted),
+                    icon: Icon(Icons.close_rounded, color: AppColors.muted),
                     onPressed: () => Navigator.of(ctx).pop(),
                   ),
                 ],
               ),
             ),
-            const Divider(color: AppColors.outline, height: 1),
+            Divider(color: AppColors.outline, height: 1),
             Expanded(
               child: ListView.builder(
                 controller: scrollCtrl,
@@ -713,7 +713,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               ),
             ),
             ListTile(
-              leading: const Icon(Icons.save_alt_rounded, color: AppColors.primary),
+              leading: Icon(Icons.save_alt_rounded, color: AppColors.primary),
               title: Text('Save Page to Device', style: AppText.bodyMedium),
               onTap: () async {
                 Navigator.of(ctx).pop();
@@ -721,7 +721,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.share_rounded, color: AppColors.primary),
+              leading: Icon(Icons.share_rounded, color: AppColors.primary),
               title: Text('Share Page', style: AppText.bodyMedium),
               onTap: () async {
                 Navigator.of(ctx).pop();
@@ -729,7 +729,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.refresh_rounded, color: AppColors.muted),
+              leading: Icon(Icons.refresh_rounded, color: AppColors.muted),
               title: Text('Reload Page Image', style: AppText.bodyMedium),
               onTap: () {
                 Navigator.of(ctx).pop();
@@ -844,7 +844,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   const SizedBox(height: 16),
                   Row(
                     children: [
-                      const Icon(Icons.brightness_medium_rounded, size: 20, color: AppColors.muted),
+                      Icon(Icons.brightness_medium_rounded, size: 20, color: AppColors.muted),
                       const SizedBox(width: 8),
                       Text('Brightness', style: AppText.bodyMedium),
                       const Spacer(),
@@ -921,10 +921,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         ),
                     ],
                   ),
-                  const Divider(color: AppColors.outline, height: 24),
+                  Divider(color: AppColors.outline, height: 24),
                   Row(
                     children: [
-                      const Icon(Icons.play_circle_outline_rounded, size: 20, color: AppColors.primary),
+                      Icon(Icons.play_circle_outline_rounded, size: 20, color: AppColors.primary),
                       const SizedBox(width: 8),
                       Text('Auto-Scroll (${_autoScrollSpeed.toStringAsFixed(1)}x)', style: AppText.bodyMedium),
                       const Spacer(),
@@ -952,7 +952,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   if (_mode == ReaderMode.webtoon) ...[
                     Row(
                       children: [
-                        const Icon(Icons.padding_rounded, size: 20, color: AppColors.muted),
+                        Icon(Icons.padding_rounded, size: 20, color: AppColors.muted),
                         const SizedBox(width: 8),
                         Text('Webtoon Side Padding', style: AppText.bodyMedium),
                         const Spacer(),
@@ -971,10 +971,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       },
                     ),
                   ],
-                  const Divider(color: AppColors.outline, height: 16),
+                  Divider(color: AppColors.outline, height: 16),
                   Row(
                     children: [
-                      const Icon(Icons.screen_rotation_rounded, size: 20, color: AppColors.muted),
+                      Icon(Icons.screen_rotation_rounded, size: 20, color: AppColors.muted),
                       const SizedBox(width: 8),
                       Text('Screen Orientation', style: AppText.bodyMedium),
                     ],
@@ -1711,7 +1711,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   style: AppText.caption,
                 ),
                 trailing: _selectedMode == ReaderMode.automatic
-                    ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                    ? Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
                 onTap: () {
                   Navigator.pop(context);
@@ -1726,7 +1726,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 title: Text('Right to Left (Standard Manga 🇯🇵)', style: AppText.bodyMedium),
                 subtitle: Text('Swipe left for next page, auto-advances to next chapter', style: AppText.caption),
                 trailing: _selectedMode == ReaderMode.rightToLeft
-                    ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                    ? Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
                 onTap: () {
                   Navigator.pop(context);
@@ -1741,7 +1741,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 title: Text('Webtoon (Manhwa / Manhua 🇰🇷🇨🇳)', style: AppText.bodyMedium),
                 subtitle: Text('Continuous vertical strip across chapters', style: AppText.caption),
                 trailing: _selectedMode == ReaderMode.webtoon
-                    ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                    ? Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
                 onTap: () {
                   Navigator.pop(context);
@@ -1756,14 +1756,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
                 title: Text('Left to Right (Western Comics)', style: AppText.bodyMedium),
                 subtitle: Text('Swipe right for next page, auto-advances to next chapter', style: AppText.caption),
                 trailing: _selectedMode == ReaderMode.leftToRight
-                    ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                    ? Icon(Icons.check_rounded, color: AppColors.primary)
                     : null,
                 onTap: () {
                   Navigator.pop(context);
                   _setMode(ReaderMode.leftToRight);
                 },
               ),
-              const Divider(color: AppColors.outline, height: 24),
+              Divider(color: AppColors.outline, height: 24),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                 child: Text(
@@ -2010,7 +2010,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(Icons.pause_rounded, size: 16, color: AppColors.primary),
+                        Icon(Icons.pause_rounded, size: 16, color: AppColors.primary),
                         const SizedBox(width: 6),
                         Text(
                           'Auto ${_autoScrollSpeed.toStringAsFixed(1)}x',
@@ -2103,7 +2103,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.error_outline_rounded, size: 42, color: AppColors.primary),
+                  Icon(Icons.error_outline_rounded, size: 42, color: AppColors.primary),
                   const SizedBox(height: 12),
                   Text(
                     'Could not load ${chapter.displayTitle}',
@@ -2135,7 +2135,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       label: Text('Solve in WebView & Retry', style: AppText.bodyMedium),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.text,
-                        side: const BorderSide(color: AppColors.outline),
+                        side: BorderSide(color: AppColors.outline),
                         minimumSize: const Size(0, 44),
                       ),
                     ),
@@ -2158,7 +2158,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                const SizedBox(
+                SizedBox(
                   width: 22,
                   height: 22,
                   child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2.2),
@@ -2300,7 +2300,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 16),
+                  Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 16),
                   const SizedBox(width: 8),
                   Flexible(
                     child: Text(
@@ -2347,7 +2347,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.celebration_rounded, color: AppColors.primary, size: 36),
+                Icon(Icons.celebration_rounded, color: AppColors.primary, size: 36),
                 const SizedBox(height: 12),
                 Text(
                   "You've reached the latest chapter!",
@@ -2517,7 +2517,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 48),
+                Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 48),
                 const SizedBox(height: 16),
                 Text(
                   '${curChapter.displayTitle} Finished',
@@ -2559,7 +2559,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       padding: EdgeInsets.fromLTRB(6, top + 4, 6, 4),
       decoration: BoxDecoration(
         color: AppColors.surface.withValues(alpha: .94),
-        border: const Border(bottom: BorderSide(color: AppColors.outline)),
+        border: Border(bottom: BorderSide(color: AppColors.outline)),
       ),
       child: Row(
         children: [
@@ -2593,7 +2593,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           if (_chapters.length > 1)
             IconButton(
               constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-              icon: const Icon(Icons.format_list_bulleted_rounded, color: AppColors.text, size: 22),
+              icon: Icon(Icons.format_list_bulleted_rounded, color: AppColors.text, size: 22),
               tooltip: 'Chapters',
               onPressed: _showChaptersDrawer,
             ),
@@ -2703,7 +2703,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           padding: EdgeInsets.only(top: 6, bottom: bottom + 4),
           decoration: BoxDecoration(
             color: AppColors.surface.withValues(alpha: .95),
-            border: const Border(top: BorderSide(color: AppColors.outline)),
+            border: Border(top: BorderSide(color: AppColors.outline)),
           ),
           child: Row(
             children: [
@@ -2859,7 +2859,7 @@ class _ScrubButton extends StatelessWidget {
           onTap: onTap,
           radius: 22,
           child: Center(
-            child: Text(glyph, style: const TextStyle(fontSize: 28, color: AppColors.primary, height: 1)),
+            child: Text(glyph, style: TextStyle(fontSize: 28, color: AppColors.primary, height: 1)),
           ),
         ),
       );
@@ -3375,7 +3375,7 @@ class _PageErrorCard extends StatelessWidget {
                 color: AppColors.surfaceHigh,
                 borderRadius: BorderRadius.circular(12),
               ),
-              child: const Icon(Icons.broken_image_outlined, color: AppColors.primary, size: 22),
+              child: Icon(Icons.broken_image_outlined, color: AppColors.primary, size: 22),
             ),
             const SizedBox(height: 12),
             Text(
@@ -3412,7 +3412,7 @@ class _PageErrorCard extends StatelessWidget {
                 label: Text('Open in WebView', style: AppText.bodyMedium),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppColors.text,
-                  side: const BorderSide(color: AppColors.outline),
+                  side: BorderSide(color: AppColors.outline),
                   minimumSize: const Size(0, 44),
                 ),
               ),

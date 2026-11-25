@@ -107,7 +107,7 @@ class _ExtensionPreferencesSheetState
                 padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
                 child: Row(
                   children: [
-                    const Icon(Icons.tune_rounded, color: AppColors.primary, size: 20),
+                    Icon(Icons.tune_rounded, color: AppColors.primary, size: 20),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
@@ -118,15 +118,15 @@ class _ExtensionPreferencesSheetState
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.close_rounded, color: AppColors.muted),
+                      icon: Icon(Icons.close_rounded, color: AppColors.muted),
                       onPressed: () => Navigator.pop(context),
                     ),
                   ],
                 ),
               ),
-              const Divider(color: AppColors.outline, height: 1),
+              Divider(color: AppColors.outline, height: 1),
               if (_loading)
-                const Padding(
+                Padding(
                   padding: EdgeInsets.all(32),
                   child: CircularProgressIndicator(color: AppColors.primary),
                 )
@@ -136,7 +136,7 @@ class _ExtensionPreferencesSheetState
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.tune_rounded, color: AppColors.muted, size: 36),
+                      Icon(Icons.tune_rounded, color: AppColors.muted, size: 36),
                       const SizedBox(height: 10),
                       Text(
                         'No configurable settings exposed by this source.',
@@ -153,7 +153,7 @@ class _ExtensionPreferencesSheetState
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     itemCount: _prefs.length,
                     separatorBuilder: (_, _) =>
-                        const Divider(color: AppColors.outline, height: 1),
+                        Divider(color: AppColors.outline, height: 1),
                     itemBuilder: (ctx, i) => _buildPrefTile(_prefs[i]),
                   ),
                 ),
@@ -202,7 +202,7 @@ class _ExtensionPreferencesSheetState
           curLabel.isNotEmpty ? curLabel : 'Tap to choose',
           style: AppText.caption.copyWith(color: AppColors.primary),
         ),
-        trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
+        trailing: Icon(Icons.chevron_right_rounded, color: AppColors.muted),
         onTap: entries.isEmpty
             ? null
             : () {
@@ -217,7 +217,7 @@ class _ExtensionPreferencesSheetState
                           title: Text(entries[idx], style: AppText.body),
                           trailing: (idx < entryValues.length &&
                                   entryValues[idx] == curVal)
-                              ? const Icon(Icons.check_rounded, color: AppColors.primary)
+                              ? Icon(Icons.check_rounded, color: AppColors.primary)
                               : null,
                           onTap: () {
                             Navigator.pop(dCtx);
@@ -250,7 +250,7 @@ class _ExtensionPreferencesSheetState
           '${selected.length} selected${summary.isNotEmpty ? ' • $summary' : ''}',
           style: AppText.caption,
         ),
-        trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
+        trailing: Icon(Icons.chevron_right_rounded, color: AppColors.muted),
         onTap: entries.isEmpty
             ? null
             : () {
@@ -319,7 +319,7 @@ class _ExtensionPreferencesSheetState
         overflow: TextOverflow.ellipsis,
         style: AppText.caption,
       ),
-      trailing: const Icon(Icons.edit_outlined, size: 18, color: AppColors.muted),
+      trailing: Icon(Icons.edit_outlined, size: 18, color: AppColors.muted),
       onTap: () {
         final ctrl = TextEditingController(text: textVal);
         showDialog<void>(
@@ -462,7 +462,7 @@ class _ExtensionFiltersSheetState extends State<_ExtensionFiltersSheet> {
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                 child: Row(
                   children: [
-                    const Icon(Icons.filter_list_rounded, color: AppColors.primary, size: 20),
+                    Icon(Icons.filter_list_rounded, color: AppColors.primary, size: 20),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
@@ -490,9 +490,9 @@ class _ExtensionFiltersSheetState extends State<_ExtensionFiltersSheet> {
                   ],
                 ),
               ),
-              const Divider(color: AppColors.outline, height: 1),
+              Divider(color: AppColors.outline, height: 1),
               if (_loading)
-                const Padding(
+                Padding(
                   padding: EdgeInsets.all(32),
                   child: CircularProgressIndicator(color: AppColors.primary),
                 )
@@ -532,7 +532,7 @@ class _ExtensionFiltersSheetState extends State<_ExtensionFiltersSheet> {
           child: Text(name.toUpperCase(), style: AppText.sectionHeader),
         );
       case 'separator':
-        return const Divider(color: AppColors.outline, height: 16);
+        return Divider(color: AppColors.outline, height: 16);
       case 'checkbox':
         final checked = item['state'] == true;
         return CheckboxListTile(
