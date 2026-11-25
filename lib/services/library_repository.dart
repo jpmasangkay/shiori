@@ -30,6 +30,9 @@ class LibraryRepository extends ChangeNotifier {
   final LinkedHashMap<String, List<ChapterItem>> _localChapters =
       LinkedHashMap<String, List<ChapterItem>>();
 
+  /// Epoch ms timestamps of when chapters were last fetched from source per mangaId.
+  final Map<String, int> _chapterFetchedAt = {};
+
   /// Cached updates payload for instant offline Updates screen rendering.
   Map<String, dynamic> _cachedUpdatesPayload = {
     'groups': {'Today': [], 'Yesterday': [], 'Earlier': []},
@@ -44,6 +47,51 @@ class LibraryRepository extends ChangeNotifier {
   List<CategoryItem> get userCategories => List.unmodifiable(_userCategories);
   Map<String, List<String>> get mangaCategories => Map.unmodifiable(_mangaCategories);
   Map<String, List<ChapterItem>> get localChapters => Map.unmodifiable(_localChapters);
+  bool get hasDirtyCategoryMutations => _hasDirtyCategoryMutations || _dirtyCategoryIds.isNotEmpty;
+
+  DateTime? getChaptersLastFetchedAt(String mangaId) {
+    final ms = _chapterFetchedAt[mangaId];
+    if (ms == null || ms <= 0) return null;
+    return DateTime.fromMillisecondsSinceEpoch(ms);
+  }
+
+  bool areChaptersFresh(
+    String mangaId, {
+    Duration maxAge = const Duration(hours: 6),
+  }) {
+    if (mangaId.isEmpty) return false;
+    final cached = _localChapters[mangaId];
+    if (cached == null || cached.isEmpty) return false;
+    final last = getChaptersLastFetchedAt(mangaId);
+    if (last == null) return false;
+    return DateTime.now().difference(last) < maxAge;
+  }
+
+  static MangaItem _mergeRicherManga(MangaItem primary, MangaItem fallback) {
+    bool isGoodTitle(String t, String id) =>
+        t.isNotEmpty && t != 'Untitled' && !t.startsWith('ext:') && t != id;
+    return MangaItem(
+      id: primary.id.isNotEmpty ? primary.id : fallback.id,
+      title: isGoodTitle(primary.title, primary.id)
+          ? primary.title
+          : (isGoodTitle(fallback.title, fallback.id)
+              ? fallback.title
+              : primary.displayTitle),
+      description: primary.description.isNotEmpty
+          ? primary.description
+          : fallback.description,
+      cover: primary.cover.isNotEmpty ? primary.cover : fallback.cover,
+      authors: primary.authors.isNotEmpty ? primary.authors : fallback.authors,
+      status: primary.status.isNotEmpty ? primary.status : fallback.status,
+      type: primary.type.isNotEmpty ? primary.type : fallback.type,
+      tags: primary.tags.isNotEmpty ? primary.tags : fallback.tags,
+      year: primary.year ?? fallback.year,
+      lastChapter: (primary.lastChapter != null && primary.lastChapter!.isNotEmpty)
+          ? primary.lastChapter
+          : fallback.lastChapter,
+      source: primary.source.isNotEmpty ? primary.source : fallback.source,
+    );
+  }
 
   bool isInLibrary(String mangaId) => _localLibrary.containsKey(mangaId);
 
@@ -169,19 +217,56 @@ class LibraryRepository extends ChangeNotifier {
 
     // 6. Persisted Local Chapter Lists per Manga (SQLite-backed on device, SharedPreferences fallback in tests)
     _localChapters.clear();
+    _chapterFetchedAt.clear();
+    final fetchedAtJson = prefs.getString('shiori_chapter_fetched_at_v1');
+    if (fetchedAtJson != null && fetchedAtJson.isNotEmpty) {
+      try {
+        final Map<String, dynamic> map = jsonDecode(fetchedAtJson);
+        map.forEach((k, v) {
+          if (k.isNotEmpty && v is num) {
+            _chapterFetchedAt[k] = v.toInt();
+          }
+        });
+      } catch (e) {
+        AppLogger.warn('Failed to parse shiori_chapter_fetched_at_v1', e);
+      }
+    }
+
     final dbReady = await LocalDatabase.instance.init();
     if (dbReady) {
       final dbManga = await LocalDatabase.instance.loadLibraryManga();
-      if (dbManga.isNotEmpty) {
-        for (final m in dbManga) {
-          _localLibrary[m.id] = m;
-          _knownManga[m.id] = m;
+      final dbById = <String, MangaItem>{for (final m in dbManga) m.id: m};
+      final toSyncToDb = <MangaItem>[];
+
+      // Merge SQLite and SharedPreferences without letting stale SQLite rows clobber richer cached metadata.
+      for (final m in dbManga) {
+        if (_deletedMangaIds.contains(m.id)) {
+          unawaited(LocalDatabase.instance.deleteLibraryManga(m.id));
+          continue;
         }
-      } else if (_localLibrary.isNotEmpty) {
-        // One-time migration of existing SharedPreferences library into SQLite
-        for (final m in _localLibrary.values) {
-          await LocalDatabase.instance.upsertManga(m);
+        final prefItem = _localLibrary[m.id];
+        final merged = prefItem != null ? _mergeRicherManga(prefItem, m) : m;
+        _localLibrary[m.id] = merged;
+        _knownManga[m.id] = merged;
+        if (prefItem != null &&
+            (merged.cover != m.cover ||
+                merged.description != m.description ||
+                merged.status != m.status ||
+                merged.lastChapter != m.lastChapter ||
+                merged.title != m.title ||
+                merged.authors.length != m.authors.length ||
+                merged.tags.length != m.tags.length)) {
+          toSyncToDb.add(merged);
         }
+      }
+      // Backfill any SharedPreferences-only library items (e.g. from cloud sync or one-time migration) into SQLite.
+      for (final m in _localLibrary.values) {
+        if (!dbById.containsKey(m.id)) {
+          toSyncToDb.add(m);
+        }
+      }
+      if (toSyncToDb.isNotEmpty) {
+        unawaited(LocalDatabase.instance.upsertMangas(toSyncToDb));
       }
 
       final dbChapters = await LocalDatabase.instance.loadAllCachedChapters(
@@ -249,8 +334,25 @@ class LibraryRepository extends ChangeNotifier {
     return const [];
   }
 
+  /// Loads cached chapters for [mangaId] from SQLite if evicted from the in-memory LRU cache.
+  Future<List<ChapterItem>> loadChaptersFromDbIfNeeded(String mangaId) async {
+    if (mangaId.isEmpty) return const [];
+    final inMem = getCachedChapters(mangaId);
+    if (inMem.isNotEmpty) return inMem;
+    if (!LocalDatabase.instance.isAvailable) return const [];
+    final fromDb = await LocalDatabase.instance.loadChaptersForManga(mangaId);
+    if (fromDb.isNotEmpty) {
+      _localChapters[mangaId] = fromDb;
+    }
+    return fromDb;
+  }
+
   /// Persists [chapters] locally for [mangaId] with bounded LRU capacity.
-  Future<void> cacheChapters(String mangaId, List<ChapterItem> chapters) async {
+  Future<void> cacheChapters(
+    String mangaId,
+    List<ChapterItem> chapters, {
+    bool markFetchedNow = true,
+  }) async {
     assert(mangaId.isNotEmpty, 'mangaId must not be empty when caching chapters');
     if (mangaId.isEmpty || chapters.isEmpty) return;
 
@@ -275,12 +377,21 @@ class LibraryRepository extends ChangeNotifier {
     _localChapters[mangaId] = boundedChapters;
     assert(_localChapters.length <= maxCachedMangaChapters);
 
+    if (markFetchedNow) {
+      _chapterFetchedAt[mangaId] = DateTime.now().millisecondsSinceEpoch;
+      unawaited(_persistChapterFetchedAt());
+    }
+
     final libItem = _localLibrary[mangaId];
     if (libItem != null && (libItem.lastChapter == null || libItem.lastChapter!.isEmpty)) {
       final firstNum = boundedChapters.first.number;
       if (firstNum != null && firstNum.isNotEmpty) {
-        _localLibrary[mangaId] = libItem.copyWith(lastChapter: firstNum);
-        _knownManga[mangaId] = _localLibrary[mangaId]!;
+        final updatedLib = libItem.copyWith(lastChapter: firstNum);
+        _localLibrary[mangaId] = updatedLib;
+        _knownManga[mangaId] = updatedLib;
+        if (LocalDatabase.instance.isAvailable) {
+          unawaited(LocalDatabase.instance.upsertManga(updatedLib));
+        }
         unawaited(_persistLocalLibrary());
       }
     }
@@ -289,6 +400,18 @@ class LibraryRepository extends ChangeNotifier {
       await LocalDatabase.instance.replaceChaptersForManga(mangaId, boundedChapters);
     } else {
       await _persistLocalChapters();
+    }
+  }
+
+  Future<void> _persistChapterFetchedAt() async {
+    try {
+      final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
+      await prefs.setString(
+        'shiori_chapter_fetched_at_v1',
+        jsonEncode(_chapterFetchedAt),
+      );
+    } catch (e) {
+      AppLogger.warn('Failed to persist chapter fetch timestamps', e);
     }
   }
 
@@ -519,6 +642,9 @@ class LibraryRepository extends ChangeNotifier {
           !listEquals(merged.authors, libExisting.authors) ||
           !listEquals(merged.tags, libExisting.tags)) {
         _localLibrary[updated.id] = merged;
+        if (LocalDatabase.instance.isAvailable) {
+          unawaited(LocalDatabase.instance.upsertManga(merged));
+        }
         await _persistLocalLibrary();
         changed = true;
       }
@@ -957,6 +1083,9 @@ class LibraryRepository extends ChangeNotifier {
             }
           }
         }
+        if (LocalDatabase.instance.isAvailable && _localLibrary.isNotEmpty) {
+          unawaited(LocalDatabase.instance.upsertMangas(_localLibrary.values));
+        }
         await _persistLocalLibrary();
         await _persistMangaCategories();
         notifyListeners();
@@ -1017,6 +1146,13 @@ class LibraryRepository extends ChangeNotifier {
       );
 
       if (chunkUpdated) {
+        if (LocalDatabase.instance.isAvailable) {
+          unawaited(
+            LocalDatabase.instance.upsertMangas(
+              chunk.map((id) => _localLibrary[id]).whereType<MangaItem>(),
+            ),
+          );
+        }
         await _persistLocalLibrary();
         notifyListeners();
       }
@@ -1033,11 +1169,15 @@ class LibraryRepository extends ChangeNotifier {
     _dirtyCategoryIds.clear();
     _hasDirtyCategoryMutations = false;
     _localChapters.clear();
+    _chapterFetchedAt.clear();
     _cachedUpdatesPayload = {
       'groups': {'Today': [], 'Yesterday': [], 'Earlier': []},
       'items': [],
       'total': 0,
     };
+    if (LocalDatabase.instance.isAvailable) {
+      await LocalDatabase.instance.clearLibraryTables();
+    }
     final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
     await prefs.remove('shiori_local_library');
     await prefs.remove('shiori_user_categories');
@@ -1046,6 +1186,7 @@ class LibraryRepository extends ChangeNotifier {
     await prefs.remove('shiori_deleted_category_ids');
     await prefs.remove('shiori_categories_initialized');
     await prefs.remove('shiori_local_chapters_v1');
+    await prefs.remove('shiori_chapter_fetched_at_v1');
     await prefs.remove('shiori_local_updates_v1');
     _userCategories.addAll(const [
       CategoryItem(id: 'reading', name: 'Reading', order: 0),

@@ -73,6 +73,13 @@ class ApiService extends ChangeNotifier {
   late MangaDemonScraper _mangademon;
   late WebExtensionScraper _webExtension;
 
+  static const String _keyLastCloudSyncAt = 'shiori_last_cloud_sync_at_v1';
+  static const String _keyLastLibraryChapterCheckAt =
+      'shiori_last_library_chapter_check_at_v1';
+  static const Duration cloudSyncCooldown = Duration(minutes: 10);
+  static const Duration libraryChapterCheckCooldown = Duration(hours: 12);
+  static const Duration chapterCacheFreshness = Duration(hours: 6);
+
   String _baseUrl = 'https://shiori-n5hd.onrender.com/api';
   bool _mongoConnected = false;
   bool _initialized = false;
@@ -89,6 +96,10 @@ class ApiService extends ChangeNotifier {
   bool get isLoggedIn => auth.isLoggedIn;
   bool get isMongoConnected => _mongoConnected;
   bool get isSessionExpired => auth.isSessionExpired;
+  SharedPreferences? get prefs => _cachedPrefs;
+  bool get hasRecentCloudSync =>
+      _lastCloudSyncAt != null &&
+      DateTime.now().difference(_lastCloudSyncAt!) < cloudSyncCooldown;
 
   void _wireUpDependencies() {
     httpManager = HttpManager(
@@ -203,6 +214,23 @@ class ApiService extends ChangeNotifier {
     await libraryRepo.init(prefs);
     await historyRepo.init(prefs);
 
+    final lastCloudMs = prefs.getInt(_keyLastCloudSyncAt);
+    _lastCloudSyncAt = (lastCloudMs != null && lastCloudMs > 0)
+        ? DateTime.fromMillisecondsSinceEpoch(lastCloudMs)
+        : null;
+    final lastChapterCheckMs = prefs.getInt(_keyLastLibraryChapterCheckAt);
+    _lastLibraryChapterCheck =
+        (lastChapterCheckMs != null && lastChapterCheckMs > 0)
+            ? DateTime.fromMillisecondsSinceEpoch(lastChapterCheckMs)
+            : null;
+    _lastAutoRefresh = null;
+    if (_lastCloudSyncAt != null) {
+      syncState.value = SyncState(
+        status: SyncStatus.idle,
+        lastSyncedAt: _lastCloudSyncAt,
+      );
+    }
+
     // Wire up automatic cover lookup for missing or failed manga covers (#11, #32)
     ImageReferers.coverLookup = (String mangaId) async {
       final localDownloadedCover = DownloadService.instance
@@ -253,9 +281,6 @@ class ApiService extends ChangeNotifier {
 
     if (firstInit) {
       unawaited(checkHealth());
-      if (isLoggedIn) {
-        unawaited(syncAllCloudData());
-      }
     }
   }
 
@@ -319,6 +344,11 @@ class ApiService extends ChangeNotifier {
       onClearLocalData: () async {
         await libraryRepo.clearLocalData();
         await historyRepo.clearLocalData();
+        _lastCloudSyncAt = null;
+        _lastLibraryChapterCheck = null;
+        final p = _cachedPrefs ?? await SharedPreferences.getInstance();
+        await p.remove(_keyLastCloudSyncAt);
+        await p.remove(_keyLastLibraryChapterCheckAt);
       },
     );
   }
@@ -402,10 +432,15 @@ class ApiService extends ChangeNotifier {
         h,
       );
 
+      final now = DateTime.now();
+      _lastCloudSyncAt = now;
+      final p = _cachedPrefs ?? await SharedPreferences.getInstance();
+      unawaited(p.setInt(_keyLastCloudSyncAt, now.millisecondsSinceEpoch));
+
       syncState.value = SyncState(
         status: SyncStatus.success,
         message: 'Sync complete',
-        lastSyncedAt: DateTime.now(),
+        lastSyncedAt: now,
       );
       notifyListeners();
     } catch (e, st) {
@@ -451,7 +486,9 @@ class ApiService extends ChangeNotifier {
         await pullCloud();
         return libraryRepo.getLibraryItems(type: type);
       }
-      unawaited(pullCloud());
+      if (!hasRecentCloudSync) {
+        unawaited(pullCloud());
+      }
     }
     return localItems;
   }
@@ -636,10 +673,9 @@ class ApiService extends ChangeNotifier {
             final cloudCompleted = rawCompleted
                 .map((e) => e.toString())
                 .toList();
-            await historyRepo.markChaptersRead(
+            await historyRepo.mergeCloudCompletedChapters(
               mangaId,
               cloudCompleted,
-              read: true,
             );
           }
           if (data['lastRead'] is Map) {
@@ -711,7 +747,19 @@ class ApiService extends ChangeNotifier {
     return DownloadService.instance.getDownloadedCountForManga(mangaId);
   }
 
-  int getUnreadCount(String mangaId) => historyRepo.getUnreadCount(mangaId);
+  int getUnreadCount(String mangaId) {
+    final cached = getCachedChapters(mangaId);
+    if (cached.isNotEmpty) {
+      var unread = 0;
+      for (final c in cached) {
+        if (!historyRepo.isChapterRead(mangaId, c.id)) {
+          unread++;
+        }
+      }
+      return unread;
+    }
+    return historyRepo.getUnreadCount(mangaId);
+  }
 
   bool isChapterBookmarked(String chapterId) =>
       historyRepo.isChapterBookmarked(chapterId);
@@ -954,12 +1002,20 @@ class ApiService extends ChangeNotifier {
   );
 
   /// Fetches full manga details and persists them locally for library titles.
-  /// If offline or network times out, gracefully returns cached local metadata if available.
-  Future<MangaItem> getManga(String id) async {
+  /// Local-first: returns fresh cached metadata immediately without hitting the
+  /// network unless [forceRefresh] is true or cached details are incomplete/stale.
+  Future<MangaItem> getManga(String id, {bool forceRefresh = false}) async {
     final localCached =
         libraryRepo.localLibrary[id] ?? libraryRepo.knownManga[id];
-    if (ConnectivityService.instance.isOffline && localCached != null) {
-      return localCached;
+    if (!forceRefresh && localCached != null) {
+      if (ConnectivityService.instance.isOffline) {
+        return localCached;
+      }
+      if (localCached.description.isNotEmpty &&
+          localCached.cover.isNotEmpty &&
+          libraryRepo.areChaptersFresh(id, maxAge: chapterCacheFreshness)) {
+        return localCached;
+      }
     }
     try {
       final fresh = await catalog.getManga(id);
@@ -993,18 +1049,23 @@ class ApiService extends ChangeNotifier {
     return merged;
   }
 
-  /// Fetches chapters for [mangaId], automatically persisting them to local storage
-  /// and falling back to cached or downloaded chapters when offline or on slow/failed network.
+  /// Fetches chapters for [mangaId], serving fresh local cache immediately like
+  /// Mihon unless [forceRefresh] is requested or the local cache has expired.
   Future<List<ChapterItem>> getChapters(
     String mangaId, {
     String lang = 'en',
     bool forceRefresh = false,
   }) async {
-    final cached = getCachedChapters(mangaId);
-    if (!forceRefresh &&
-        ConnectivityService.instance.isOffline &&
-        cached.isNotEmpty) {
-      return cached;
+    var cached = getCachedChapters(mangaId);
+    if (cached.isEmpty) {
+      await libraryRepo.loadChaptersFromDbIfNeeded(mangaId);
+      cached = getCachedChapters(mangaId);
+    }
+    if (!forceRefresh && cached.isNotEmpty) {
+      if (ConnectivityService.instance.isOffline ||
+          libraryRepo.areChaptersFresh(mangaId, maxAge: chapterCacheFreshness)) {
+        return cached;
+      }
     }
 
     try {
@@ -1092,7 +1153,7 @@ class ApiService extends ChangeNotifier {
         chunk.map((manga) async {
           try {
             final oldCount = historyRepo.getChapterCount(manga.id);
-            final chapters = await getChapters(manga.id);
+            final chapters = await getChapters(manga.id, forceRefresh: true);
             if (oldCount > 0 && chapters.length > oldCount) {
               newChaptersCount += (chapters.length - oldCount);
             }
@@ -1100,6 +1161,12 @@ class ApiService extends ChangeNotifier {
         }),
       );
     }
+    final now = DateTime.now();
+    _lastLibraryChapterCheck = now;
+    final p = _cachedPrefs ?? await SharedPreferences.getInstance();
+    unawaited(
+      p.setInt(_keyLastLibraryChapterCheckAt, now.millisecondsSinceEpoch),
+    );
     notifyListeners();
     return newChaptersCount;
   }
@@ -1107,13 +1174,16 @@ class ApiService extends ChangeNotifier {
   bool _isAutoRefreshing = false;
   bool get isAutoRefreshing => _isAutoRefreshing;
   DateTime? _lastAutoRefresh;
+  DateTime? _lastCloudSyncAt;
   DateTime? _lastLibraryChapterCheck;
 
-  /// High-performance automated refresh:
+  /// Mihon-style local-first background refresh with persisted cooldowns:
   /// - Immediately skips network polling when offline.
-  /// - Synchronizes lightweight cloud state (throttled to min 45s).
-  /// - Throttles heavy full-library chapter scraping to once every 15 minutes
-  ///   (unless `force: true`) so slow internet connections are never saturated!
+  /// - Cloud sync only runs when forced, dirty local mutations exist, or
+  ///   [cloudSyncCooldown] (10m, persisted across restarts) has elapsed.
+  /// - Heavy library chapter scraping only runs when forced or
+  ///   [libraryChapterCheckCooldown] (12h, persisted across restarts) has elapsed,
+  ///   so reopening the app never re-scrapes your entire library!
   Future<void> autoRefreshEverything({bool force = false}) async {
     if (ConnectivityService.instance.isOffline) return;
     final now = DateTime.now();
@@ -1126,23 +1196,35 @@ class ApiService extends ChangeNotifier {
 
     _isAutoRefreshing = true;
     _lastAutoRefresh = now;
-    notifyListeners();
 
     try {
-      // 1. Silent cloud synchronization if signed in
-      if (isLoggedIn) {
+      // 1. Cooldown-gated silent cloud synchronization if signed in
+      final hasPendingMutations =
+          historyRepo.hasPendingCloudChanges ||
+          libraryRepo.hasDirtyCategoryMutations;
+      final shouldSyncCloud =
+          force || !hasRecentCloudSync || hasPendingMutations;
+      if (isLoggedIn && shouldSyncCloud) {
         await syncAllCloudData();
       }
 
-      // 2. Heavy background library chapter update check only when forced or >= 15 mins elapsed
+      // 2. Heavy background library chapter update check only on persisted 12h cadence (or pull-to-refresh)
       final shouldScrapeChapters =
           force ||
-          _lastLibraryChapterCheck == null ||
-          now.difference(_lastLibraryChapterCheck!) >=
-              const Duration(minutes: 15);
+          (_lastLibraryChapterCheck != null &&
+              now.difference(_lastLibraryChapterCheck!) >=
+                  libraryChapterCheckCooldown);
       if (shouldScrapeChapters) {
-        _lastLibraryChapterCheck = now;
         await checkForLibraryUpdates();
+      } else if (_lastLibraryChapterCheck == null &&
+          libraryRepo.localLibrary.isNotEmpty) {
+        // Seed persisted check timestamp on first launch with an existing library so
+        // cold starts stay instant instead of immediately scraping every title.
+        _lastLibraryChapterCheck = now;
+        final p = _cachedPrefs ?? await SharedPreferences.getInstance();
+        unawaited(
+          p.setInt(_keyLastLibraryChapterCheckAt, now.millisecondsSinceEpoch),
+        );
       }
 
       // 3. Silent extension status check
@@ -1153,7 +1235,6 @@ class ApiService extends ChangeNotifier {
       AppLogger.warn('autoRefreshEverything failed: $e', e, st);
     } finally {
       _isAutoRefreshing = false;
-      notifyListeners();
     }
   }
 

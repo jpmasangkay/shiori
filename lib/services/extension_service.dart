@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -67,6 +68,33 @@ class ExtensionRepoMeta {
     this.discord = '',
     this.extensions = const [],
   });
+}
+
+class ExtensionBatchUpdateState {
+  final bool isRunning;
+  final bool cancelRequested;
+  final int total;
+  final int completed;
+  final int succeeded;
+  final int failed;
+  final String? currentExtensionName;
+  final String? currentExtensionPkg;
+  final List<String> failedNames;
+
+  const ExtensionBatchUpdateState({
+    this.isRunning = false,
+    this.cancelRequested = false,
+    this.total = 0,
+    this.completed = 0,
+    this.succeeded = 0,
+    this.failed = 0,
+    this.currentExtensionName,
+    this.currentExtensionPkg,
+    this.failedNames = const [],
+  });
+
+  double get progress => total > 0 ? (completed / total).clamp(0.0, 1.0) : 0.0;
+  int get remaining => (total - completed).clamp(0, total);
 }
 
 class MangaExtension {
@@ -513,6 +541,29 @@ class ExtensionService extends ChangeNotifier {
   String? _lastInstallError;
   String? get lastInstallError => _lastInstallError;
 
+  ExtensionBatchUpdateState _batchUpdateState =
+      const ExtensionBatchUpdateState();
+  ExtensionBatchUpdateState get batchUpdateState => _batchUpdateState;
+  bool get isUpdatingAll => _batchUpdateState.isRunning;
+  bool _cancelBatchUpdate = false;
+
+  void cancelUpdateAll() {
+    if (!_batchUpdateState.isRunning || _cancelBatchUpdate) return;
+    _cancelBatchUpdate = true;
+    _batchUpdateState = ExtensionBatchUpdateState(
+      isRunning: true,
+      cancelRequested: true,
+      total: _batchUpdateState.total,
+      completed: _batchUpdateState.completed,
+      succeeded: _batchUpdateState.succeeded,
+      failed: _batchUpdateState.failed,
+      currentExtensionName: _batchUpdateState.currentExtensionName,
+      currentExtensionPkg: _batchUpdateState.currentExtensionPkg,
+      failedNames: _batchUpdateState.failedNames,
+    );
+    notifyListeners();
+  }
+
   final Map<String, ({String version, int versionCode, String libVersion, DateTime expiresAt})>
       _pendingOsSyncOverrides = {};
 
@@ -746,6 +797,8 @@ class ExtensionService extends ChangeNotifier {
     _pendingOsSyncOverrides.clear();
     _installingPackages.clear();
     _lastInstallError = null;
+    _cancelBatchUpdate = false;
+    _batchUpdateState = const ExtensionBatchUpdateState();
     for (final ext in deviceExtensions) {
       if (MangaExtension.isStubPackage(ext.pkg, ext.name)) continue;
       final key = ext.pkg.toLowerCase().trim();
@@ -1974,7 +2027,10 @@ class ExtensionService extends ChangeNotifier {
 
   /// Downloads the extension APK and installs/updates it through Android's
   /// PackageInstaller (shared with Mihon), awaiting actual OS completion.
-  Future<bool> downloadAndInstallExtension(MangaExtension ext) async {
+  Future<bool> downloadAndInstallExtension(
+    MangaExtension ext, {
+    String? prefetchedApkPath,
+  }) async {
     if (!kIsWeb && (Platform.isIOS || SourceManager.isIOSPlatform)) {
       _lastInstallError = 'Community APK extensions cannot be installed on iOS.';
       debugPrint('Community APK extensions cannot be installed on iOS');
@@ -2018,7 +2074,11 @@ class ExtensionService extends ChangeNotifier {
       }
 
       String? apkPath;
-      if (effectiveApkUrl.isNotEmpty) {
+      if (prefetchedApkPath != null &&
+          prefetchedApkPath.isNotEmpty &&
+          File(prefetchedApkPath).existsSync()) {
+        apkPath = prefetchedApkPath;
+      } else if (effectiveApkUrl.isNotEmpty) {
         final downloadTarget = ext.apkUrl.trim() == effectiveApkUrl
             ? ext
             : ext.copyWith(apkUrl: effectiveApkUrl);
@@ -2098,13 +2158,143 @@ class ExtensionService extends ChangeNotifier {
     }
   }
 
-  /// Updates all extensions that currently have an update available.
-  Future<int> updateAllExtensions() async {
-    final outdated = List<MangaExtension>.from(updatesAvailableExtensions);
+  String _resolveEffectiveApkUrl(MangaExtension ext) {
+    final key = ext.pkg.split('@').first.toLowerCase().trim();
+    for (final r in _extensions) {
+      if (r.pkg.toLowerCase().trim() == key && r.apkUrl.trim().isNotEmpty) {
+        return r.apkUrl.trim();
+      }
+    }
+    return ext.apkUrl.trim();
+  }
+
+  /// Updates all compatible extensions that currently have an update available
+  /// (or an explicit [targets] subset), with live batch progress, cancellation,
+  /// re-entrancy protection, and lookahead APK prefetching so sequential
+  /// Android PackageInstaller prompts run with minimal wait.
+  Future<int> updateAllExtensions({List<MangaExtension>? targets}) async {
+    if (_batchUpdateState.isRunning) return 0;
+
+    final sourceList = targets ?? updatesAvailableExtensions;
+    final outdated = sourceList
+        .where((e) => e.hasUpdate && e.isCompatible)
+        .toList();
+    if (outdated.isEmpty) return 0;
+
+    _cancelBatchUpdate = false;
     var updated = 0;
-    for (final ext in outdated) {
-      final ok = await downloadAndInstallExtension(ext);
-      if (ok) updated++;
+    var completed = 0;
+    final failedNames = <String>[];
+
+    _batchUpdateState = ExtensionBatchUpdateState(
+      isRunning: true,
+      cancelRequested: false,
+      total: outdated.length,
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      currentExtensionName: outdated.first.name,
+      currentExtensionPkg: outdated.first.pkg,
+      failedNames: const [],
+    );
+    notifyListeners();
+
+    Future<String?>? nextPrefetch;
+    String? nextPrefetchPkg;
+
+    try {
+      for (var i = 0; i < outdated.length; i++) {
+        if (_cancelBatchUpdate) break;
+        final ext = outdated[i];
+
+        String? currentPrefetched;
+        if (nextPrefetch != null && nextPrefetchPkg == ext.pkg) {
+          currentPrefetched = await nextPrefetch;
+          nextPrefetch = null;
+          nextPrefetchPkg = null;
+        }
+        if (_cancelBatchUpdate) break;
+
+        _batchUpdateState = ExtensionBatchUpdateState(
+          isRunning: true,
+          cancelRequested: _cancelBatchUpdate,
+          total: outdated.length,
+          completed: completed,
+          succeeded: updated,
+          failed: failedNames.length,
+          currentExtensionName: ext.name,
+          currentExtensionPkg: ext.pkg,
+          failedNames: List<String>.unmodifiable(failedNames),
+        );
+        notifyListeners();
+
+        // Prefetch the next APK in the background while the current extension installs
+        if (i + 1 < outdated.length && !_cancelBatchUpdate) {
+          final nextExt = outdated[i + 1];
+          final nextUrl = _resolveEffectiveApkUrl(nextExt);
+          if (nextUrl.isNotEmpty) {
+            final nextTarget = nextExt.apkUrl.trim() == nextUrl
+                ? nextExt
+                : nextExt.copyWith(apkUrl: nextUrl);
+            nextPrefetchPkg = nextExt.pkg;
+            nextPrefetch = ensureApkDownloaded(
+              nextTarget,
+              forceDownload: true,
+              persistToPrivateStorage: false,
+              notify: false,
+            ).catchError((_) => null);
+          }
+        }
+
+        final ok = await downloadAndInstallExtension(
+          ext,
+          prefetchedApkPath: currentPrefetched,
+        );
+        completed++;
+        if (ok) {
+          updated++;
+        } else {
+          failedNames.add(ext.name);
+        }
+
+        _batchUpdateState = ExtensionBatchUpdateState(
+          isRunning: true,
+          cancelRequested: _cancelBatchUpdate,
+          total: outdated.length,
+          completed: completed,
+          succeeded: updated,
+          failed: failedNames.length,
+          currentExtensionName: ext.name,
+          currentExtensionPkg: ext.pkg,
+          failedNames: List<String>.unmodifiable(failedNames),
+        );
+        notifyListeners();
+      }
+    } finally {
+      // Clean up any prefetched APK if the batch was cancelled early
+      if (_cancelBatchUpdate && nextPrefetch != null) {
+        final cancelledPkg = nextPrefetchPkg;
+        unawaited(
+          nextPrefetch.then((_) {
+            if (cancelledPkg != null) {
+              return _deleteTempExtensionApks(cancelledPkg);
+            }
+          }).catchError((_) {}),
+        );
+      }
+      _batchUpdateState = ExtensionBatchUpdateState(
+        isRunning: false,
+        cancelRequested: _cancelBatchUpdate,
+        total: outdated.length,
+        completed: completed,
+        succeeded: updated,
+        failed: failedNames.length,
+        currentExtensionName: null,
+        currentExtensionPkg: null,
+        failedNames: List<String>.unmodifiable(failedNames),
+      );
+      _cancelBatchUpdate = false;
+      notifyListeners();
     }
     return updated;
   }

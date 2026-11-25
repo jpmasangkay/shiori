@@ -426,4 +426,195 @@ void main() {
       expect(flushedBookmarks, isTrue);
     });
   });
+
+  group('Mihon-Style Instant Local-First Open & Read-State Stability', () {
+    test('Canonical extension chapter IDs match across relative, full-URL, and trailing-slash variants', () async {
+      const mangaId = 'ext:eu.kanade.tachiyomi.extension.en.asura:%2Fseries%2Fsolo';
+      const relChId = 'ext:eu.kanade.tachiyomi.extension.en.asura:%2Fseries%2Fsolo%2Fchapter-1';
+      const fullUrlChId =
+          'ext:eu.kanade.tachiyomi.extension.en.asura:https%3A%2F%2Fasuracomic.net%2Fseries%2Fsolo%2Fchapter-1%2F';
+
+      await ApiService.instance.markChapterRead(mangaId, relChId, read: true);
+      expect(ApiService.instance.isChapterRead(mangaId, relChId), isTrue);
+      expect(ApiService.instance.isChapterRead(mangaId, fullUrlChId), isTrue);
+
+      await ApiService.instance.libraryRepo.cacheChapters(
+        mangaId,
+        const [
+          ChapterItem(id: fullUrlChId, number: '1', title: 'Chapter 1'),
+        ],
+      );
+      expect(ApiService.instance.getUnreadCount(mangaId), 0);
+
+      // Marking unread via alternate URL variant clears the original stored read mark too
+      await ApiService.instance.markChapterRead(mangaId, fullUrlChId, read: false);
+      expect(ApiService.instance.isChapterRead(mangaId, relChId), isFalse);
+      expect(ApiService.instance.isChapterRead(mangaId, fullUrlChId), isFalse);
+      expect(ApiService.instance.getUnreadCount(mangaId), 1);
+    });
+
+    test('Fresh cached manga & chapters serve with zero network calls, and forceRefresh bypasses cache', () async {
+      const manga = MangaItem(
+        id: 'asura:nano-machine',
+        title: 'Nano Machine',
+        description: 'Cached synopsis ready instantly.',
+        cover: 'https://example.com/nano.jpg',
+        status: 'Ongoing',
+        type: 'manhwa',
+        source: 'asura',
+      );
+      const cachedChapters = [
+        ChapterItem(id: 'asura:nano-machine:ch-2', number: '2', title: 'Ch 2'),
+        ChapterItem(id: 'asura:nano-machine:ch-1', number: '1', title: 'Ch 1'),
+      ];
+
+      await ApiService.instance.addToLibrary(manga);
+      await ApiService.instance.libraryRepo.cacheChapters(manga.id, cachedChapters);
+
+      var networkHits = 0;
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          networkHits++;
+          if (request.url.path.endsWith('/chapters')) {
+            return http.Response(
+              jsonEncode({
+                'data': [
+                  {'slug': 'ch-3', 'number': '3', 'title': 'Ch 3'},
+                  {'slug': 'ch-2', 'number': '2', 'title': 'Ch 2'},
+                  {'slug': 'ch-1', 'number': '1', 'title': 'Ch 1'},
+                ],
+              }),
+              200,
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+
+      // Simulate restart — persisted freshness timestamp keeps cache warm
+      await ApiService.instance.init();
+
+      final details = await ApiService.instance.getManga(manga.id);
+      final chs = await ApiService.instance.getChapters(manga.id);
+      expect(details.title, 'Nano Machine');
+      expect(chs.length, 2);
+      expect(networkHits, 0);
+
+      // Manual forceRefresh hits the source to pick up chapter 3
+      final refreshed = await ApiService.instance.getChapters(manga.id, forceRefresh: true);
+      expect(refreshed.length, 3);
+      expect(networkHits, greaterThan(0));
+    });
+
+    test('autoRefreshEverything respects persisted cooldowns across restarts and avoids re-scraping library', () async {
+      await ApiService.instance.auth.saveAuthData(
+        'tok_cooldown',
+        const UserAccount(id: 'u1', email: 'u@test.com', displayName: 'User'),
+      );
+      await ApiService.instance.addToLibrary(
+        const MangaItem(
+          id: 'asura:reaper',
+          title: 'Reaper of the Drifting Moon',
+          description: 'Cached desc',
+          cover: 'https://example.com/reaper.jpg',
+          status: 'Ongoing',
+          source: 'asura',
+        ),
+      );
+      await ApiService.instance.libraryRepo.cacheChapters(
+        'asura:reaper',
+        const [ChapterItem(id: 'asura:reaper:ch-1', number: '1', title: 'Ch 1')],
+      );
+
+      var cloudSyncCalls = 0;
+      var scraperCalls = 0;
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          if (request.url.host.contains('asurascans')) {
+            scraperCalls++;
+            return http.Response(jsonEncode({'data': []}), 200);
+          }
+          if (request.url.path.contains('/api/progress/sync') ||
+              request.url.path.contains('/api/library')) {
+            cloudSyncCalls++;
+            return http.Response(
+              jsonEncode({
+                'items': [],
+                'categories': [],
+                'mangaCategories': {},
+                'history': [],
+                'progressByManga': {},
+                'readChaptersByManga': {},
+                'chapterBookmarks': [],
+              }),
+              200,
+            );
+          }
+          return http.Response('{}', 200);
+        }),
+      );
+
+      // First run syncs cloud once, seeds chapter-check timestamp without scraping existing cached library
+      await ApiService.instance.autoRefreshEverything();
+      final firstCloudCalls = cloudSyncCalls;
+      expect(firstCloudCalls, greaterThan(0));
+      expect(scraperCalls, 0);
+
+      // Simulate app restart and open again within cooldown -> ZERO cloud syncs & ZERO library scrapes!
+      await ApiService.instance.init();
+      await ApiService.instance.autoRefreshEverything();
+      expect(cloudSyncCalls, firstCloudCalls);
+      expect(scraperCalls, 0);
+    });
+
+    testWidgets('DetailScreen shows fully-read manga immediately on Frame 0 with zero unread flash or network calls', (tester) async {
+      const manga = MangaItem(
+        id: 'asura:completed-manhwa',
+        title: 'Fully Read Manhwa',
+        description: 'Already finished every chapter.',
+        cover: 'https://example.com/done.jpg',
+        status: 'Completed',
+        type: 'manhwa',
+        source: 'asura',
+      );
+      const chapters = [
+        ChapterItem(id: 'asura:completed-manhwa:ch-2', number: '2', title: 'Finale'),
+        ChapterItem(id: 'asura:completed-manhwa:ch-1', number: '1', title: 'Beginning'),
+      ];
+
+      await ApiService.instance.addToLibrary(manga);
+      await ApiService.instance.libraryRepo.cacheChapters(manga.id, chapters);
+      await ApiService.instance.markChaptersRead(
+        manga.id,
+        const ['asura:completed-manhwa:ch-1', 'asura:completed-manhwa:ch-2'],
+        read: true,
+      );
+
+      // Simulate cold restart so all state must come from durable local storage
+      await ApiService.instance.init();
+
+      var networkRequests = 0;
+      ApiService.instance.setHttpClient(
+        MockClient((request) async {
+          networkRequests++;
+          return http.Response('{}', 200);
+        }),
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: DetailScreen(manga: manga),
+        ),
+      );
+      await tester.pump();
+
+      // Frame 0 already shows all chapters read and "Read Again" (never flashes "Start Ch. 1" or unread!)
+      expect(find.text('2 read'), findsOneWidget);
+      expect(find.text('Read Again'), findsOneWidget);
+      expect(find.text('Start Ch. 1'), findsNothing);
+      expect(find.byIcon(Icons.check_circle_rounded), findsNWidgets(2));
+      expect(find.byIcon(Icons.radio_button_unchecked_rounded), findsNothing);
+      expect(networkRequests, 0);
+    });
+  });
 }

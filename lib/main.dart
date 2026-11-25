@@ -67,14 +67,16 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   int _index = 0;
   final Set<int> _loadedTabs = {0};
   DateTime _lastAutoRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
-  static const _resumeRefreshCooldown = Duration(minutes: 10);
+  Timer? _startupSyncTimer;
+  static const _resumeRefreshCooldown = Duration(minutes: 30);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Single launch refresh (no battery-draining 60-second Timer.periodic polling)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
+    // Defer lightweight cooldown-gated sync until after initial frames & covers settle
+    _startupSyncTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted) return;
       _lastAutoRefreshAt = DateTime.now();
       ApiService.instance.autoRefreshEverything();
     });
@@ -82,6 +84,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _startupSyncTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

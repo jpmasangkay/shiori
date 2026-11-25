@@ -107,9 +107,9 @@ router.post('/batch', async (req, res) => {
         ? req.body.readChaptersByManga
         : {};
 
-    const existingDocs = await Progress.find({ user: req.user.id }).select(
-      'chapterId updatedAt completed page',
-    );
+    const existingDocs = await Progress.find({ user: req.user.id })
+      .select('mangaId chapterId updatedAt completed page')
+      .lean();
     const existingByChapter = new Map(existingDocs.map((d) => [d.chapterId, d]));
 
     const ops = [];
@@ -167,10 +167,10 @@ router.post('/batch', async (req, res) => {
     }
 
     // Also sync read-chapter sets (unread badges) that might not have full progress rows yet
-    for (const [mangaId, chapterList] of Object.entries(readChaptersByManga).slice(0, 500)) {
+    for (const [mangaId, chapterList] of Object.entries(readChaptersByManga).slice(0, 2000)) {
       const cleanMangaId = String(mangaId).trim();
       if (!cleanMangaId || !Array.isArray(chapterList)) continue;
-      for (const chId of chapterList.slice(0, 2000)) {
+      for (const chId of chapterList.slice(0, 5000)) {
         if (typeof chId !== 'string' || !chId.trim()) continue;
         const cleanChapterId = chId.trim();
         const existing = existingByChapter.get(cleanChapterId);
@@ -219,23 +219,36 @@ router.post('/batch', async (req, res) => {
   }
 });
 
-// GET /api/progress/sync - Full cross-device state (history, latest progress per manga, read chapters)
+// GET /api/progress/sync - Full cross-device state (history, latest progress per manga, ALL read chapters)
 router.get('/sync', async (req, res) => {
   try {
-    const records = await Progress.find({ user: req.user.id }).sort({ updatedAt: -1 }).limit(5000);
+    // Fetch ALL completed chapter IDs via lean projection (no 5,000-chapter truncation!)
+    // alongside recent progress/history records and chapter bookmarks in parallel.
+    const [completedDocs, recentRecords, chapterBookmarks] = await Promise.all([
+      Progress.find({ user: req.user.id, completed: true })
+        .select('mangaId chapterId -_id')
+        .lean(),
+      Progress.find({ user: req.user.id })
+        .sort({ updatedAt: -1 })
+        .limit(5000)
+        .lean(),
+      getUserBookmarks(req.user.id),
+    ]);
+
+    const readChaptersByManga = {};
+    for (const doc of completedDocs) {
+      if (!doc.mangaId || !doc.chapterId) continue;
+      if (!readChaptersByManga[doc.mangaId]) {
+        readChaptersByManga[doc.mangaId] = [];
+      }
+      readChaptersByManga[doc.mangaId].push(doc.chapterId);
+    }
+
     const history = [];
     const seenHistoryManga = new Set();
     const progressByManga = {};
-    const readChaptersByManga = {};
 
-    for (const r of records) {
-      if (r.completed) {
-        if (!readChaptersByManga[r.mangaId]) {
-          readChaptersByManga[r.mangaId] = [];
-        }
-        readChaptersByManga[r.mangaId].push(r.chapterId);
-      }
-
+    for (const r of recentRecords) {
       if (!progressByManga[r.mangaId]) {
         progressByManga[r.mangaId] = {
           mangaId: r.mangaId,
@@ -257,8 +270,6 @@ router.get('/sync', async (req, res) => {
         history.push(r);
       }
     }
-
-    const chapterBookmarks = await getUserBookmarks(req.user.id);
 
     res.json({
       history,

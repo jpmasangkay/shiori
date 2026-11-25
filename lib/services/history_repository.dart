@@ -14,6 +14,7 @@ class HistoryRepository extends ChangeNotifier {
   final List<ReadHistoryEntry> _localHistory = [];
   final Map<String, ReadProgress> _localProgress = {};
   final Map<String, Set<String>> _readChapters = {};
+  final Map<String, Set<String>> _readChapterCanonicalKeys = {};
   final Map<String, Set<String>> _pendingUnreadChapters = {};
   final Set<String> _bookmarkedChapterIds = {};
   final Set<String> _deletedChapterBookmarks = {};
@@ -27,12 +28,73 @@ class HistoryRepository extends ChangeNotifier {
   Map<String, Set<String>> get readChapters => Map.unmodifiable(_readChapters);
   Set<String> get bookmarkedChapterIds =>
       Set.unmodifiable(_bookmarkedChapterIds);
+  bool get hasPendingCloudChanges =>
+      _pendingUnreadChapters.values.any((s) => s.isNotEmpty) ||
+      _deletedChapterBookmarks.isNotEmpty;
+
+  /// Canonicalizes chapter IDs so native ExtensionBridge relative URLs
+  /// (`ext:pkg:%2Fseries%2Fch-1`), WebExtensionScraper full URLs
+  /// (`ext:pkg:https%3A%2F%2Fsite.com%2Fseries%2Fch-1`), and trailing-slash
+  /// variants always match the same read mark without flashing unread.
+  static String canonicalChapterKey(String chapterId) {
+    final trimmed = chapterId.trim();
+    if (trimmed.isEmpty) return '';
+    if (trimmed.startsWith('ext:')) {
+      final secondColon = trimmed.indexOf(':', 4);
+      if (secondColon != -1) {
+        final rawPkg = trimmed.substring(4, secondColon);
+        final basePkg = rawPkg.split('@').first.trim().toLowerCase();
+        final encodedPayload = trimmed.substring(secondColon + 1);
+        String decoded;
+        try {
+          decoded = Uri.decodeComponent(encodedPayload).trim();
+        } catch (_) {
+          decoded = encodedPayload.trim();
+        }
+        var pathPart = decoded;
+        if (decoded.startsWith('http://') || decoded.startsWith('https://')) {
+          final uri = Uri.tryParse(decoded);
+          if (uri != null && uri.path.isNotEmpty) {
+            pathPart = uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path;
+          }
+        }
+        if (pathPart.isNotEmpty && !pathPart.startsWith('/')) {
+          pathPart = '/$pathPart';
+        }
+        while (pathPart.length > 1 && pathPart.endsWith('/')) {
+          pathPart = pathPart.substring(0, pathPart.length - 1);
+        }
+        return 'ext:$basePkg:${pathPart.toLowerCase()}';
+      }
+    }
+    return trimmed;
+  }
+
+  void _rebuildCanonicalKeysFor(String mangaId) {
+    final set = _readChapters[mangaId];
+    if (set == null || set.isEmpty) {
+      _readChapterCanonicalKeys.remove(mangaId);
+      return;
+    }
+    _readChapterCanonicalKeys[mangaId] = {
+      for (final cid in set)
+        if (canonicalChapterKey(cid).isNotEmpty) canonicalChapterKey(cid),
+    };
+  }
+
+  void _rebuildAllCanonicalKeys() {
+    _readChapterCanonicalKeys.clear();
+    for (final mangaId in _readChapters.keys) {
+      _rebuildCanonicalKeysFor(mangaId);
+    }
+  }
 
   Future<void> init(SharedPreferences prefs) async {
     _cachedPrefs = prefs;
     _localHistory.clear();
     _localProgress.clear();
     _readChapters.clear();
+    _readChapterCanonicalKeys.clear();
     _pendingUnreadChapters.clear();
     _bookmarkedChapterIds.clear();
     _deletedChapterBookmarks.clear();
@@ -142,6 +204,94 @@ class HistoryRepository extends ChangeNotifier {
         AppLogger.warn('Failed to parse shiori_deleted_chapter_bookmarks', e);
       }
     }
+
+    // 8. Reconcile durable SQLite read_chapters & reading_progress tables so
+    // read marks and resume positions survive interrupted SharedPreferences writes.
+    final dbReady = await LocalDatabase.instance.init();
+    if (dbReady) {
+      var prefsReadNeedsSync = false;
+      var prefsProgNeedsSync = false;
+      var dbReadNeedsBackfill = false;
+      var dbProgNeedsBackfill = false;
+
+      final dbRead = await LocalDatabase.instance.loadAllReadChapters();
+      dbRead.forEach((mangaId, chIds) {
+        final pendingUnread = _pendingUnreadChapters[mangaId] ?? const <String>{};
+        final localSet = _readChapters.putIfAbsent(mangaId, () => <String>{});
+        for (final cid in chIds) {
+          if (pendingUnread.contains(cid)) continue;
+          if (localSet.add(cid)) {
+            prefsReadNeedsSync = true;
+          }
+        }
+      });
+      for (final entry in _readChapters.entries) {
+        final dbSet = dbRead[entry.key];
+        if (dbSet == null || dbSet.length < entry.value.length) {
+          dbReadNeedsBackfill = true;
+          break;
+        }
+      }
+
+      final dbProg = await LocalDatabase.instance.loadAllProgress();
+      dbProg.forEach((mangaId, p) {
+        final existing = _localProgress[mangaId];
+        if (existing == null ||
+            (p.updatedAt != null &&
+                existing.updatedAt != null &&
+                p.updatedAt!.isAfter(existing.updatedAt!))) {
+          _localProgress[mangaId] = p;
+          prefsProgNeedsSync = true;
+          final histIdx = _localHistory.indexWhere((h) => h.mangaId == mangaId);
+          final histEntry = ReadHistoryEntry(
+            mangaId: p.mangaId,
+            chapterId: p.chapterId,
+            mangaTitle: p.mangaTitle,
+            cover: p.cover,
+            source: p.source,
+            chapterNumber: p.chapterNumber,
+            chapterTitle: p.chapterTitle,
+            page: p.page,
+            totalPages: p.totalPages,
+            completed: p.completed,
+            updatedAt: p.updatedAt,
+          );
+          if (histIdx == -1) {
+            _localHistory.add(histEntry);
+          } else {
+            _localHistory[histIdx] = histEntry;
+          }
+        }
+      });
+      if (_localHistory.length > 1) {
+        _localHistory.sort((a, b) => b.date.compareTo(a.date));
+        if (_localHistory.length > 100) {
+          _localHistory.removeRange(100, _localHistory.length);
+        }
+      }
+      for (final entry in _localProgress.entries) {
+        if (!dbProg.containsKey(entry.key)) {
+          dbProgNeedsBackfill = true;
+          break;
+        }
+      }
+
+      if (dbReadNeedsBackfill && _readChapters.isNotEmpty) {
+        unawaited(LocalDatabase.instance.mergeReadChaptersBatch(_readChapters));
+      }
+      if (dbProgNeedsBackfill && _localProgress.isNotEmpty) {
+        unawaited(LocalDatabase.instance.upsertProgressBatch(_localProgress.values));
+      }
+      if (prefsReadNeedsSync) {
+        unawaited(_persistReadChapters());
+      }
+      if (prefsProgNeedsSync) {
+        unawaited(_persistLocalProgress());
+        unawaited(_persistLocalHistory());
+      }
+    }
+
+    _rebuildAllCanonicalKeys();
   }
 
   Future<void> _persistPendingUnreadChapters() async {
@@ -252,9 +402,16 @@ class HistoryRepository extends ChangeNotifier {
 
     if (completed) {
       _readChapters.putIfAbsent(mangaId, () => <String>{}).add(chapterId);
-      _persistReadChapters();
+      final canon = canonicalChapterKey(chapterId);
+      if (canon.isNotEmpty) {
+        _readChapterCanonicalKeys
+            .putIfAbsent(mangaId, () => <String>{})
+            .add(canon);
+      }
+      _pendingUnreadChapters[mangaId]?.remove(chapterId);
+      await _persistReadChapters();
       if (LocalDatabase.instance.isAvailable) {
-        unawaited(LocalDatabase.instance.setChaptersRead(mangaId, [chapterId], true));
+        await LocalDatabase.instance.setChaptersRead(mangaId, [chapterId], true);
       }
     }
 
@@ -274,7 +431,7 @@ class HistoryRepository extends ChangeNotifier {
 
     _localProgress[mangaId] = entry;
     if (LocalDatabase.instance.isAvailable) {
-      unawaited(LocalDatabase.instance.upsertProgress(entry));
+      await LocalDatabase.instance.upsertProgress(entry);
     }
     await _persistLocalProgress();
 
@@ -329,7 +486,12 @@ class HistoryRepository extends ChangeNotifier {
   // ---- Read & Unread Chapters Tracking (#34) ----
 
   bool isChapterRead(String mangaId, String chapterId) {
-    return _readChapters[mangaId]?.contains(chapterId) ?? false;
+    final set = _readChapters[mangaId];
+    if (set == null || set.isEmpty) return false;
+    if (set.contains(chapterId)) return true;
+    final canon = canonicalChapterKey(chapterId);
+    if (canon.isEmpty) return false;
+    return _readChapterCanonicalKeys[mangaId]?.contains(canon) ?? false;
   }
 
   Set<String> getReadChapterIds(String mangaId) {
@@ -345,14 +507,32 @@ class HistoryRepository extends ChangeNotifier {
     Map<String, String>? headers,
   }) async {
     final set = _readChapters.putIfAbsent(mangaId, () => <String>{});
+    final affectedIds = <String>[chapterId];
     if (read) {
       set.add(chapterId);
+      final canon = canonicalChapterKey(chapterId);
+      if (canon.isNotEmpty) {
+        _readChapterCanonicalKeys
+            .putIfAbsent(mangaId, () => <String>{})
+            .add(canon);
+      }
       _pendingUnreadChapters[mangaId]?.remove(chapterId);
     } else {
-      set.remove(chapterId);
+      final canon = canonicalChapterKey(chapterId);
+      final matching = set
+          .where((id) => id == chapterId || (canon.isNotEmpty && canonicalChapterKey(id) == canon))
+          .toList();
+      for (final id in matching) {
+        set.remove(id);
+        if (id != chapterId) affectedIds.add(id);
+      }
+      _rebuildCanonicalKeysFor(mangaId);
       _pendingUnreadChapters
           .putIfAbsent(mangaId, () => <String>{})
-          .add(chapterId);
+          .addAll(affectedIds);
+    }
+    if (LocalDatabase.instance.isAvailable) {
+      await LocalDatabase.instance.setChaptersRead(mangaId, affectedIds, read);
     }
     await _persistReadChapters();
     await _persistPendingUnreadChapters();
@@ -368,12 +548,13 @@ class HistoryRepository extends ChangeNotifier {
               body: jsonEncode({
                 'mangaId': mangaId,
                 'chapterId': chapterId,
+                if (!read && affectedIds.length > 1) 'chapterIds': affectedIds,
                 'read': read,
               }),
             )
             .timeout(const Duration(seconds: 6));
         if (!read && (res.statusCode == 200 || res.statusCode == 201)) {
-          _pendingUnreadChapters[mangaId]?.remove(chapterId);
+          _pendingUnreadChapters[mangaId]?.removeAll(affectedIds);
           unawaited(_persistPendingUnreadChapters());
         }
       } catch (e) {
@@ -391,14 +572,44 @@ class HistoryRepository extends ChangeNotifier {
     Map<String, String>? headers,
   }) async {
     final set = _readChapters.putIfAbsent(mangaId, () => <String>{});
+    final affectedIds = <String>{...chapterIds};
     if (read) {
       set.addAll(chapterIds);
+      final canonSet = _readChapterCanonicalKeys.putIfAbsent(
+        mangaId,
+        () => <String>{},
+      );
+      for (final cid in chapterIds) {
+        final canon = canonicalChapterKey(cid);
+        if (canon.isNotEmpty) canonSet.add(canon);
+      }
       _pendingUnreadChapters[mangaId]?.removeAll(chapterIds);
     } else {
-      set.removeAll(chapterIds);
+      final targetCanon = {
+        for (final cid in chapterIds)
+          if (canonicalChapterKey(cid).isNotEmpty) canonicalChapterKey(cid),
+      };
+      final matching = set
+          .where(
+            (id) =>
+                affectedIds.contains(id) ||
+                (targetCanon.isNotEmpty &&
+                    targetCanon.contains(canonicalChapterKey(id))),
+          )
+          .toList();
+      set.removeAll(matching);
+      affectedIds.addAll(matching);
+      _rebuildCanonicalKeysFor(mangaId);
       _pendingUnreadChapters
           .putIfAbsent(mangaId, () => <String>{})
-          .addAll(chapterIds);
+          .addAll(affectedIds);
+    }
+    if (LocalDatabase.instance.isAvailable && affectedIds.isNotEmpty) {
+      await LocalDatabase.instance.setChaptersRead(
+        mangaId,
+        affectedIds.toList(),
+        read,
+      );
     }
     await _persistReadChapters();
     await _persistPendingUnreadChapters();
@@ -408,21 +619,22 @@ class HistoryRepository extends ChangeNotifier {
     if (client != null &&
         baseUrl != null &&
         headers != null &&
-        chapterIds.isNotEmpty) {
+        affectedIds.isNotEmpty) {
       try {
+        final syncIds = read ? chapterIds : affectedIds.toList();
         final res = await client
             .post(
               Uri.parse('$baseUrl/progress/read-status'),
               headers: headers,
               body: jsonEncode({
                 'mangaId': mangaId,
-                'chapterIds': chapterIds,
+                'chapterIds': syncIds,
                 'read': read,
               }),
             )
             .timeout(const Duration(seconds: 8));
         if (!read && (res.statusCode == 200 || res.statusCode == 201)) {
-          _pendingUnreadChapters[mangaId]?.removeAll(chapterIds);
+          _pendingUnreadChapters[mangaId]?.removeAll(affectedIds);
           unawaited(_persistPendingUnreadChapters());
         }
       } catch (e) {
@@ -572,6 +784,9 @@ class HistoryRepository extends ChangeNotifier {
   }) async {
     _localHistory.removeWhere((e) => e.chapterId == chapterId);
     _localProgress.removeWhere((_, p) => p.chapterId == chapterId);
+    if (LocalDatabase.instance.isAvailable) {
+      await LocalDatabase.instance.deleteProgressByChapter(chapterId);
+    }
     await _persistLocalHistory();
     await _persistLocalProgress();
     notifyListeners();
@@ -598,6 +813,9 @@ class HistoryRepository extends ChangeNotifier {
   }) async {
     _localHistory.clear();
     _localProgress.clear();
+    if (LocalDatabase.instance.isAvailable) {
+      await LocalDatabase.instance.clearHistoryTables(includeReadChapters: false);
+    }
     await _persistLocalHistory();
     await _persistLocalProgress();
     notifyListeners();
@@ -729,6 +947,10 @@ class HistoryRepository extends ChangeNotifier {
             data.containsKey('progressByManga') ||
             data.containsKey('chapterBookmarks')) {
           _mergeSyncPayload(data);
+          if (LocalDatabase.instance.isAvailable) {
+            await LocalDatabase.instance.mergeReadChaptersBatch(_readChapters);
+            await LocalDatabase.instance.upsertProgressBatch(_localProgress.values);
+          }
           await _persistLocalHistory();
           await _persistLocalProgress();
           await _persistReadChapters();
@@ -831,14 +1053,23 @@ class HistoryRepository extends ChangeNotifier {
             _pendingUnreadChapters[mangaId] ?? const <String>{};
         final recentlyFlushed =
             _recentlyFlushedUnreadChapters[mangaId] ?? const <String>{};
+        final blockedCanon = {
+          for (final id in pendingUnread)
+            if (canonicalChapterKey(id).isNotEmpty) canonicalChapterKey(id),
+          for (final id in recentlyFlushed)
+            if (canonicalChapterKey(id).isNotEmpty) canonicalChapterKey(id),
+        };
         final localSet = _readChapters.putIfAbsent(mangaId, () => <String>{});
         for (final e in list) {
           final chId = e.toString();
+          final canon = canonicalChapterKey(chId);
           if (!pendingUnread.contains(chId) &&
-              !recentlyFlushed.contains(chId)) {
+              !recentlyFlushed.contains(chId) &&
+              (canon.isEmpty || !blockedCanon.contains(canon))) {
             localSet.add(chId);
           }
         }
+        _rebuildCanonicalKeysFor(mangaId);
       }
     });
     _recentlyFlushedUnreadChapters.clear();
@@ -860,6 +1091,7 @@ class HistoryRepository extends ChangeNotifier {
   }
 
   void mergeRemoteHistory(List<dynamic> remoteItems) {
+    var changed = false;
     for (final item in remoteItems) {
       if (item is Map) {
         final cloudEntry = ReadHistoryEntry.fromMap(
@@ -867,11 +1099,55 @@ class HistoryRepository extends ChangeNotifier {
         );
         if (cloudEntry.mangaId.isNotEmpty) {
           _mergeHistoryEntryWithTimestamp(cloudEntry);
+          changed = true;
         }
       } else if (item is ReadHistoryEntry) {
         _mergeHistoryEntryWithTimestamp(item);
+        changed = true;
       }
     }
+    if (changed) {
+      if (LocalDatabase.instance.isAvailable) {
+        unawaited(LocalDatabase.instance.upsertProgressBatch(_localProgress.values));
+      }
+      unawaited(_persistLocalHistory());
+      unawaited(_persistLocalProgress());
+    }
+    notifyListeners();
+  }
+
+  /// Merges completed chapter IDs returned by cloud per-manga progress without
+  /// resurrecting chapters that were marked unread locally while offline.
+  Future<void> mergeCloudCompletedChapters(
+    String mangaId,
+    List<String> cloudCompletedIds,
+  ) async {
+    if (mangaId.isEmpty || cloudCompletedIds.isEmpty) return;
+    final pendingUnread = _pendingUnreadChapters[mangaId] ?? const <String>{};
+    final blockedCanon = {
+      for (final id in pendingUnread)
+        if (canonicalChapterKey(id).isNotEmpty) canonicalChapterKey(id),
+    };
+    final localSet = _readChapters.putIfAbsent(mangaId, () => <String>{});
+    final added = <String>[];
+    for (final raw in cloudCompletedIds) {
+      final chId = raw.trim();
+      if (chId.isEmpty) continue;
+      final canon = canonicalChapterKey(chId);
+      if (pendingUnread.contains(chId) ||
+          (canon.isNotEmpty && blockedCanon.contains(canon))) {
+        continue;
+      }
+      if (localSet.add(chId)) {
+        added.add(chId);
+      }
+    }
+    if (added.isEmpty) return;
+    _rebuildCanonicalKeysFor(mangaId);
+    if (LocalDatabase.instance.isAvailable) {
+      await LocalDatabase.instance.setChaptersRead(mangaId, added, true);
+    }
+    await _persistReadChapters();
     notifyListeners();
   }
 
@@ -932,10 +1208,15 @@ class HistoryRepository extends ChangeNotifier {
     _localHistory.clear();
     _localProgress.clear();
     _readChapters.clear();
+    _readChapterCanonicalKeys.clear();
     _pendingUnreadChapters.clear();
     _bookmarkedChapterIds.clear();
     _deletedChapterBookmarks.clear();
     _mangaChapterCounts.clear();
+
+    if (LocalDatabase.instance.isAvailable) {
+      await LocalDatabase.instance.clearHistoryTables(includeReadChapters: true);
+    }
 
     final prefs = _cachedPrefs ?? await SharedPreferences.getInstance();
     await prefs.remove('shiori_local_history');

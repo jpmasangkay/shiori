@@ -488,6 +488,9 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
         if (_searchQuery.isNotEmpty) ...[
           _buildSearchResults(),
         ] else ...[
+          if (_extService.updatesAvailableExtensions.any((e) => e.isCompatible) ||
+              _extService.isUpdatingAll)
+            _buildSourcesUpdateAllBanner(),
           if (pinnedExts.isNotEmpty) ...[
             _sectionHeaderWithBadge(
               title: 'PINNED',
@@ -748,6 +751,140 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     );
   }
 
+  Future<void> _runUpdateAllFromSources() async {
+    if (_extService.isUpdatingAll) return;
+    await _extService.updateAllExtensions();
+    if (!mounted) return;
+    final summary = _extService.batchUpdateState;
+    final String msg;
+    if (summary.cancelRequested) {
+      msg = 'Cancelled after updating ${summary.succeeded} of ${summary.total} extensions';
+    } else if (summary.failed > 0 && summary.succeeded > 0) {
+      msg = 'Updated ${summary.succeeded} of ${summary.total} extensions (${summary.failed} failed)';
+    } else if (summary.succeeded > 0) {
+      msg = 'Updated all ${summary.succeeded} extension${summary.succeeded == 1 ? '' : 's'}!';
+    } else {
+      msg = _extService.lastInstallError ?? 'Failed to update extensions.';
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  Widget _buildSourcesUpdateAllBanner() {
+    final batch = _extService.batchUpdateState;
+    final updatableCount = _extService.updatesAvailableExtensions
+        .where((e) => e.isCompatible)
+        .length;
+
+    if (batch.isRunning) {
+      final currentStep = (batch.completed + 1).clamp(1, batch.total > 0 ? batch.total : 1);
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.primary.withValues(alpha: 0.45)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    batch.cancelRequested
+                        ? 'Stopping after current extension...'
+                        : 'Updating $currentStep of ${batch.total}${batch.currentExtensionName != null ? ' • ${batch.currentExtensionName}' : ''}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.bodySemiBold,
+                  ),
+                ),
+                TextButton(
+                  onPressed: batch.cancelRequested ? null : _extService.cancelUpdateAll,
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.redAccent,
+                    minimumSize: const Size(44, 34),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text(
+                    batch.cancelRequested ? 'Stopping...' : 'Cancel',
+                    style: AppText.chip.copyWith(
+                      color: batch.cancelRequested ? AppColors.muted : Colors.redAccent,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: batch.total > 0 ? batch.progress : null,
+                minHeight: 4,
+                color: AppColors.primary,
+                backgroundColor: AppColors.surfaceHigh,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.primary.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.system_update_rounded, size: 19, color: AppColors.primary),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              '$updatableCount extension update${updatableCount == 1 ? '' : 's'} available',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: AppText.bodySemiBold,
+            ),
+          ),
+          const SizedBox(width: 8),
+          FilledButton.icon(
+            onPressed: _runUpdateAllFromSources,
+            icon: const Icon(Icons.done_all_rounded, size: 15),
+            label: Text(
+              'Update All',
+              style: AppText.chip.copyWith(
+                color: AppColors.onPrimary,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              foregroundColor: AppColors.onPrimary,
+              minimumSize: const Size(0, 36),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildExtensionSourceCard(MangaExtension ext, {required bool isPinned}) {
     final versionLabel = ext.hasUpdate && ext.repoVersion != null
         ? 'v${ext.version} → v${ext.repoVersion}'
@@ -773,7 +910,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       hasUpdate: ext.hasUpdate,
       isUpdating: _extService.isDownloading(ext.pkg),
       updateProgress: _extService.getProgress(ext.pkg),
-      onUpdate: ext.hasUpdate
+      onUpdate: ext.hasUpdate && !_extService.isUpdatingAll
           ? () async {
               final ok = await _extService.downloadAndInstallExtension(ext);
               if (mounted) {

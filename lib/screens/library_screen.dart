@@ -41,9 +41,11 @@ class _LibraryScreenState extends State<LibraryScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Instant synchronous local hydration (0ms load time on slow/offline internet)
+    // Instant synchronous local hydration (0ms load time — Mihon-style local-first)
     _userLibrary = ApiService.instance.libraryRepo.getLibraryItems();
-    _loadUserLibrary(silent: _userLibrary.isNotEmpty);
+    if (_userLibrary.isEmpty && ApiService.instance.isLoggedIn) {
+      _loadUserLibrary(silent: false);
+    }
     ApiService.instance.addListener(_onServiceChanged);
     DownloadService.instance.addListener(_onServiceChanged);
   }
@@ -53,7 +55,7 @@ class _LibraryScreenState extends State<LibraryScreen>
     super.didUpdateWidget(oldWidget);
     if (widget.isActive && !oldWidget.isActive && _dirty) {
       _dirty = false;
-      _loadUserLibrary(silent: true);
+      _syncLocalLibrary();
     }
   }
 
@@ -66,32 +68,41 @@ class _LibraryScreenState extends State<LibraryScreen>
     super.dispose();
   }
 
+  void _syncLocalLibrary() {
+    if (!mounted) return;
+    setState(() {
+      _userLibrary = ApiService.instance.libraryRepo.getLibraryItems();
+      _cachedDuplicateGroups = null;
+      _loading = false;
+    });
+  }
+
   void _onServiceChanged() {
     if (!widget.isActive) {
       _dirty = true;
       return;
     }
-    if (mounted) {
-      setState(() {
-        _userLibrary = ApiService.instance.libraryRepo.getLibraryItems();
-        _cachedDuplicateGroups = null;
-      });
-    }
+    _syncLocalLibrary();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      _loadUserLibrary(silent: true);
+      _syncLocalLibrary();
     }
   }
 
-  Future<void> _loadUserLibrary({bool silent = false}) async {
+  Future<void> _loadUserLibrary({
+    bool silent = false,
+    bool forceCloudSync = false,
+  }) async {
     if (!silent && _userLibrary.isEmpty) {
       setState(() => _loading = true);
     }
     try {
-      final items = await ApiService.instance.getLibrary();
+      final items = await ApiService.instance.getLibrary(
+        forceCloudSync: forceCloudSync,
+      );
       if (mounted) {
         setState(() {
           _userLibrary = items;
@@ -105,7 +116,10 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   Future<void> _refreshLibraryWithUpdates() async {
-    await _loadUserLibrary(silent: false);
+    if (ApiService.instance.isLoggedIn) {
+      await ApiService.instance.syncAllCloudData();
+    }
+    await _loadUserLibrary(silent: false, forceCloudSync: true);
     final newChapters = await ApiService.instance.checkForLibraryUpdates();
     if (mounted && newChapters > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -205,7 +219,7 @@ class _LibraryScreenState extends State<LibraryScreen>
     final originalCategories = ApiService.instance.getMangaCategoryIds(manga.id);
     await ApiService.instance.removeFromLibrary(manga.id);
     if (!mounted) return;
-    _loadUserLibrary(silent: true);
+    _syncLocalLibrary();
 
     ScaffoldMessenger.of(context).clearSnackBars();
     ScaffoldMessenger.of(context).showSnackBar(
@@ -221,7 +235,7 @@ class _LibraryScreenState extends State<LibraryScreen>
             if (originalCategories.isNotEmpty) {
               await ApiService.instance.setMangaCategories(manga.id, originalCategories, manga: manga);
             }
-            if (mounted) _loadUserLibrary(silent: true);
+            if (mounted) _syncLocalLibrary();
           },
         ),
       ),
@@ -249,7 +263,7 @@ class _LibraryScreenState extends State<LibraryScreen>
               ),
             ),
           )
-          .then((_) => _loadUserLibrary(silent: true));
+          .then((_) => _syncLocalLibrary());
       return;
     }
     if (cachedChapters.isNotEmpty) {
@@ -270,7 +284,7 @@ class _LibraryScreenState extends State<LibraryScreen>
               ),
             ),
           )
-          .then((_) => _loadUserLibrary(silent: true));
+          .then((_) => _syncLocalLibrary());
       return;
     }
     _openManga(manga);
@@ -293,7 +307,7 @@ class _LibraryScreenState extends State<LibraryScreen>
       await ApiService.instance.removeFromLibrary(id);
     }
     if (mounted) {
-      _loadUserLibrary(silent: true);
+      _syncLocalLibrary();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Removed ${ids.length} titles from library'),
@@ -359,7 +373,7 @@ class _LibraryScreenState extends State<LibraryScreen>
       await ApiService.instance.setMangaCategories(m.id, chosen.toList(), manga: m);
     }
     setState(() => _selectedIds.clear());
-    _loadUserLibrary(silent: true);
+    _syncLocalLibrary();
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Updated categories for ${selectedItems.length} titles')),
@@ -386,7 +400,7 @@ class _LibraryScreenState extends State<LibraryScreen>
       }
     }
     if (mounted) {
-      _loadUserLibrary(silent: true);
+      _syncLocalLibrary();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Marked $markedChapters cached chapters read across ${selectedItems.length} titles'),
@@ -554,7 +568,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                           if (ctx.mounted) Navigator.pop(ctx);
                           if (mounted) {
                             setState(() => _selectedIds.clear());
-                            _loadUserLibrary(silent: true);
+                            _syncLocalLibrary();
                             ScaffoldMessenger.of(context).showSnackBar(
                               SnackBar(
                                 content: Text(
@@ -856,7 +870,7 @@ class _LibraryScreenState extends State<LibraryScreen>
     showLibraryDuplicatesSheet(
       context: context,
       duplicateGroups: duplicateGroups,
-      onRefresh: () => _loadUserLibrary(silent: true),
+      onRefresh: _syncLocalLibrary,
     );
   }
 
@@ -1161,7 +1175,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                                   );
                                   setSheetState(() {});
                                   if (mounted) {
-                                    _loadUserLibrary(silent: true);
+                                    _syncLocalLibrary();
                                   }
                                 },
                               );
@@ -1717,7 +1731,7 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   void _openManga(MangaItem manga) => Navigator.of(context)
       .push(smoothRoute(DetailScreen(manga: manga)))
-      .then((_) => _loadUserLibrary(silent: true));
+      .then((_) => _syncLocalLibrary());
 
   Widget _grid(DisplaySettings s, List<MangaItem> items) {
     final comfortable = s.mode == DisplayMode.comfortableGrid;

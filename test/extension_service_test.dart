@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:manga_reader/screens/browse_screen.dart';
+import 'package:manga_reader/screens/extensions_screen.dart';
 import 'package:manga_reader/services/api_service.dart';
 import 'package:manga_reader/services/extension_bridge.dart';
 import 'package:manga_reader/services/extension_service.dart';
@@ -34,6 +35,7 @@ void main() {
 
   const installerChannel = MethodChannel('com.example.manga_reader/installer');
   const extensionsChannel = MethodChannel('com.example.manga_reader/extensions');
+  const pathProviderChannel = MethodChannel('plugins.flutter.io/path_provider');
 
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
@@ -42,6 +44,10 @@ void main() {
     ExtensionBridge.instance.forceAndroidForTesting = false;
     ExtensionService.instance.setDeviceExtensionsForTesting(const []);
     ExtensionService.instance.setRepoExtensionsForTesting(const []);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProviderChannel, (call) async {
+      return Directory.systemTemp.path;
+    });
     await ApiService.instance.init();
   });
 
@@ -53,6 +59,8 @@ void main() {
         .setMockMethodCallHandler(installerChannel, null);
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(extensionsChannel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(pathProviderChannel, null);
   });
 
   test('Keiyoushi index.pb fixture protobuf decode (>1000 extensions, stubs filtered, Repo & Extension fields)', () {
@@ -724,5 +732,214 @@ void main() {
     expect(fakeHttp.apkDownloads, 0);
     expect(popularArgs, isNotNull);
     expect(popularArgs!['apkPath'], isNull);
+  });
+
+  test('updateAllExtensions supports cancellation mid-batch, skips incompatible extensions, and reports partial failures', () async {
+    final service = ExtensionService.instance;
+    SourceManager.debugPlatformOverride = TargetPlatform.android;
+
+    final fakeHttp = _FakeExtensionApkHttpClient();
+    service.httpClientFactory = () => fakeHttp;
+
+    final installedOnOs = <String, (String, int, String)>{
+      'eu.kanade.tachiyomi.extension.en.first': ('1.6.1', 1, '1.6'),
+      'eu.kanade.tachiyomi.extension.en.second': ('1.6.1', 1, '1.6'),
+      'eu.kanade.tachiyomi.extension.en.legacy': ('1.2.1', 1, '1.2'),
+    };
+    final installedLog = <String>[];
+
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(installerChannel, (call) async {
+      if (call.method == 'getInstalledExtensions') {
+        return installedOnOs.entries.map((entry) {
+          return {
+            'name': entry.key.split('.').last,
+            'pkg': entry.key,
+            'versionName': entry.value.$1,
+            'versionCode': entry.value.$2,
+            'libVersion': entry.value.$3,
+            'lang': 'EN',
+            'nsfw': false,
+          };
+        }).toList();
+      }
+      if (call.method == 'installApk') {
+        final path = (call.arguments as Map)['filePath'] as String;
+        installedLog.add(path);
+        // Cancel batch right after the first extension installs
+        if (installedLog.length == 1) {
+          service.cancelUpdateAll();
+        }
+        return true;
+      }
+      return null;
+    });
+
+    await service.refreshInstalledPackages();
+    service.setRepoExtensionsForTesting([
+      MangaExtension(
+        id: 'eu.kanade.tachiyomi.extension.en.first',
+        name: 'First Ext',
+        pkg: 'eu.kanade.tachiyomi.extension.en.first',
+        version: '1.6.2',
+        versionCode: 2,
+        libVersion: '1.6',
+        apkUrl: 'https://example.com/first.apk',
+        iconUrl: '',
+        lang: 'EN',
+        isNsfw: false,
+        sourceNames: const ['First'],
+      ),
+      MangaExtension(
+        id: 'eu.kanade.tachiyomi.extension.en.second',
+        name: 'Second Ext',
+        pkg: 'eu.kanade.tachiyomi.extension.en.second',
+        version: '1.6.2',
+        versionCode: 2,
+        libVersion: '1.6',
+        apkUrl: 'https://example.com/second.apk',
+        iconUrl: '',
+        lang: 'EN',
+        isNsfw: false,
+        sourceNames: const ['Second'],
+      ),
+      MangaExtension(
+        id: 'eu.kanade.tachiyomi.extension.en.legacy',
+        name: 'Legacy Ext',
+        pkg: 'eu.kanade.tachiyomi.extension.en.legacy',
+        version: '1.2.2',
+        versionCode: 2,
+        libVersion: '1.2',
+        apkUrl: 'https://example.com/legacy.apk',
+        iconUrl: '',
+        lang: 'EN',
+        isNsfw: false,
+        sourceNames: const ['Legacy'],
+      ),
+    ]);
+
+    final updated = await service.updateAllExtensions();
+    expect(updated, 1);
+    expect(installedLog.length, 1);
+    expect(service.isUpdatingAll, isFalse);
+    expect(service.batchUpdateState.total, 2, reason: 'Incompatible lib 1.2 extension must be skipped');
+    expect(service.batchUpdateState.succeeded, 1);
+    expect(service.batchUpdateState.cancelRequested, isTrue);
+  });
+
+  testWidgets('ExtensionsScreen and BrowseScreen Sources tab render Update All banner and update all outdated extensions on tap', (tester) async {
+    final service = ExtensionService.instance;
+    SourceManager.debugPlatformOverride = TargetPlatform.android;
+
+    final fakeHttp = _FakeExtensionApkHttpClient();
+    service.httpClientFactory = () => fakeHttp;
+
+    final installedOnOs = <String, (String, int)>{
+      'eu.kanade.tachiyomi.extension.en.asurascans': ('1.6.68', 68),
+      'eu.kanade.tachiyomi.extension.en.flamecomics': ('1.6.29', 29),
+    };
+
+    // Valid 1x1 transparent PNG so BrowseScreen/ExtensionsScreen render icons via Image.memory
+    // without triggering CachedNetworkImage HTTP requests in widget tests.
+    final tinyPng = Uint8List.fromList(const <int>[
+      0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+      0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+      0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+      0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+      0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+      0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+      0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+      0x42, 0x60, 0x82,
+    ]);
+
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(installerChannel, (call) async {
+      if (call.method == 'getInstalledExtensions') {
+        return installedOnOs.entries.map((entry) {
+          return {
+            'name': entry.key.split('.').last,
+            'pkg': entry.key,
+            'versionName': entry.value.$1,
+            'versionCode': entry.value.$2,
+            'libVersion': '1.6',
+            'lang': 'EN',
+            'nsfw': false,
+            'iconBytes': tinyPng,
+          };
+        }).toList();
+      }
+      if (call.method == 'installApk') {
+        final path = (call.arguments as Map)['filePath'] as String;
+        if (path.contains('asurascans')) {
+          installedOnOs['eu.kanade.tachiyomi.extension.en.asurascans'] = ('1.6.70', 70);
+        } else if (path.contains('flamecomics')) {
+          installedOnOs['eu.kanade.tachiyomi.extension.en.flamecomics'] = ('1.6.30', 30);
+        }
+        return true;
+      }
+      return null;
+    });
+
+    await service.refreshInstalledPackages();
+    service.setRepoExtensionsForTesting([
+      MangaExtension(
+        id: 'eu.kanade.tachiyomi.extension.en.asurascans',
+        name: 'Asura Scans',
+        pkg: 'eu.kanade.tachiyomi.extension.en.asurascans',
+        version: '1.6.70',
+        versionCode: 70,
+        libVersion: '1.6',
+        apkUrl: 'https://example.com/asurascans.apk',
+        iconUrl: '',
+        lang: 'EN',
+        isNsfw: false,
+        sourceNames: const ['Asura Scans'],
+      ),
+      MangaExtension(
+        id: 'eu.kanade.tachiyomi.extension.en.flamecomics',
+        name: 'Flame Comics',
+        pkg: 'eu.kanade.tachiyomi.extension.en.flamecomics',
+        version: '1.6.30',
+        versionCode: 30,
+        libVersion: '1.6',
+        apkUrl: 'https://example.com/flamecomics.apk',
+        iconUrl: '',
+        lang: 'EN',
+        isNsfw: false,
+        sourceNames: const ['Flame Comics'],
+      ),
+    ]);
+
+    // 1. BrowseScreen Sources tab surfaces Update All banner directly
+    await tester.pumpWidget(
+      const MaterialApp(home: Scaffold(body: BrowseScreen())),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('2 extension updates available'), findsOneWidget);
+    expect(find.text('Update All'), findsOneWidget);
+
+    // 2. ExtensionsScreen surfaces prominent Update All banner & updates all on tap
+    await tester.pumpWidget(
+      const MaterialApp(home: ExtensionsScreen()),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('2 extension updates ready'), findsOneWidget);
+    expect(find.text('Update All'), findsWidgets);
+
+    await tester.tap(find.text('Update All').last);
+    await tester.pump();
+    // Interleave real dart:io APK writes (runAsync) with FakeAsync widget/channel pumps.
+    for (var i = 0; i < 60 && service.isUpdatingAll; i++) {
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 25)),
+      );
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+
+    expect(service.isUpdatingAll, isFalse);
+    expect(service.updatesAvailableExtensions, isEmpty);
+    expect(find.text('Updated all 2 extensions!'), findsOneWidget);
   });
 }

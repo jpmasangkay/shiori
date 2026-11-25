@@ -199,25 +199,93 @@ class LocalDatabase {
   Future<void> upsertManga(MangaItem m, {bool inLibrary = true}) async {
     final db = _db;
     if (db == null || !db.isOpen) return;
-    await db.insert(
-      'manga',
-      {
-        'id': m.id,
-        'title': m.title,
-        'description': m.description,
-        'cover': m.cover,
-        'authors_json': jsonEncode(m.authors),
-        'status': m.status,
-        'type': m.type,
-        'tags_json': jsonEncode(m.tags),
-        'year': m.year,
-        'last_chapter': m.lastChapter,
-        'source': m.source,
-        'in_library': inLibrary ? 1 : 0,
-        'added_at': DateTime.now().millisecondsSinceEpoch,
-      },
-      conflictAlgorithm: ConflictAlgorithm.replace,
+    await db.rawInsert(
+      '''
+      INSERT INTO manga (
+        id, title, description, cover, authors_json, status, type,
+        tags_json, year, last_chapter, source, in_library, added_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        title = excluded.title,
+        description = excluded.description,
+        cover = excluded.cover,
+        authors_json = excluded.authors_json,
+        status = excluded.status,
+        type = excluded.type,
+        tags_json = excluded.tags_json,
+        year = excluded.year,
+        last_chapter = excluded.last_chapter,
+        source = excluded.source,
+        in_library = excluded.in_library
+      ''',
+      [
+        m.id,
+        m.title,
+        m.description,
+        m.cover,
+        jsonEncode(m.authors),
+        m.status,
+        m.type,
+        jsonEncode(m.tags),
+        m.year,
+        m.lastChapter,
+        m.source,
+        inLibrary ? 1 : 0,
+        DateTime.now().millisecondsSinceEpoch,
+      ],
     );
+  }
+
+  Future<void> upsertMangas(
+    Iterable<MangaItem> items, {
+    bool inLibrary = true,
+  }) async {
+    final db = _db;
+    if (db == null || !db.isOpen) return;
+    final list = items.where((m) => m.id.isNotEmpty).toList();
+    if (list.isEmpty) return;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final m in list) {
+        batch.rawInsert(
+          '''
+          INSERT INTO manga (
+            id, title, description, cover, authors_json, status, type,
+            tags_json, year, last_chapter, source, in_library, added_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title,
+            description = excluded.description,
+            cover = excluded.cover,
+            authors_json = excluded.authors_json,
+            status = excluded.status,
+            type = excluded.type,
+            tags_json = excluded.tags_json,
+            year = excluded.year,
+            last_chapter = excluded.last_chapter,
+            source = excluded.source,
+            in_library = excluded.in_library
+          ''',
+          [
+            m.id,
+            m.title,
+            m.description,
+            m.cover,
+            jsonEncode(m.authors),
+            m.status,
+            m.type,
+            jsonEncode(m.tags),
+            m.year,
+            m.lastChapter,
+            m.source,
+            inLibrary ? 1 : 0,
+            nowMs,
+          ],
+        );
+      }
+      await batch.commit(noResult: true);
+    });
   }
 
   Future<void> deleteLibraryManga(String mangaId) async {
@@ -399,6 +467,106 @@ class LocalDatabase {
     );
   }
 
+  Future<void> upsertProgressBatch(Iterable<ReadProgress> items) async {
+    final db = _db;
+    if (db == null || !db.isOpen) return;
+    final list = items.where((p) => p.mangaId.isNotEmpty && p.chapterId.isNotEmpty).toList();
+    if (list.isEmpty) return;
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final p in list) {
+        batch.insert(
+          'reading_progress',
+          {
+            'manga_id': p.mangaId,
+            'chapter_id': p.chapterId,
+            'manga_title': p.mangaTitle,
+            'cover': p.cover,
+            'source': p.source,
+            'chapter_number': p.chapterNumber,
+            'chapter_title': p.chapterTitle,
+            'page': p.page,
+            'total_pages': p.totalPages,
+            'completed': p.completed ? 1 : 0,
+            'updated_at': (p.updatedAt ?? DateTime.now()).toIso8601String(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
+  Future<Map<String, ReadProgress>> loadAllProgress() async {
+    final db = _db;
+    if (db == null || !db.isOpen) return const {};
+    final rows = await db.query('reading_progress', orderBy: 'updated_at DESC');
+    final map = <String, ReadProgress>{};
+    for (final r in rows) {
+      final mid = r['manga_id']?.toString() ?? '';
+      final cid = r['chapter_id']?.toString() ?? '';
+      if (mid.isEmpty || cid.isEmpty) continue;
+      map[mid] = ReadProgress(
+        mangaId: mid,
+        chapterId: cid,
+        mangaTitle: r['manga_title']?.toString() ?? '',
+        cover: r['cover']?.toString() ?? '',
+        source: r['source']?.toString() ?? '',
+        chapterNumber: r['chapter_number']?.toString() ?? '',
+        chapterTitle: r['chapter_title']?.toString() ?? '',
+        page: (r['page'] as num?)?.toInt() ?? 1,
+        totalPages: (r['total_pages'] as num?)?.toInt() ?? 0,
+        completed: ((r['completed'] as num?)?.toInt() ?? 0) != 0,
+        updatedAt: DateTime.tryParse(r['updated_at']?.toString() ?? ''),
+      );
+    }
+    return map;
+  }
+
+  Future<void> deleteProgressByChapter(String chapterId) async {
+    final db = _db;
+    if (db == null || !db.isOpen || chapterId.isEmpty) return;
+    await db.delete(
+      'reading_progress',
+      where: 'chapter_id = ?',
+      whereArgs: [chapterId],
+    );
+  }
+
+  Future<Map<String, Set<String>>> loadAllReadChapters() async {
+    final db = _db;
+    if (db == null || !db.isOpen) return const {};
+    final rows = await db.query('read_chapters');
+    final map = <String, Set<String>>{};
+    for (final r in rows) {
+      final mid = r['manga_id']?.toString() ?? '';
+      final cid = r['chapter_id']?.toString() ?? '';
+      if (mid.isEmpty || cid.isEmpty) continue;
+      (map[mid] ??= <String>{}).add(cid);
+    }
+    return map;
+  }
+
+  Future<void> mergeReadChaptersBatch(Map<String, Set<String>> readChapters) async {
+    final db = _db;
+    if (db == null || !db.isOpen || readChapters.isEmpty) return;
+    await db.transaction((txn) async {
+      final batch = txn.batch();
+      for (final entry in readChapters.entries) {
+        if (entry.key.isEmpty || entry.value.isEmpty) continue;
+        for (final cid in entry.value) {
+          if (cid.isEmpty) continue;
+          batch.insert(
+            'read_chapters',
+            {'manga_id': entry.key, 'chapter_id': cid},
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      }
+      await batch.commit(noResult: true);
+    });
+  }
+
   Future<void> setChaptersRead(String mangaId, List<String> chapterIds, bool read) async {
     final db = _db;
     if (db == null || !db.isOpen || chapterIds.isEmpty) return;
@@ -473,6 +641,29 @@ class LocalDatabase {
       }
     }
     return (totalSeconds: totalSec, totalPages: totalPages, streakDays: streak);
+  }
+
+  Future<void> clearLibraryTables() async {
+    final db = _db;
+    if (db == null || !db.isOpen) return;
+    await db.transaction((txn) async {
+      await txn.delete('manga');
+      await txn.delete('chapters');
+      await txn.delete('categories');
+      await txn.delete('manga_categories');
+    });
+  }
+
+  Future<void> clearHistoryTables({bool includeReadChapters = true}) async {
+    final db = _db;
+    if (db == null || !db.isOpen) return;
+    await db.transaction((txn) async {
+      await txn.delete('reading_progress');
+      if (includeReadChapters) {
+        await txn.delete('read_chapters');
+        await txn.delete('chapter_bookmarks');
+      }
+    });
   }
 
   Future<void> clearAll() async {

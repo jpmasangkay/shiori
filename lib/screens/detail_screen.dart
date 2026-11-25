@@ -90,6 +90,14 @@ class _DetailScreenState extends State<DetailScreen> {
 
   int get _totalMissingChaptersCount => _cachedMissingChaptersCount;
 
+  bool _isChapterRead(ChapterItem c) =>
+      _readChapterIds.contains(c.id) ||
+      ApiService.instance.isChapterRead(_manga.id, c.id);
+
+  bool _isChapterIdRead(String chapterId) =>
+      _readChapterIds.contains(chapterId) ||
+      ApiService.instance.isChapterRead(_manga.id, chapterId);
+
   void _recomputeChapterDisplayList() {
     var list = _apiChapters;
     if (_excludedScanlators.isNotEmpty) {
@@ -102,7 +110,7 @@ class _DetailScreenState extends State<DetailScreen> {
       list = list.where((c) => DownloadService.instance.isChapterDownloaded(c.id)).toList();
     }
     if (_filterUnread) {
-      list = list.where((c) => !_readChapterIds.contains(c.id)).toList();
+      list = list.where((c) => !_isChapterRead(c)).toList();
     }
     if (_filterBookmarked) {
       list = list.where((c) => ApiService.instance.isChapterBookmarked(c.id)).toList();
@@ -280,20 +288,28 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  void _applyChapterFiltersFromPrefs(SharedPreferences prefs) {
+    final mangaPrefix = 'manga_filter_${_manga.id}';
+    final excludedList =
+        prefs.getStringList('${mangaPrefix}_excluded_scanlators') ?? const [];
+    _filterDownloaded = prefs.getBool('${mangaPrefix}_downloaded') ?? false;
+    _filterUnread = prefs.getBool('${mangaPrefix}_unread') ?? false;
+    _filterBookmarked = prefs.getBool('${mangaPrefix}_bookmarked') ?? false;
+    _sortByUploadDate = prefs.getBool('${mangaPrefix}_sort_by_date') ?? false;
+    _descending = prefs.getBool('${mangaPrefix}_descending') ?? true;
+    _displayChapterNumberOnly =
+        prefs.getBool('${mangaPrefix}_num_only') ?? false;
+    _excludedScanlators = excludedList.toSet();
+  }
+
   Future<void> _loadChapterFilters() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      final mangaPrefix = 'manga_filter_${_manga.id}';
-      final excludedList = prefs.getStringList('${mangaPrefix}_excluded_scanlators') ?? [];
       if (mounted) {
         setState(() {
-          _filterDownloaded = prefs.getBool('${mangaPrefix}_downloaded') ?? false;
-          _filterUnread = prefs.getBool('${mangaPrefix}_unread') ?? false;
-          _filterBookmarked = prefs.getBool('${mangaPrefix}_bookmarked') ?? false;
-          _sortByUploadDate = prefs.getBool('${mangaPrefix}_sort_by_date') ?? false;
-          _descending = prefs.getBool('${mangaPrefix}_descending') ?? true;
-          _displayChapterNumberOnly = prefs.getBool('${mangaPrefix}_num_only') ?? false;
-          _excludedScanlators = excludedList.toSet();
+          _applyChapterFiltersFromPrefs(prefs);
+          _recomputeChapterDisplayList();
+          _syncResumeButton();
         });
       }
     } catch (_) {}
@@ -323,24 +339,23 @@ class _DetailScreenState extends State<DetailScreen> {
     _inLibrary = ApiService.instance.isInLibrary(_manga.id);
     ApiService.instance.cacheKnownManga(_manga);
 
-    // Instant 0ms local hydration for saved chapters & reading progress (works offline & on slow internet!)
-    _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
-    final localProg = ApiService.instance.historyRepo.localProgress[_manga.id];
-    if (localProg != null && localProg.chapterId.isNotEmpty) {
-      _resumeChapterId = localProg.chapterId;
-      _resumePage = localProg.completed ? 1 : localProg.page;
-      final num = localProg.chapterNumber;
-      _resumeLabel = num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
+    // Apply per-manga chapter filters synchronously on Frame 0 so sort/unread filters never jump
+    final syncPrefs = ApiService.instance.prefs;
+    if (syncPrefs != null) {
+      _applyChapterFiltersFromPrefs(syncPrefs);
     }
 
+    // Instant 0ms local hydration for saved chapters & reading progress (Mihon-style local-first!)
+    _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
     final cachedChs = ApiService.instance.getCachedChapters(_manga.id);
     if (cachedChs.isNotEmpty) {
       _apiChapters = cachedChs;
       _loadingChapters = false;
       _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, cachedChs);
       _recomputeChapterDisplayList();
-      _syncResumeButton();
     }
+    _syncResumeButton();
+
     if (_manga.description.isNotEmpty) {
       _loadingDetails = false;
     }
@@ -349,7 +364,9 @@ class _DetailScreenState extends State<DetailScreen> {
     DownloadService.instance.addListener(_onDownloadsChanged);
     TrackerService.instance.addListener(_onTrackerChanged);
     _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
-    _loadChapterFilters();
+    if (syncPrefs == null) {
+      _loadChapterFilters();
+    }
     _loadMangaData();
     _loadRecommendations();
   }
@@ -387,16 +404,11 @@ class _DetailScreenState extends State<DetailScreen> {
     if (!mounted) return;
     final inLib = ApiService.instance.isInLibrary(_manga.id);
     final localRead = ApiService.instance.getReadChapterIds(_manga.id);
-    final localProg = ApiService.instance.historyRepo.localProgress[_manga.id];
     setState(() {
       _inLibrary = inLib;
-      _readChapterIds = {..._readChapterIds, ...localRead};
-      if (localProg != null && localProg.chapterId.isNotEmpty) {
-        _resumeChapterId = localProg.chapterId;
-        _resumePage = localProg.completed ? 1 : localProg.page;
-        final chNum = localProg.chapterNumber;
-        _resumeLabel = chNum.isNotEmpty ? 'Resume Ch. $chNum' : 'Resume Reading';
-      }
+      _readChapterIds = localRead;
+      _recomputeChapterDisplayList();
+      _syncResumeButton();
     });
   }
 
@@ -429,103 +441,208 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _syncResumeButton() {
-    final chapters = _filteredChapters;
-    if (_resumeChapterId == null && chapters.isNotEmpty) {
-      final firstCh = _descending ? chapters.last : chapters.first;
-      _resumeChapterId = firstCh.id;
-      _resumeLabel = firstCh.number != null ? 'Start Ch. ${firstCh.number}' : 'Start Reading';
+    final localProg = ApiService.instance.historyRepo.localProgress[_manga.id];
+
+    // 1. If there is an active in-progress (not yet completed/read) chapter, resume right there.
+    if (localProg != null &&
+        localProg.chapterId.isNotEmpty &&
+        !localProg.completed &&
+        !_isChapterIdRead(localProg.chapterId)) {
+      _resumeChapterId = localProg.chapterId;
+      _resumePage = localProg.page > 1 ? localProg.page : 1;
+      final num = localProg.chapterNumber;
+      _resumeLabel = num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
+      return;
+    }
+
+    // 2. Otherwise inspect chapters in chronological order to pick next unread or "Read Again"
+    final chapters = _apiChapters;
+    if (chapters.isNotEmpty) {
+      final chronological = [...chapters]..sort((a, b) {
+          final na = double.tryParse(a.number ?? '') ?? -1.0;
+          final nb = double.tryParse(b.number ?? '') ?? -1.0;
+          return na.compareTo(nb);
+        });
+      ChapterItem? nextUnread;
+      var readCount = 0;
+      for (final c in chronological) {
+        if (_isChapterRead(c)) {
+          readCount++;
+        } else {
+          nextUnread ??= c;
+        }
+      }
+
+      if (nextUnread != null) {
+        _resumeChapterId = nextUnread.id;
+        _resumePage = 1;
+        final verb = readCount > 0 ? 'Resume' : 'Start';
+        _resumeLabel = nextUnread.number != null && nextUnread.number!.isNotEmpty
+            ? '$verb Ch. ${nextUnread.number}'
+            : '$verb Reading';
+        return;
+      }
+
+      // Every chapter is read — show consistent completed state without flashing "Start Ch. 1"
+      final latest = chronological.last;
+      _resumeChapterId = latest.id;
+      _resumePage = 1;
+      _resumeLabel = 'Read Again';
+      return;
+    }
+
+    if (localProg != null && localProg.chapterId.isNotEmpty) {
+      _resumeChapterId = localProg.chapterId;
+      _resumePage = localProg.completed ? 1 : localProg.page;
+      final num = localProg.chapterNumber;
+      _resumeLabel = num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
+    } else {
+      _resumeChapterId = null;
+      _resumePage = null;
+      _resumeLabel = 'Start Reading';
     }
   }
 
-  Future<void> _loadMangaData() async {
+  Future<void> _loadMangaData({bool forceRefresh = false}) async {
     final m = _manga;
+
+    // Try SQLite fallback if chapters were evicted from the in-memory LRU cache
+    if (_apiChapters.isEmpty) {
+      final fromDb = await ApiService.instance.libraryRepo
+          .loadChaptersFromDbIfNeeded(m.id);
+      if (fromDb.isNotEmpty && mounted) {
+        setState(() {
+          _apiChapters = fromDb;
+          _loadingChapters = false;
+          _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, fromDb);
+          _recomputeChapterDisplayList();
+          _syncResumeButton();
+        });
+      }
+    }
+
+    final chaptersFresh = !forceRefresh &&
+        _apiChapters.isNotEmpty &&
+        ApiService.instance.libraryRepo.areChaptersFresh(
+          m.id,
+          maxAge: ApiService.chapterCacheFreshness,
+        );
+    final detailsFresh = !forceRefresh &&
+        _manga.description.isNotEmpty &&
+        _manga.cover.isNotEmpty &&
+        chaptersFresh;
+    final needCloudProgress = forceRefresh ||
+        (ApiService.instance.isLoggedIn && !ApiService.instance.hasRecentCloudSync);
+    final needLibraryCheck = forceRefresh ||
+        (!_inLibrary && ApiService.instance.isLoggedIn);
+
+    // Mihon-style instant open: if local cache is fresh and synced, skip all network calls!
+    if (chaptersFresh && detailsFresh && !needCloudProgress && !needLibraryCheck) {
+      if (mounted && (_loadingChapters || _loadingDetails)) {
+        setState(() {
+          _loadingChapters = false;
+          _loadingDetails = false;
+        });
+      }
+      return;
+    }
+
     if (mounted) {
       setState(() {
         if (_apiChapters.isEmpty) {
           _loadingChapters = true;
         }
-        _loadingDetails = true;
+        if (_manga.description.isEmpty) {
+          _loadingDetails = true;
+        }
         _chaptersError = null;
       });
     }
 
-    // Run library status, full metadata, progress, and chapter list in parallel
-    final libFuture = ApiService.instance.checkInLibrary(m.id).then((inLib) {
-      if (mounted) setState(() => _inLibrary = inLib);
-    }).catchError((_) {});
+    final futures = <Future<void>>[];
 
-    final detailsFuture = ApiService.instance.getManga(m.id).then((full) {
-      if (!mounted) return;
-      final merged = _mergeManga(_manga, full);
-      setState(() {
-        _manga = merged;
-        _loadingDetails = false;
-      });
-      if (merged.cover.isNotEmpty) {
-        ApiService.instance.updateCachedMangaMetadata(merged);
-      }
-    }).catchError((_) {
-      if (mounted) setState(() => _loadingDetails = false);
-    });
+    if (needLibraryCheck) {
+      futures.add(
+        ApiService.instance.checkInLibrary(m.id).then((inLib) {
+          if (mounted) setState(() => _inLibrary = inLib);
+        }).catchError((_) {}),
+      );
+    }
 
-    final progressFuture = () async {
-      final localRead = ApiService.instance.getReadChapterIds(m.id);
-      try {
-        final progress = await ApiService.instance.getMangaProgress(m.id);
-        if (!mounted) return;
-        final completed = (progress['completedChapters'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ??
-            (progress['completedChapterIds'] as List<dynamic>?)?.map((e) => e.toString()).toSet() ??
-            <String>{};
-        localRead.addAll(completed);
+    if (!detailsFresh) {
+      futures.add(
+        ApiService.instance
+            .getManga(m.id, forceRefresh: forceRefresh)
+            .then((full) {
+              if (!mounted) return;
+              final merged = _mergeManga(_manga, full);
+              setState(() {
+                _manga = merged;
+                _loadingDetails = false;
+              });
+              if (merged.cover.isNotEmpty) {
+                ApiService.instance.updateCachedMangaMetadata(merged);
+              }
+            })
+            .catchError((_) {
+              if (mounted) setState(() => _loadingDetails = false);
+            }),
+      );
+    }
 
-        final lastRead = progress['lastRead'] as Map<String, dynamic>?;
-        setState(() {
-          _readChapterIds = localRead;
-          if (lastRead != null) {
-            _resumeChapterId = lastRead['chapterId'] as String?;
-            final completed = lastRead['completed'] == true;
-            _resumePage = completed ? 1 : ((lastRead['page'] as num?)?.toInt() ?? 1);
-            final chNum = lastRead['chapterNumber'] ?? '';
-            _resumeLabel = chNum.toString().isNotEmpty ? 'Resume Ch. $chNum' : 'Resume Reading';
-          } else {
+    if (needCloudProgress) {
+      futures.add(() async {
+        try {
+          await ApiService.instance.getMangaProgress(
+            m.id,
+            forceCloudSync: forceRefresh,
+          );
+          if (!mounted) return;
+          final refreshedRead = ApiService.instance.getReadChapterIds(m.id);
+          setState(() {
+            _readChapterIds = refreshedRead;
+            _recomputeChapterDisplayList();
             _syncResumeButton();
-          }
-        });
-      } catch (_) {
-        if (mounted) {
-          setState(() => _readChapterIds = localRead);
+          });
+        } catch (_) {}
+      }());
+    }
+
+    if (!chaptersFresh) {
+      futures.add(() async {
+        try {
+          final chapters = await ApiService.instance.getChapters(
+            m.id,
+            forceRefresh: forceRefresh,
+          );
+          if (!mounted) return;
+          setState(() {
+            if (chapters.isNotEmpty || _apiChapters.isEmpty) {
+              _apiChapters = chapters;
+            }
+            _loadingChapters = false;
+            _chaptersError = null;
+            _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, _apiChapters);
+            _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
+            _recomputeChapterDisplayList();
+            _syncResumeButton();
+          });
+        } catch (err) {
+          if (!mounted) return;
+          setState(() {
+            // Only show error screen if we have no cached/downloaded chapters locally
+            if (_apiChapters.isEmpty) {
+              _chaptersError = err.toString().replaceFirst('Exception: ', '');
+            }
+            _loadingChapters = false;
+          });
         }
-      }
-    }();
+      }());
+    }
 
-    final chaptersFuture = () async {
-      try {
-        final chapters = await ApiService.instance.getChapters(m.id);
-        if (!mounted) return;
-        setState(() {
-          if (chapters.isNotEmpty || _apiChapters.isEmpty) {
-            _apiChapters = chapters;
-          }
-          _loadingChapters = false;
-          _chaptersError = null;
-          _smartUpdateResult = SmartUpdateService.instance.calculate(_manga, _apiChapters);
-          _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
-          _recomputeChapterDisplayList();
-          _syncResumeButton();
-        });
-      } catch (err) {
-        if (!mounted) return;
-        setState(() {
-          // Only show error screen if we have no cached/downloaded chapters locally
-          if (_apiChapters.isEmpty) {
-            _chaptersError = err.toString().replaceFirst('Exception: ', '');
-          }
-          _loadingChapters = false;
-        });
-      }
-    }();
-
-    await Future.wait([libFuture, detailsFuture, progressFuture, chaptersFuture]);
+    if (futures.isNotEmpty) {
+      await Future.wait(futures);
+    }
   }
 
   Future<void> _toggleLibrary() async {
@@ -629,7 +746,7 @@ class _DetailScreenState extends State<DetailScreen> {
     }
     if (webUrl != null && webUrl.isNotEmpty) {
       await ExtensionBridge.instance.openInWebView(url: webUrl, title: _manga.title);
-      if (mounted) _loadMangaData();
+      if (mounted) _loadMangaData(forceRefresh: true);
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -683,7 +800,7 @@ class _DetailScreenState extends State<DetailScreen> {
   void _syncTrackerProgressOnMarkRead() {
     int maxReadNum = 0;
     for (final c in _apiChapters) {
-      if (_readChapterIds.contains(c.id)) {
+      if (_isChapterRead(c)) {
         final num = double.tryParse(c.number ?? '')?.floor();
         if (num != null && num > maxReadNum) {
           maxReadNum = num;
@@ -774,9 +891,10 @@ class _DetailScreenState extends State<DetailScreen> {
       if (mounted) {
         final localRead = ApiService.instance.getReadChapterIds(_manga.id);
         setState(() {
-          _readChapterIds = {..._readChapterIds, ...localRead};
+          _readChapterIds = localRead;
+          _recomputeChapterDisplayList();
+          _syncResumeButton();
         });
-        _loadMangaData();
       }
     });
   }
@@ -814,14 +932,16 @@ class _DetailScreenState extends State<DetailScreen> {
                 onTap: () async {
                   Navigator.pop(context);
                   await ApiService.instance.markChapterRead(_manga.id, chapter.id, read: !isRead);
-                  setState(() {
-                    if (!isRead) {
-                      _readChapterIds.add(chapter.id);
-                      _syncTrackerProgressOnMarkRead();
-                    } else {
-                      _readChapterIds.remove(chapter.id);
-                    }
-                  });
+                  if (mounted) {
+                    setState(() {
+                      _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
+                      if (_filterUnread) _recomputeChapterDisplayList();
+                      _syncResumeButton();
+                    });
+                  }
+                  if (!isRead) {
+                    _syncTrackerProgressOnMarkRead();
+                  }
                 },
               ),
               ListTile(
@@ -853,7 +973,13 @@ class _DetailScreenState extends State<DetailScreen> {
                   if (curIdx >= 0) {
                     final prevIds = readingChapters.sublist(0, curIdx + 1).map((c) => c.id).toList();
                     await ApiService.instance.markChaptersRead(_manga.id, prevIds, read: true);
-                    setState(() => _readChapterIds.addAll(prevIds));
+                    if (mounted) {
+                      setState(() {
+                        _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
+                        if (_filterUnread) _recomputeChapterDisplayList();
+                        _syncResumeButton();
+                      });
+                    }
                     _syncTrackerProgressOnMarkRead();
                   }
                 },
@@ -1068,8 +1194,13 @@ class _DetailScreenState extends State<DetailScreen> {
               ),
             )
           : null,
-      body: CustomScrollView(
-        slivers: [
+      body: RefreshIndicator(
+        color: AppColors.primary,
+        backgroundColor: AppColors.surface,
+        onRefresh: () => _loadMangaData(forceRefresh: true),
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
           SliverToBoxAdapter(child: _hero(top)),
           SliverToBoxAdapter(child: _actionRow()),
           SliverToBoxAdapter(child: _synopsisBlock()),
@@ -1168,7 +1299,7 @@ class _DetailScreenState extends State<DetailScreen> {
                         return const SizedBox.shrink();
                       }),
                       FilledButton.icon(
-                        onPressed: _loadMangaData,
+                        onPressed: () => _loadMangaData(forceRefresh: true),
                         icon: const Icon(Icons.refresh_rounded, size: 16),
                         label: Text('Retry', style: AppText.bodySemiBold),
                         style: FilledButton.styleFrom(
@@ -1209,7 +1340,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       return _buildMissingChapterWarning(item.gap);
                     }
                     final c = (item as _ChapterEntry).chapter;
-                    final isRead = _readChapterIds.contains(c.id);
+                    final isRead = _isChapterRead(c);
                     final isBookmarked = ApiService.instance.isChapterBookmarked(c.id);
                     final downloadStatus = DownloadService.instance.getStatus(c.id);
                     final downloadProgress = DownloadService.instance.getProgress(c.id);
@@ -1238,17 +1369,16 @@ class _DetailScreenState extends State<DetailScreen> {
                       ),
                       onToggleRead: () async {
                         final nextState = !isRead;
-                        setState(() {
-                          if (nextState) {
-                            _readChapterIds.add(c.id);
-                          } else {
-                            _readChapterIds.remove(c.id);
-                          }
-                          if (_filterUnread) {
-                            _recomputeChapterDisplayList();
-                          }
-                        });
                         await ApiService.instance.markChapterRead(_manga.id, c.id, read: nextState);
+                        if (mounted) {
+                          setState(() {
+                            _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
+                            if (_filterUnread) {
+                              _recomputeChapterDisplayList();
+                            }
+                            _syncResumeButton();
+                          });
+                        }
                         if (nextState) {
                           _syncTrackerProgressOnMarkRead();
                         }
@@ -1271,6 +1401,7 @@ class _DetailScreenState extends State<DetailScreen> {
             SliverToBoxAdapter(child: _recommendationsRail()),
           const SliverToBoxAdapter(child: SizedBox(height: 88)),
         ],
+      ),
       ),
     );
   }
@@ -1409,7 +1540,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
   void _downloadBatch(int count) {
     final filtered = _filteredChapters;
-    final unread = filtered.where((c) => !_readChapterIds.contains(c.id)).toList();
+    final unread = filtered.where((c) => !_isChapterRead(c)).toList();
     final toDownload = (unread.isNotEmpty ? unread : filtered).take(count).toList();
     for (final c in toDownload) {
       DownloadService.instance.downloadChapter(_manga, c);
@@ -1421,7 +1552,7 @@ class _DetailScreenState extends State<DetailScreen> {
 
   void _downloadUnread() {
     final filtered = _filteredChapters;
-    final unread = filtered.where((c) => !_readChapterIds.contains(c.id)).toList();
+    final unread = filtered.where((c) => !_isChapterRead(c)).toList();
     for (final c in unread) {
       DownloadService.instance.downloadChapter(_manga, c);
     }
@@ -1810,7 +1941,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 title: Text('Refresh Metadata & Chapters', style: AppText.bodyMedium),
                 onTap: () {
                   Navigator.pop(ctx);
-                  _loadMangaData();
+                  _loadMangaData(forceRefresh: true);
                 },
               ),
               ListTile(
@@ -2244,7 +2375,7 @@ class _DetailScreenState extends State<DetailScreen> {
     final filtered = _filteredChapters;
     final totalCount = _apiChapters.length;
     final count = filtered.length;
-    final readCount = filtered.where((c) => _readChapterIds.contains(c.id)).length;
+    final readCount = filtered.where(_isChapterRead).length;
 
     final countLabel = _hasActiveFilters && count != totalCount
         ? '$count of $totalCount Chapters'
@@ -2380,19 +2511,25 @@ class _DetailScreenState extends State<DetailScreen> {
             onSelected: (val) async {
               if (val == 'mark_all_read') {
                 final allIds = _filteredChapters.map((c) => c.id).toList();
-                setState(() {
-                  _readChapterIds.addAll(allIds);
-                  if (_filterUnread) _recomputeChapterDisplayList();
-                });
                 await ApiService.instance.markChaptersRead(_manga.id, allIds, read: true);
+                if (mounted) {
+                  setState(() {
+                    _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
+                    if (_filterUnread) _recomputeChapterDisplayList();
+                    _syncResumeButton();
+                  });
+                }
                 _syncTrackerProgressOnMarkRead();
               } else if (val == 'mark_all_unread') {
                 final allIds = _filteredChapters.map((c) => c.id).toList();
-                setState(() {
-                  _readChapterIds.removeAll(allIds);
-                  if (_filterUnread) _recomputeChapterDisplayList();
-                });
                 await ApiService.instance.markChaptersRead(_manga.id, allIds, read: false);
+                if (mounted) {
+                  setState(() {
+                    _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
+                    if (_filterUnread) _recomputeChapterDisplayList();
+                    _syncResumeButton();
+                  });
+                }
               }
             },
             itemBuilder: (_) => [

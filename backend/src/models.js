@@ -79,6 +79,7 @@ const progressSchema = new mongoose.Schema(
 );
 progressSchema.index({ user: 1, chapterId: 1 }, { unique: true });
 progressSchema.index({ user: 1, mangaId: 1 });
+progressSchema.index({ user: 1, completed: 1 });
 progressSchema.index({ user: 1, updatedAt: -1 });
 
 export const Progress = mongoose.model('Progress', progressSchema);
