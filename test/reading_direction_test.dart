@@ -53,128 +53,149 @@ void main() {
       );
     });
 
-    test('resolves Korean manhwa / manwha / webtoon to Webtoon (vertical scroll)', () {
-      // Direct type 'manhwa'
-      expect(
-        ReaderScreen.resolveAutomaticMode(type: 'manhwa'),
-        equals(ReaderMode.webtoon),
-      );
+    test(
+      'resolves Korean manhwa / manwha / webtoon to Webtoon (vertical scroll)',
+      () {
+        // Direct type 'manhwa'
+        expect(
+          ReaderScreen.resolveAutomaticMode(type: 'manhwa'),
+          equals(ReaderMode.webtoon),
+        );
 
-      // Alternate spelling 'manwha' (as in user prompt)
-      expect(
-        ReaderScreen.resolveAutomaticMode(type: 'manwha'),
-        equals(ReaderMode.webtoon),
-      );
+        // Alternate spelling 'manwha' (as in user prompt)
+        expect(
+          ReaderScreen.resolveAutomaticMode(type: 'manwha'),
+          equals(ReaderMode.webtoon),
+        );
 
-      // Direct type 'webtoon'
-      expect(
-        ReaderScreen.resolveAutomaticMode(type: 'webtoon'),
-        equals(ReaderMode.webtoon),
-      );
+        // Direct type 'webtoon'
+        expect(
+          ReaderScreen.resolveAutomaticMode(type: 'webtoon'),
+          equals(ReaderMode.webtoon),
+        );
 
-      // By tag 'manhwa'
-      expect(
-        ReaderScreen.resolveAutomaticMode(tags: ['Fantasy', 'Manhwa']),
-        equals(ReaderMode.webtoon),
-      );
+        // By tag 'manhwa'
+        expect(
+          ReaderScreen.resolveAutomaticMode(tags: ['Fantasy', 'Manhwa']),
+          equals(ReaderMode.webtoon),
+        );
 
-      // By tag 'manwha'
-      expect(
-        ReaderScreen.resolveAutomaticMode(tags: ['Action', 'Manwha']),
-        equals(ReaderMode.webtoon),
-      );
+        // By tag 'manwha'
+        expect(
+          ReaderScreen.resolveAutomaticMode(tags: ['Action', 'Manwha']),
+          equals(ReaderMode.webtoon),
+        );
 
-      // By tag 'webtoon'
-      expect(
-        ReaderScreen.resolveAutomaticMode(tags: ['Webtoon', 'Supernatural']),
-        equals(ReaderMode.webtoon),
-      );
+        // By tag 'webtoon'
+        expect(
+          ReaderScreen.resolveAutomaticMode(tags: ['Webtoon', 'Supernatural']),
+          equals(ReaderMode.webtoon),
+        );
 
-      // By tag 'korean'
-      expect(
-        ReaderScreen.resolveAutomaticMode(tags: ['Korean']),
-        equals(ReaderMode.webtoon),
-      );
+        // By tag 'korean'
+        expect(
+          ReaderScreen.resolveAutomaticMode(tags: ['Korean']),
+          equals(ReaderMode.webtoon),
+        );
 
-      // By Asura source prefix
-      expect(
-        ReaderScreen.resolveAutomaticMode(mangaId: 'asura:solo-leveling-ragnarok'),
-        equals(ReaderMode.webtoon),
-      );
+        // By Asura source prefix
+        expect(
+          ReaderScreen.resolveAutomaticMode(
+            mangaId: 'asura:solo-leveling-ragnarok',
+          ),
+          equals(ReaderMode.webtoon),
+        );
 
-      // By Flame Comics source prefix
-      expect(
-        ReaderScreen.resolveAutomaticMode(mangaId: 'flame:the-beginning-after-the-end'),
-        equals(ReaderMode.webtoon),
-      );
+        // By Flame Comics source prefix
+        expect(
+          ReaderScreen.resolveAutomaticMode(
+            mangaId: 'flame:the-beginning-after-the-end',
+          ),
+          equals(ReaderMode.webtoon),
+        );
 
-      // By title annotation
-      expect(
-        ReaderScreen.resolveAutomaticMode(title: 'Return of the Mount Hua Sect [Manhwa]'),
-        equals(ReaderMode.webtoon),
-      );
-    });
+        // By title annotation
+        expect(
+          ReaderScreen.resolveAutomaticMode(
+            title: 'Return of the Mount Hua Sect [Manhwa]',
+          ),
+          equals(ReaderMode.webtoon),
+        );
+      },
+    );
 
-    test('resolves manhua and Chinese webtoons to Webtoon mode, and western/unknown to Left-to-Right (LTR)', () {
-      // Chinese manhua -> Webtoon vertical strip by default
-      expect(
-        ReaderScreen.resolveAutomaticMode(type: 'manhua'),
-        equals(ReaderMode.webtoon),
-      );
+    test(
+      'resolves manhua and Chinese webtoons to Webtoon mode, and western/unknown to Left-to-Right (LTR)',
+      () {
+        // Chinese manhua -> Webtoon vertical strip by default
+        expect(
+          ReaderScreen.resolveAutomaticMode(type: 'manhua'),
+          equals(ReaderMode.webtoon),
+        );
 
-      expect(
-        ReaderScreen.resolveAutomaticMode(tags: ['Martial Arts', 'Manhua']),
-        equals(ReaderMode.webtoon),
-      );
+        expect(
+          ReaderScreen.resolveAutomaticMode(tags: ['Martial Arts', 'Manhua']),
+          equals(ReaderMode.webtoon),
+        );
 
-      expect(
-        ReaderScreen.resolveAutomaticMode(tags: ['Chinese']),
-        equals(ReaderMode.webtoon),
-      );
+        expect(
+          ReaderScreen.resolveAutomaticMode(tags: ['Chinese']),
+          equals(ReaderMode.webtoon),
+        );
 
-      // Western comic -> LTR paged
-      expect(
-        ReaderScreen.resolveAutomaticMode(type: 'comic'),
-        equals(ReaderMode.leftToRight),
-      );
+        // Western comic -> LTR paged
+        expect(
+          ReaderScreen.resolveAutomaticMode(type: 'comic'),
+          equals(ReaderMode.leftToRight),
+        );
 
-      expect(
-        ReaderScreen.resolveAutomaticMode(type: 'western'),
-        equals(ReaderMode.leftToRight),
-      );
+        expect(
+          ReaderScreen.resolveAutomaticMode(type: 'western'),
+          equals(ReaderMode.leftToRight),
+        );
 
-      expect(
-        ReaderScreen.resolveAutomaticMode(tags: ['Superhero', 'Comic']),
-        equals(ReaderMode.leftToRight),
-      );
+        expect(
+          ReaderScreen.resolveAutomaticMode(tags: ['Superhero', 'Comic']),
+          equals(ReaderMode.leftToRight),
+        );
 
-      // Unknown / empty / other fallback
-      expect(
-        ReaderScreen.resolveAutomaticMode(type: '', mangaId: 'custom:123'),
-        equals(ReaderMode.leftToRight),
-      );
+        // Unknown / empty / other fallback
+        expect(
+          ReaderScreen.resolveAutomaticMode(type: '', mangaId: 'custom:123'),
+          equals(ReaderMode.leftToRight),
+        );
 
-      expect(
-        ReaderScreen.resolveAutomaticMode(),
-        equals(ReaderMode.leftToRight),
-      );
-    });
+        expect(
+          ReaderScreen.resolveAutomaticMode(),
+          equals(ReaderMode.leftToRight),
+        );
+      },
+    );
 
     test('prioritizes manhwa / manhua tags even if default type was manga', () {
       // In scrapers where MangaItem default type was 'manga', but tag indicates Manhwa
       expect(
-        ReaderScreen.resolveAutomaticMode(type: 'manga', tags: ['Action', 'Manhwa']),
+        ReaderScreen.resolveAutomaticMode(
+          type: 'manga',
+          tags: ['Action', 'Manhwa'],
+        ),
         equals(ReaderMode.webtoon),
       );
 
       expect(
-        ReaderScreen.resolveAutomaticMode(type: 'manga', tags: ['Action', 'Manwha']),
+        ReaderScreen.resolveAutomaticMode(
+          type: 'manga',
+          tags: ['Action', 'Manwha'],
+        ),
         equals(ReaderMode.webtoon),
       );
 
       // Default type was 'manga', but tag indicates Manhua -> Webtoon
       expect(
-        ReaderScreen.resolveAutomaticMode(type: 'manga', tags: ['Cultivation', 'Manhua']),
+        ReaderScreen.resolveAutomaticMode(
+          type: 'manga',
+          tags: ['Cultivation', 'Manhua'],
+        ),
         equals(ReaderMode.webtoon),
       );
     });
@@ -186,7 +207,9 @@ void main() {
       const ChapterItem(id: 'ch_2', number: '2', title: 'Chapter 2'),
     ];
 
-    testWidgets('Manga opens in Automatic (RTL) mode by default', (tester) async {
+    testWidgets('Manga opens in Automatic (RTL) mode by default', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         MaterialApp(
           home: ReaderScreen(
@@ -218,7 +241,9 @@ void main() {
       expect(checkmarks, findsOneWidget);
     });
 
-    testWidgets('Manhwa opens in Automatic (Webtoon) mode by default', (tester) async {
+    testWidgets('Manhwa opens in Automatic (Webtoon) mode by default', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         MaterialApp(
           home: ReaderScreen(
@@ -236,96 +261,105 @@ void main() {
       expect(find.text('Auto (Webtoon)'), findsAtLeastNWidgets(1));
     });
 
-    testWidgets('Manwha (alternate spelling) opens in Automatic (Webtoon) mode by default', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: ReaderScreen(
-            mangaId: 'manga_kr_2',
-            mangaTitle: 'Tower of God',
-            mangaType: 'manwha',
-            chapters: sampleChapters,
-            initialIndex: 0,
+    testWidgets(
+      'Manwha (alternate spelling) opens in Automatic (Webtoon) mode by default',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReaderScreen(
+              mangaId: 'manga_kr_2',
+              mangaTitle: 'Tower of God',
+              mangaType: 'manwha',
+              chapters: sampleChapters,
+              initialIndex: 0,
+            ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      expect(find.text('Auto (Webtoon)'), findsAtLeastNWidgets(1));
-    });
+        expect(find.text('Auto (Webtoon)'), findsAtLeastNWidgets(1));
+      },
+    );
 
-    testWidgets('Manhua opens in Automatic (Webtoon) and Western comics open in Automatic (LTR)', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: ReaderScreen(
-            mangaId: 'manga_cn_1',
-            mangaTitle: 'Martial Peak',
-            mangaType: 'manhua',
-            chapters: sampleChapters,
-            initialIndex: 0,
+    testWidgets(
+      'Manhua opens in Automatic (Webtoon) and Western comics open in Automatic (LTR)',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReaderScreen(
+              mangaId: 'manga_cn_1',
+              mangaTitle: 'Martial Peak',
+              mangaType: 'manhua',
+              chapters: sampleChapters,
+              initialIndex: 0,
+            ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      expect(find.text('Auto (Webtoon)'), findsAtLeastNWidgets(1));
+        expect(find.text('Auto (Webtoon)'), findsAtLeastNWidgets(1));
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: ReaderScreen(
-            key: const ValueKey('comic_reader'),
-            mangaId: 'comic_us_1',
-            mangaTitle: 'Invincible',
-            mangaType: 'comic',
-            chapters: sampleChapters,
-            initialIndex: 0,
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReaderScreen(
+              key: const ValueKey('comic_reader'),
+              mangaId: 'comic_us_1',
+              mangaTitle: 'Invincible',
+              mangaType: 'comic',
+              chapters: sampleChapters,
+              initialIndex: 0,
+            ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      expect(find.text('Auto (LTR)'), findsAtLeastNWidgets(1));
-    });
+        expect(find.text('Auto (LTR)'), findsAtLeastNWidgets(1));
+      },
+    );
 
-    testWidgets('User can override reading direction manually and switch back to Automatic', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: ReaderScreen(
-            mangaId: 'test_manga_override',
-            mangaTitle: 'One Piece',
-            mangaType: 'manga',
-            chapters: sampleChapters,
-            initialIndex: 0,
+    testWidgets(
+      'User can override reading direction manually and switch back to Automatic',
+      (tester) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: ReaderScreen(
+              mangaId: 'test_manga_override',
+              mangaTitle: 'One Piece',
+              mangaType: 'manga',
+              chapters: sampleChapters,
+              initialIndex: 0,
+            ),
           ),
-        ),
-      );
-      await tester.pumpAndSettle();
+        );
+        await tester.pumpAndSettle();
 
-      // Initially Auto (RTL)
-      expect(find.text('Auto (RTL)'), findsAtLeastNWidgets(1));
+        // Initially Auto (RTL)
+        expect(find.text('Auto (RTL)'), findsAtLeastNWidgets(1));
 
-      // Open sheet and choose Webtoon
-      await tester.tap(find.text('Auto (RTL)').first);
-      await tester.pumpAndSettle();
+        // Open sheet and choose Webtoon
+        await tester.tap(find.text('Auto (RTL)').first);
+        await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Webtoon (Manhwa / Manhua 🇰🇷🇨🇳)'));
-      await tester.pumpAndSettle();
+        await tester.tap(find.text('Webtoon (Manhwa / Manhua 🇰🇷🇨🇳)'));
+        await tester.pumpAndSettle();
 
-      // Label should now be 'Webtoon'
-      expect(find.text('Webtoon'), findsAtLeastNWidgets(1));
+        // Label should now be 'Webtoon'
+        expect(find.text('Webtoon'), findsAtLeastNWidgets(1));
 
-      // Wait for SnackBar to dismiss so it doesn't intercept tap
-      await tester.pump(const Duration(seconds: 2));
-      await tester.pumpAndSettle();
+        // Wait for SnackBar to dismiss so it doesn't intercept tap
+        await tester.pump(const Duration(seconds: 2));
+        await tester.pumpAndSettle();
 
-      // Open sheet and choose Automatic again
-      await tester.tap(find.text('Webtoon').first);
-      await tester.pumpAndSettle();
+        // Open sheet and choose Automatic again
+        await tester.tap(find.text('Webtoon').first);
+        await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Automatic'));
-      await tester.pumpAndSettle();
+        await tester.tap(find.text('Automatic'));
+        await tester.pumpAndSettle();
 
-      // Returns to Auto (RTL)
-      expect(find.text('Auto (RTL)'), findsAtLeastNWidgets(1));
-    });
+        // Returns to Auto (RTL)
+        expect(find.text('Auto (RTL)'), findsAtLeastNWidgets(1));
+      },
+    );
   });
 }
