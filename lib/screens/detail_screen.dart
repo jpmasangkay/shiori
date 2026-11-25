@@ -8,6 +8,8 @@ import '../services/api_service.dart';
 import '../services/download_service.dart';
 import '../services/extension_bridge.dart';
 import '../services/extension_service.dart';
+import '../services/reader_settings.dart';
+import '../services/source_manager.dart';
 import '../services/source_resolver.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -57,6 +59,9 @@ class _DetailScreenState extends State<DetailScreen> {
   List<MangaRecommendation> _recommendations = const [];
   bool _loadedRecommendations = false;
   final Set<String> _selectedChapterIds = {};
+  final ScrollController _scrollController = ScrollController();
+  bool _fabExtended = true;
+  double _lastScrollOffset = 0.0;
 
   bool get _isChapterSelectionMode => _selectedChapterIds.isNotEmpty;
 
@@ -94,10 +99,6 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _isChapterRead(ChapterItem c) =>
       _readChapterIds.contains(c.id) ||
       ApiService.instance.isChapterRead(_manga.id, c.id);
-
-  bool _isChapterIdRead(String chapterId) =>
-      _readChapterIds.contains(chapterId) ||
-      ApiService.instance.isChapterRead(_manga.id, chapterId);
 
   void _recomputeChapterDisplayList() {
     var list = _apiChapters;
@@ -293,22 +294,23 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   Widget _buildMissingChapterWarning(MissingChapterGap gap) {
+    final textColor = AppColors.isLight ? Colors.amber.shade900 : Colors.amber.shade200;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       decoration: BoxDecoration(
-        color: Colors.amber.withValues(alpha: 0.12),
+        color: Colors.amber.withValues(alpha: AppColors.isLight ? 0.16 : 0.12),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(
-          color: Colors.amber.withValues(alpha: 0.35),
+          color: Colors.amber.withValues(alpha: 0.4),
           width: 0.8,
         ),
       ),
       child: Row(
         children: [
-          const Icon(
+          Icon(
             Icons.warning_amber_rounded,
-            color: Colors.amber,
+            color: AppColors.isLight ? Colors.amber.shade800 : Colors.amber,
             size: 16,
           ),
           const SizedBox(width: 8),
@@ -316,9 +318,25 @@ class _DetailScreenState extends State<DetailScreen> {
             child: Text(
               gap.label,
               style: AppText.caption.copyWith(
-                color: Colors.amber.shade200,
+                color: textColor,
                 fontWeight: FontWeight.w600,
                 fontSize: 11.5,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: _showMigrateSourceSheet,
+            style: TextButton.styleFrom(
+              minimumSize: Size.zero,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              foregroundColor: textColor,
+            ),
+            child: Text(
+              'Find source',
+              style: AppText.badge.copyWith(
+                color: textColor,
+                decoration: TextDecoration.underline,
               ),
             ),
           ),
@@ -411,12 +429,25 @@ class _DetailScreenState extends State<DetailScreen> {
     ApiService.instance.addListener(_onApiChanged);
     DownloadService.instance.addListener(_onDownloadsChanged);
     TrackerService.instance.addListener(_onTrackerChanged);
+    _scrollController.addListener(_onScroll);
     _isMangaTracked = TrackerService.instance.isMangaTracked(_manga.id);
     if (syncPrefs == null) {
       _loadChapterFilters();
     }
     _loadMangaData();
     _loadRecommendations();
+  }
+
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    final offset = _scrollController.offset;
+    final delta = offset - _lastScrollOffset;
+    _lastScrollOffset = offset;
+    if (offset <= 80 || delta < -12) {
+      if (!_fabExtended && mounted) setState(() => _fabExtended = true);
+    } else if (offset > 140 && delta > 12) {
+      if (_fabExtended && mounted) setState(() => _fabExtended = false);
+    }
   }
 
   Future<void> _loadRecommendations() async {
@@ -434,6 +465,8 @@ class _DetailScreenState extends State<DetailScreen> {
 
   @override
   void dispose() {
+    _scrollController.removeListener(_onScroll);
+    _scrollController.dispose();
     _chapterSearchController.dispose();
     ApiService.instance.removeListener(_onApiChanged);
     DownloadService.instance.removeListener(_onDownloadsChanged);
@@ -499,68 +532,14 @@ class _DetailScreenState extends State<DetailScreen> {
   }
 
   void _syncResumeButton() {
-    final localProg = ApiService.instance.historyRepo.localProgress[_manga.id];
-
-    // 1. If there is an active in-progress (not yet completed/read) chapter, resume right there.
-    if (localProg != null &&
-        localProg.chapterId.isNotEmpty &&
-        !localProg.completed &&
-        !_isChapterIdRead(localProg.chapterId)) {
-      _resumeChapterId = localProg.chapterId;
-      _resumePage = localProg.page > 1 ? localProg.page : 1;
-      final num = localProg.chapterNumber;
-      _resumeLabel = num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
-      return;
-    }
-
-    // 2. Otherwise inspect chapters in chronological order to pick next unread or "Read Again"
-    final chapters = _apiChapters;
-    if (chapters.isNotEmpty) {
-      final chronological = [...chapters]
-        ..sort((a, b) {
-          final na = double.tryParse(a.number ?? '') ?? -1.0;
-          final nb = double.tryParse(b.number ?? '') ?? -1.0;
-          return na.compareTo(nb);
-        });
-      ChapterItem? nextUnread;
-      var readCount = 0;
-      for (final c in chronological) {
-        if (_isChapterRead(c)) {
-          readCount++;
-        } else {
-          nextUnread ??= c;
-        }
-      }
-
-      if (nextUnread != null) {
-        _resumeChapterId = nextUnread.id;
-        _resumePage = 1;
-        final verb = readCount > 0 ? 'Resume' : 'Start';
-        _resumeLabel =
-            nextUnread.number != null && nextUnread.number!.isNotEmpty
-            ? '$verb Ch. ${nextUnread.number}'
-            : '$verb Reading';
-        return;
-      }
-
-      // Every chapter is read — show consistent completed state without flashing "Start Ch. 1"
-      final latest = chronological.last;
-      _resumeChapterId = latest.id;
-      _resumePage = 1;
-      _resumeLabel = 'Read Again';
-      return;
-    }
-
-    if (localProg != null && localProg.chapterId.isNotEmpty) {
-      _resumeChapterId = localProg.chapterId;
-      _resumePage = localProg.completed ? 1 : localProg.page;
-      final num = localProg.chapterNumber;
-      _resumeLabel = num.isNotEmpty ? 'Resume Ch. $num' : 'Resume Reading';
-    } else {
-      _resumeChapterId = null;
-      _resumePage = null;
-      _resumeLabel = 'Start Reading';
-    }
+    final target = ApiService.instance.resolveResumeTarget(
+      _manga.id,
+      chapters: _apiChapters,
+      skipDuplicateChapters: ReaderSettings.instance.skipDuplicateChapters,
+    );
+    _resumeChapterId = target.chapterId;
+    _resumePage = target.chapterId != null ? target.page : null;
+    _resumeLabel = target.label;
   }
 
   Future<void> _loadMangaData({bool forceRefresh = false}) async {
@@ -929,49 +908,14 @@ class _DetailScreenState extends State<DetailScreen> {
 
     int? effectiveInitialPage = initialPage;
     if (effectiveInitialPage == null) {
-      final prog = ApiService.instance.historyRepo.localProgress[_manga.id];
-      if (prog != null &&
-          prog.chapterId == chapterId &&
-          !prog.completed &&
-          prog.page > 1) {
-        effectiveInitialPage = prog.page;
+      final savedPage = ApiService.instance.getSavedPageForChapter(_manga.id, chapterId);
+      if (savedPage != null && savedPage > 1) {
+        effectiveInitialPage = savedPage;
       }
     }
 
     // Build reading chapters in chronological ascending order
-    double? parseChapterNum(ChapterItem c) {
-      if (c.number != null && c.number!.isNotEmpty) {
-        final parsed = double.tryParse(c.number!);
-        if (parsed != null) return parsed;
-      }
-      final match = RegExp(
-        r'(?:chapter|ch\.?|ep\.?|episode)\s*(\d+(?:\.\d+)?)',
-        caseSensitive: false,
-      ).firstMatch(c.title);
-      if (match != null) return double.tryParse(match.group(1)!);
-      final matchAny = RegExp(r'(\d+(?:\.\d+)?)').firstMatch(c.title);
-      if (matchAny != null) return double.tryParse(matchAny.group(1)!);
-      return null;
-    }
-
-    final readingChapters = [...chapters];
-    final firstNum = chapters.isNotEmpty
-        ? parseChapterNum(chapters.first)
-        : null;
-    final lastNum = chapters.isNotEmpty ? parseChapterNum(chapters.last) : null;
-    final isSourceDescending =
-        (firstNum != null && lastNum != null && firstNum > lastNum);
-
-    readingChapters.sort((a, b) {
-      final aNum = parseChapterNum(a);
-      final bNum = parseChapterNum(b);
-      if (aNum != null && bNum != null && aNum != bNum) {
-        return aNum.compareTo(bNum);
-      }
-      final idxA = chapters.indexOf(a);
-      final idxB = chapters.indexOf(b);
-      return isSourceDescending ? idxB.compareTo(idxA) : idxA.compareTo(idxB);
-    });
+    final readingChapters = sortChaptersChronologically(chapters);
 
     var idx = readingChapters.indexWhere((c) => c.id == chapterId);
     if (idx < 0) idx = 0;
@@ -1473,6 +1417,23 @@ class _DetailScreenState extends State<DetailScreen> {
     );
   }
 
+  Future<void> _markPreviousChaptersRead(ChapterItem chapter) async {
+    final readingChapters = sortChaptersChronologically(_apiChapters);
+    final curIdx = readingChapters.indexWhere((c) => c.id == chapter.id);
+    if (curIdx < 0) return;
+    final prevIds = readingChapters.sublist(0, curIdx + 1).map((c) => c.id).toList();
+    await ApiService.instance.markChaptersRead(_manga.id, prevIds, read: true);
+    if (mounted) {
+      setState(() {
+        _selectedChapterIds.clear();
+        _readChapterIds = ApiService.instance.getReadChapterIds(_manga.id);
+        if (_filterUnread) _recomputeChapterDisplayList();
+        _syncResumeButton();
+      });
+    }
+    _syncTrackerProgressOnMarkRead();
+  }
+
   Widget _buildChapterSelectionBar() {
     final count = _selectedChapterIds.length;
     final visible = _filteredChapters;
@@ -1583,6 +1544,12 @@ class _DetailScreenState extends State<DetailScreen> {
                   ),
                   if (singleSelected != null)
                     _selectionActionBtn(
+                      icon: Icons.playlist_add_check_rounded,
+                      label: 'Prev Read',
+                      onTap: () => _markPreviousChaptersRead(singleSelected),
+                    ),
+                  if (singleSelected != null)
+                    _selectionActionBtn(
                       icon: Icons.more_horiz_rounded,
                       label: 'More',
                       onTap: () {
@@ -1652,6 +1619,7 @@ class _DetailScreenState extends State<DetailScreen> {
                 key: const ValueKey('resume_fab'),
                 child: _ResumeFab(
                   label: _resumeLabel,
+                  extended: _fabExtended,
                   onTap: () => _openReader(
                     chapterId: _resumeChapterId,
                     initialPage: _resumePage,
@@ -1667,6 +1635,7 @@ class _DetailScreenState extends State<DetailScreen> {
           backgroundColor: AppColors.surface,
           onRefresh: () => _loadMangaData(forceRefresh: true),
           child: CustomScrollView(
+            controller: _scrollController,
             physics: const AlwaysScrollableScrollPhysics(),
             slivers: [
               SliverToBoxAdapter(child: _hero(top)),
@@ -1831,21 +1800,25 @@ class _DetailScreenState extends State<DetailScreen> {
                             .getStatus(c.id);
                         final downloadProgress = DownloadService.instance
                             .getProgress(c.id);
+                        final chProg = ApiService.instance.getChapterProgress(c.id);
                         final prog = ApiService
                             .instance
                             .historyRepo
                             .localProgress[_manga.id];
-                        final partialPage =
-                            (!isRead &&
-                                prog != null &&
-                                prog.chapterId == c.id &&
-                                !prog.completed &&
-                                prog.page > 1)
-                            ? prog.page
-                            : null;
-                        final partialTotal = partialPage != null
-                            ? prog?.totalPages
-                            : null;
+                        int? partialPage;
+                        int? partialTotal;
+                        if (!isRead) {
+                          if (chProg != null && !chProg.completed && chProg.page > 1) {
+                            partialPage = chProg.page;
+                            partialTotal = chProg.totalPages;
+                          } else if (prog != null &&
+                              prog.chapterId == c.id &&
+                              !prog.completed &&
+                              prog.page > 1) {
+                            partialPage = prog.page;
+                            partialTotal = prog.totalPages;
+                          }
+                        }
 
                         return _ApiChapterTile(
                           key: ValueKey('ch_${c.id}'),
@@ -1854,6 +1827,7 @@ class _DetailScreenState extends State<DetailScreen> {
                           isRead: isRead,
                           isBookmarked: isBookmarked,
                           isSelected: _selectedChapterIds.contains(c.id),
+                          enableSwipe: !_isChapterSelectionMode,
                           partialPage: partialPage,
                           partialTotalPages: partialTotal,
                           downloadStatus: downloadStatus,
@@ -2205,7 +2179,11 @@ class _DetailScreenState extends State<DetailScreen> {
                 ),
               ),
             ),
-            const ColoredBox(color: Color.fromRGBO(0, 0, 0, .82)),
+            ColoredBox(
+              color: AppColors.isLight
+                  ? AppColors.bg.withValues(alpha: 0.78)
+                  : const Color.fromRGBO(0, 0, 0, .82),
+            ),
             DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -2528,6 +2506,235 @@ class _DetailScreenState extends State<DetailScreen> {
     }
   }
 
+  Future<void> _showMigrateSourceSheet() async {
+    final targetSources = <(String id, String name)>[
+      for (final ds in SourceManager.directSources)
+        if (ds.id != _manga.source) (ds.id, ds.name),
+      if (!SourceManager.isIOSPlatform)
+        for (final ext in ExtensionService.instance.installedExtensions)
+          if (ext.pkg != _manga.source) (ext.pkg, ext.name),
+    ];
+    if (targetSources.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No alternative sources available')),
+        );
+      }
+      return;
+    }
+
+    var selectedSourceId = targetSources.first.$1;
+    var searching = false;
+    var migrating = false;
+    List<MangaItem> matches = const [];
+    String? errorMsg;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) {
+          Future<void> runSearch() async {
+            setSheet(() {
+              searching = true;
+              errorMsg = null;
+            });
+            try {
+              final results = await ApiService.instance
+                  .searchManga(
+                    query: _manga.displayTitle,
+                    source: selectedSourceId,
+                    limit: 12,
+                  )
+                  .timeout(const Duration(seconds: 15), onTimeout: () => const []);
+              if (ctx.mounted) {
+                setSheet(() {
+                  matches = results.where((r) => r.id != _manga.id).toList();
+                  searching = false;
+                  if (matches.isEmpty) {
+                    errorMsg = 'No matching titles found on this source.';
+                  }
+                });
+              }
+            } catch (e) {
+              if (ctx.mounted) {
+                setSheet(() {
+                  searching = false;
+                  errorMsg = e.toString().replaceFirst('Exception: ', '');
+                });
+              }
+            }
+          }
+
+          return SafeArea(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(ctx).height * 0.78,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.swap_horiz_rounded, color: AppColors.primary, size: 22),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text('Migrate Source', style: AppText.sheetTitle),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.close_rounded, color: AppColors.muted),
+                          onPressed: () => Navigator.pop(ctx),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Find "${_manga.displayTitle}" on another source and carry over your read chapters & categories.',
+                      style: AppText.caption,
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: DropdownButtonFormField<String>(
+                            initialValue: selectedSourceId,
+                            dropdownColor: AppColors.surfaceHigh,
+                            style: AppText.body,
+                            decoration: InputDecoration(
+                              labelText: 'Source',
+                              filled: true,
+                              fillColor: AppColors.surfaceHigh,
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(10),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                            items: [
+                              for (final src in targetSources)
+                                DropdownMenuItem(value: src.$1, child: Text(src.$2)),
+                            ],
+                            onChanged: (v) {
+                              if (v != null) setSheet(() => selectedSourceId = v);
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        FilledButton(
+                          onPressed: searching || migrating ? null : runSearch,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                            foregroundColor: AppColors.onPrimary,
+                            minimumSize: const Size(76, 48),
+                          ),
+                          child: const Text('Search'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    if (searching || migrating)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 20),
+                        child: Column(
+                          children: [
+                            CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2.2),
+                            const SizedBox(height: 10),
+                            Text(
+                              migrating ? 'Migrating progress & chapters...' : 'Searching source...',
+                              style: AppText.caption,
+                            ),
+                          ],
+                        ),
+                      )
+                    else if (errorMsg != null)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        child: Text(errorMsg!, style: AppText.caption, textAlign: TextAlign.center),
+                      )
+                    else if (matches.isNotEmpty)
+                      Flexible(
+                        child: ListView.separated(
+                          shrinkWrap: true,
+                          itemCount: matches.length,
+                          separatorBuilder: (_, _) => Divider(color: AppColors.outline, height: 1),
+                          itemBuilder: (_, i) {
+                            final target = matches[i];
+                            return ListTile(
+                              contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                              leading: SizedBox(
+                                width: 38,
+                                height: 52,
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: CoverImage(imageUrl: target.cover, mangaId: target.id),
+                                ),
+                              ),
+                              title: Text(
+                                target.displayTitle,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.bodyMedium,
+                              ),
+                              subtitle: Text(
+                                SourceResolver.displayName(target.source),
+                                style: AppText.caption,
+                              ),
+                              trailing: FilledButton.tonal(
+                                onPressed: () async {
+                                  setSheet(() => migrating = true);
+                                  final cats = ApiService.instance.getMangaCategoryIds(_manga.id);
+                                  if (_inLibrary) {
+                                    await ApiService.instance.addToLibrary(target);
+                                    if (cats.isNotEmpty) {
+                                      await ApiService.instance.setMangaCategories(target.id, cats, manga: target);
+                                    }
+                                  }
+                                  final targetChapters = await ApiService.instance
+                                      .getChapters(target.id)
+                                      .catchError((_) => const <ChapterItem>[]);
+                                  await ApiService.instance.migrateOrCopyReadingProgress(
+                                    sourceMangaId: _manga.id,
+                                    targetManga: target,
+                                    targetChapters: targetChapters,
+                                  );
+                                  if (_inLibrary) {
+                                    await ApiService.instance.removeFromLibrary(_manga.id);
+                                  }
+                                  if (ctx.mounted) Navigator.pop(ctx);
+                                  if (mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      SnackBar(
+                                        content: Text('Migrated to ${SourceResolver.displayName(target.source)}'),
+                                      ),
+                                    );
+                                    Navigator.of(context).pushReplacement(
+                                      smoothRoute(DetailScreen(manga: target)),
+                                    );
+                                  }
+                                },
+                                child: const Text('Migrate'),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   void _showMoreDetailOptions() {
     final downloadedCount = DownloadService.instance.getDownloadedCountForManga(
       _manga.id,
@@ -2569,6 +2776,21 @@ class _DetailScreenState extends State<DetailScreen> {
               ),
               ListTile(
                 leading: Icon(
+                  Icons.swap_horiz_rounded,
+                  color: AppColors.primary,
+                ),
+                title: Text('Migrate Source', style: AppText.bodyMedium),
+                subtitle: Text(
+                  'Switch to another source while keeping progress',
+                  style: AppText.caption,
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _showMigrateSourceSheet();
+                },
+              ),
+              ListTile(
+                leading: Icon(
                   Icons.public_rounded,
                   color: AppColors.primary,
                 ),
@@ -2599,16 +2821,40 @@ class _DetailScreenState extends State<DetailScreen> {
                     'Delete $downloadedCount Downloaded Chapters',
                     style: AppText.bodyMedium.copyWith(color: Colors.redAccent),
                   ),
-                  onTap: () {
+                  onTap: () async {
                     Navigator.pop(ctx);
-                    DownloadService.instance.deleteMangaDownloads(_manga.id);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
+                    final confirmed = await showDialog<bool>(
+                      context: context,
+                      builder: (dCtx) => AlertDialog(
+                        backgroundColor: AppColors.surface,
+                        title: Text('Delete Downloads?', style: AppText.sheetTitle),
                         content: Text(
-                          'Deleted offline downloads for this title',
+                          'Remove all $downloadedCount downloaded chapters for "${_manga.displayTitle}"?',
+                          style: AppText.body.copyWith(color: AppColors.muted),
                         ),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(dCtx, false),
+                            child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+                          ),
+                          FilledButton(
+                            onPressed: () => Navigator.pop(dCtx, true),
+                            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+                            child: Text('Delete', style: AppText.bodySemiBold.copyWith(color: Colors.white)),
+                          ),
+                        ],
                       ),
                     );
+                    if (confirmed == true && mounted) {
+                      await DownloadService.instance.deleteMangaDownloads(_manga.id);
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Deleted offline downloads for this title'),
+                          ),
+                        );
+                      }
+                    }
                   },
                 ),
             ],
@@ -2683,20 +2929,20 @@ class _DetailScreenState extends State<DetailScreen> {
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {
           return AlertDialog(
-            backgroundColor: const Color(0xFF2B2930),
+            backgroundColor: AppColors.surface,
             surfaceTintColor: Colors.transparent,
             shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(28),
+              borderRadius: BorderRadius.circular(24),
             ),
             title: Text(
               'Exclude scanlators',
               style: AppText.title.copyWith(
-                fontSize: 22,
-                fontWeight: FontWeight.w500,
-                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w600,
+                color: AppColors.text,
               ),
             ),
-            contentPadding: const EdgeInsets.only(top: 16, bottom: 8),
+            contentPadding: const EdgeInsets.only(top: 12, bottom: 8),
             content: SizedBox(
               width: double.maxFinite,
               child: ConstrainedBox(
@@ -2732,21 +2978,21 @@ class _DetailScreenState extends State<DetailScreen> {
                               height: 22,
                               decoration: BoxDecoration(
                                 color: isExcluded
-                                    ? const Color(0xFF8B5CF6)
+                                    ? AppColors.primary
                                     : Colors.transparent,
                                 borderRadius: BorderRadius.circular(4),
                                 border: Border.all(
                                   color: isExcluded
-                                      ? const Color(0xFF8B5CF6)
-                                      : Colors.white70,
+                                      ? AppColors.primary
+                                      : AppColors.muted,
                                   width: 2,
                                 ),
                               ),
                               child: isExcluded
-                                  ? const Icon(
+                                  ? Icon(
                                       Icons.close_rounded,
                                       size: 16,
-                                      color: Colors.white,
+                                      color: AppColors.onPrimary,
                                     )
                                   : null,
                             ),
@@ -2755,8 +3001,8 @@ class _DetailScreenState extends State<DetailScreen> {
                               child: Text(
                                 scanlator,
                                 style: AppText.body.copyWith(
-                                  fontSize: 16,
-                                  color: Colors.white.withValues(alpha: 0.9),
+                                  fontSize: 15,
+                                  color: AppColors.text,
                                 ),
                               ),
                             ),
@@ -2779,7 +3025,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       });
                     },
                     style: TextButton.styleFrom(
-                      foregroundColor: const Color(0xFF8B5CF6),
+                      foregroundColor: AppColors.primary,
                     ),
                     child: const Text('Reset'),
                   ),
@@ -2787,7 +3033,7 @@ class _DetailScreenState extends State<DetailScreen> {
                   TextButton(
                     onPressed: () => Navigator.of(ctx).pop(),
                     style: TextButton.styleFrom(
-                      foregroundColor: const Color(0xFF8B5CF6),
+                      foregroundColor: AppColors.muted,
                     ),
                     child: const Text('Cancel'),
                   ),
@@ -2801,7 +3047,7 @@ class _DetailScreenState extends State<DetailScreen> {
                       Navigator.of(ctx).pop();
                     },
                     style: TextButton.styleFrom(
-                      foregroundColor: const Color(0xFF8B5CF6),
+                      foregroundColor: AppColors.primary,
                     ),
                     child: const Text('OK'),
                   ),
@@ -3389,6 +3635,7 @@ class _ApiChapterTile extends StatelessWidget {
     required this.isRead,
     required this.isBookmarked,
     this.isSelected = false,
+    this.enableSwipe = true,
     this.partialPage,
     this.partialTotalPages,
     required this.downloadStatus,
@@ -3405,6 +3652,7 @@ class _ApiChapterTile extends StatelessWidget {
   final bool isRead;
   final bool isBookmarked;
   final bool isSelected;
+  final bool enableSwipe;
   final int? partialPage;
   final int? partialTotalPages;
   final DownloadStatus downloadStatus;
@@ -3420,9 +3668,9 @@ class _ApiChapterTile extends StatelessWidget {
     switch (downloadStatus) {
       case DownloadStatus.downloaded:
         return IconButton(
-          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
           icon: Icon(
-            Icons.check_circle_rounded,
+            Icons.download_done_rounded,
             size: 20,
             color: AppColors.primary,
           ),
@@ -3431,8 +3679,8 @@ class _ApiChapterTile extends StatelessWidget {
         );
       case DownloadStatus.downloading:
         return SizedBox(
-          width: 44,
-          height: 44,
+          width: 42,
+          height: 42,
           child: Center(
             child: SizedBox(
               width: 16,
@@ -3446,7 +3694,7 @@ class _ApiChapterTile extends StatelessWidget {
         );
       case DownloadStatus.queued:
         return IconButton(
-          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
           icon: Icon(
             Icons.schedule_rounded,
             size: 20,
@@ -3457,7 +3705,7 @@ class _ApiChapterTile extends StatelessWidget {
         );
       case DownloadStatus.failed:
         return IconButton(
-          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
           icon: const Icon(
             Icons.error_outline_rounded,
             size: 20,
@@ -3468,11 +3716,11 @@ class _ApiChapterTile extends StatelessWidget {
         );
       case DownloadStatus.notDownloaded:
         return IconButton(
-          constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+          constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
           icon: Icon(
             Icons.download_rounded,
             size: 20,
-            color: AppColors.muted.withValues(alpha: .5),
+            color: AppColors.muted.withValues(alpha: .55),
           ),
           tooltip: 'Download chapter',
           onPressed: onToggleDownload,
@@ -3494,7 +3742,7 @@ class _ApiChapterTile extends StatelessWidget {
     if (chapter.group.isNotEmpty) metaParts.add(chapter.group);
     if (chapter.pages > 0) metaParts.add('${chapter.pages} pages');
 
-    return InkWell(
+    final tileContent = InkWell(
       onTap: onTap,
       onLongPress: onLongPress,
       child: Container(
@@ -3558,21 +3806,7 @@ class _ApiChapterTile extends StatelessWidget {
             ),
             _buildDownloadIcon(),
             IconButton(
-              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
-              icon: Icon(
-                isBookmarked
-                    ? Icons.bookmark_rounded
-                    : Icons.bookmark_border_rounded,
-                size: 20,
-                color: isBookmarked
-                    ? AppColors.primary
-                    : AppColors.muted.withValues(alpha: .5),
-              ),
-              tooltip: isBookmarked ? 'Bookmarked' : 'Bookmark chapter',
-              onPressed: onToggleBookmark,
-            ),
-            IconButton(
-              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+              constraints: const BoxConstraints(minWidth: 42, minHeight: 42),
               icon: Icon(
                 isRead
                     ? Icons.check_circle_rounded
@@ -3589,42 +3823,120 @@ class _ApiChapterTile extends StatelessWidget {
         ),
       ),
     );
+
+    if (!enableSwipe) return tileContent;
+
+    return Dismissible(
+      key: ValueKey('swipe_ch_${chapter.id}'),
+      background: Container(
+        alignment: Alignment.centerLeft,
+        padding: const EdgeInsets.only(left: 20),
+        color: AppColors.primary.withValues(alpha: 0.2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isRead ? Icons.remove_done_rounded : Icons.done_all_rounded,
+              color: AppColors.primary,
+              size: 20,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              isRead ? 'Mark unread' : 'Mark read',
+              style: AppText.caption.copyWith(
+                color: AppColors.primary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+      secondaryBackground: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        color: Colors.amber.withValues(alpha: 0.2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              isBookmarked ? 'Unbookmark' : 'Bookmark',
+              style: AppText.caption.copyWith(
+                color: Colors.amber,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Icon(
+              isBookmarked ? Icons.bookmark_remove_rounded : Icons.bookmark_add_rounded,
+              color: Colors.amber,
+              size: 20,
+            ),
+          ],
+        ),
+      ),
+      confirmDismiss: (direction) async {
+        if (direction == DismissDirection.startToEnd) {
+          onToggleRead();
+        } else {
+          onToggleBookmark();
+        }
+        return false;
+      },
+      child: tileContent,
+    );
   }
 }
 
 class _ResumeFab extends StatelessWidget {
-  const _ResumeFab({required this.onTap, required this.label});
+  const _ResumeFab({
+    required this.onTap,
+    required this.label,
+    this.extended = true,
+  });
   final VoidCallback onTap;
   final String label;
+  final bool extended;
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: AppColors.primary,
-      borderRadius: BorderRadius.circular(16),
-      elevation: 3,
-      child: InkWell(
-        onTap: onTap,
+    return Tooltip(
+      message: label,
+      child: Material(
+        color: AppColors.primary,
         borderRadius: BorderRadius.circular(16),
-        child: Container(
-          constraints: const BoxConstraints(minHeight: 52),
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.play_arrow_rounded,
-                size: 22,
-                color: AppColors.onPrimary,
+        elevation: 3,
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(16),
+          child: AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            child: Container(
+              constraints: const BoxConstraints(minWidth: 52, minHeight: 52),
+              padding: EdgeInsets.symmetric(
+                horizontal: extended ? 18 : 14,
+                vertical: 10,
               ),
-              const SizedBox(width: 9),
-              Text(
-                label,
-                style: AppText.bodySemiBold.copyWith(
-                  color: AppColors.onPrimary,
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.play_arrow_rounded,
+                    size: 22,
+                    color: AppColors.onPrimary,
+                  ),
+                  if (extended) ...[
+                    const SizedBox(width: 9),
+                    Text(
+                      label,
+                      style: AppText.bodySemiBold.copyWith(
+                        color: AppColors.onPrimary,
+                      ),
+                    ),
+                  ],
+                ],
               ),
-            ],
+            ),
           ),
         ),
       ),

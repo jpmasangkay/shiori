@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/manga_models.dart';
 import '../services/api_service.dart';
+import '../services/reader_settings.dart';
 import '../services/source_resolver.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -402,6 +403,23 @@ class _HistoryScreenState extends State<HistoryScreen> {
     );
   }
 
+  static String _formatHistoryTime(DateTime? dt) {
+    if (dt == null) return '';
+    final local = dt.toLocal();
+    final diff = DateTime.now().difference(local);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24 && local.day == DateTime.now().day) {
+      return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    }
+    if (diff.inDays < 7) return '${diff.inDays}d ago';
+    const months = [
+      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+    ];
+    return '${months[local.month - 1]} ${local.day}';
+  }
+
   Widget _buildHistoryRow(ReadHistoryEntry item) {
     final mangaId = item.mangaId;
     final known = ApiService.instance.libraryRepo.knownManga[mangaId] ??
@@ -415,10 +433,20 @@ class _HistoryScreenState extends State<HistoryScreen> {
       }
     }
     final cover = item.cover;
-    final chNum = item.chapterNumber;
+    final chNum = item.chapterNumber.trim();
     final page = item.page;
     final total = item.totalPages;
-    final subtitle = 'Chapter $chNum · Page $page${total > 0 ? ' / $total' : ''}';
+    final chapterPart = chNum.isNotEmpty
+        ? 'Chapter $chNum'
+        : (item.chapterTitle.trim().isNotEmpty ? item.chapterTitle.trim() : 'Chapter');
+    final pagePart = item.completed
+        ? 'Finished'
+        : 'Page $page${total > 0 ? ' / $total' : ''}';
+    final subtitle = '$chapterPart · $pagePart';
+    final timeStr = _formatHistoryTime(item.updatedAt);
+    final progressFraction = (!item.completed && total > 0)
+        ? (page / total).clamp(0.0, 1.0)
+        : null;
 
     return Dismissible(
       key: ValueKey('hist_dismiss_${item.chapterId}'),
@@ -434,7 +462,43 @@ class _HistoryScreenState extends State<HistoryScreen> {
         onTap: () {
           final known = ApiService.instance.libraryRepo.knownManga[mangaId] ??
               ApiService.instance.libraryRepo.localLibrary[mangaId];
-          final cachedChapters = ApiService.instance.getCachedChapters(mangaId);
+          final cachedChapters = sortChaptersChronologically(
+            ApiService.instance.getCachedChapters(mangaId),
+          );
+
+          // If the user finished this chapter, leave off at the next unread chapter!
+          if (item.completed && cachedChapters.isNotEmpty) {
+            final target = ApiService.instance.resolveResumeTarget(
+              mangaId,
+              chapters: cachedChapters,
+              skipDuplicateChapters: ReaderSettings.instance.skipDuplicateChapters,
+            );
+            final targetChId = target.chapterId;
+            if (targetChId != null && targetChId.isNotEmpty) {
+              Navigator.of(context)
+                  .push(
+                    smoothRoute(
+                      ReaderScreen(
+                        chapterId: targetChId,
+                        mangaId: mangaId,
+                        mangaTitle: title,
+                        coverUrl: cover,
+                        chapterNumber: target.chapterNumber,
+                        chapterTitle: target.chapterTitle,
+                        chapters: target.orderedChapters,
+                        initialIndex: target.chapterIndex,
+                        initialPage: target.page,
+                        mangaType: known?.type,
+                        tags: known?.tags,
+                      ),
+                    ),
+                  )
+                  .then((_) => _fetch(silent: true));
+              return;
+            }
+          }
+
+          final initIdx = cachedChapters.indexWhere((c) => c.id == item.chapterId);
           Navigator.of(context).push(
             smoothRoute(
               ReaderScreen(
@@ -445,6 +509,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
                 chapterNumber: chNum,
                 chapterTitle: item.chapterTitle,
                 chapters: cachedChapters,
+                initialIndex: initIdx >= 0 ? initIdx : 0,
                 initialPage: item.completed ? 1 : item.page,
                 mangaType: known?.type,
                 tags: known?.tags,
@@ -453,7 +518,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
           ).then((_) => _fetch(silent: true));
         },
         child: Container(
-          constraints: const BoxConstraints(minHeight: 66),
+          constraints: const BoxConstraints(minHeight: 68),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
           child: Row(
             children: [
@@ -497,17 +562,32 @@ class _HistoryScreenState extends State<HistoryScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppText.bodyMedium,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: AppText.bodyMedium,
+                          ),
+                        ),
+                        if (timeStr.isNotEmpty) ...[
+                          const SizedBox(width: 6),
+                          Text(
+                            timeStr,
+                            style: AppText.badge.copyWith(color: AppColors.muted),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 4),
                     Text.rich(
                       TextSpan(
                         text: subtitle,
-                        style: AppText.caption.copyWith(color: AppColors.primary),
+                        style: AppText.caption.copyWith(
+                          color: item.completed ? const Color(0xFF4ADE80) : AppColors.primary,
+                        ),
                         children: [
                           if (item.source.isNotEmpty)
                             TextSpan(
@@ -519,6 +599,18 @@ class _HistoryScreenState extends State<HistoryScreen> {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                     ),
+                    if (progressFraction != null) ...[
+                      const SizedBox(height: 5),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: LinearProgressIndicator(
+                          value: progressFraction,
+                          minHeight: 2.5,
+                          color: AppColors.primary,
+                          backgroundColor: AppColors.surfaceHigh,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),

@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 
+import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/download_service.dart';
 import '../services/local_database.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
+import '../widgets/common.dart';
+import 'detail_screen.dart';
+import 'source_catalog_screen.dart';
 
 /// Reading Statistics screen showing library totals, reading streak & time
 /// (from LocalDatabase reading_sessions), type/status breakdown, and top genres.
@@ -94,6 +98,18 @@ class _StatsScreenState extends State<StatsScreen> {
     final maxGenreCount =
         top10Genres.isNotEmpty ? top10Genres.first.value : 1;
 
+    final mostRead = <(MangaItem, int)>[];
+    for (final entry in readChaptersMap.entries) {
+      if (entry.value.isEmpty) continue;
+      final known = api.libraryRepo.localLibrary[entry.key] ??
+          api.libraryRepo.knownManga[entry.key];
+      if (known != null) {
+        mostRead.add((known, entry.value.length));
+      }
+    }
+    mostRead.sort((a, b) => b.$2.compareTo(a.$2));
+    final topReadTitles = mostRead.take(5).toList();
+
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -182,8 +198,54 @@ class _StatsScreenState extends State<StatsScreen> {
             emptyLabel: 'No status metadata recorded yet.',
           ),
 
+          if (topReadTitles.isNotEmpty) ...[
+            const SizedBox(height: 22),
+            Text('MOST READ TITLES', style: AppText.sectionHeader),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: AppColors.outline),
+              ),
+              child: Column(
+                children: [
+                  for (final (manga, count) in topReadTitles)
+                    ListTile(
+                      dense: true,
+                      leading: SizedBox(
+                        width: 34,
+                        height: 46,
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: CoverImage(imageUrl: manga.cover, mangaId: manga.id),
+                        ),
+                      ),
+                      title: Text(
+                        manga.displayTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.bodyMedium,
+                      ),
+                      subtitle: Text(
+                        '$count chapter${count == 1 ? '' : 's'} read',
+                        style: AppText.caption.copyWith(color: AppColors.primary),
+                      ),
+                      trailing: Icon(Icons.chevron_right_rounded, size: 18, color: AppColors.muted),
+                      onTap: () {
+                        Navigator.of(context).push(
+                          smoothRoute(DetailScreen(manga: manga)),
+                        );
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ],
+
           const SizedBox(height: 22),
-          Text('TOP GENRES', style: AppText.sectionHeader),
+          Text('TOP GENRES (TAP TO EXPLORE)', style: AppText.sectionHeader),
           const SizedBox(height: 8),
           Container(
             padding: const EdgeInsets.all(14),
@@ -200,42 +262,58 @@ class _StatsScreenState extends State<StatsScreen> {
                 : Column(
                     children: [
                       for (final entry in top10Genres)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      entry.key,
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: AppText.bodyMedium,
-                                    ),
-                                  ),
-                                  Text(
-                                    '${entry.value}',
-                                    style: AppText.caption.copyWith(
-                                      color: AppColors.primary,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 4),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(4),
-                                child: LinearProgressIndicator(
-                                  value: (entry.value / maxGenreCount).clamp(0.05, 1.0),
-                                  minHeight: 6,
-                                  backgroundColor: AppColors.surfaceHigh,
-                                  color: AppColors.primary,
+                        InkWell(
+                          borderRadius: BorderRadius.circular(8),
+                          onTap: () {
+                            Navigator.of(context).push(
+                              smoothRoute(
+                                SourceCatalogScreen(
+                                  sourceId: 'mangadex',
+                                  sourceName: 'MangaDex',
+                                  initialQuery: entry.key,
                                 ),
                               ),
-                            ],
+                            );
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 5, horizontal: 4),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Expanded(
+                                      child: Text(
+                                        entry.key,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: AppText.bodyMedium,
+                                      ),
+                                    ),
+                                    Text(
+                                      '${entry.value}',
+                                      style: AppText.caption.copyWith(
+                                        color: AppColors.primary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Icon(Icons.chevron_right_rounded, size: 15, color: AppColors.muted),
+                                  ],
+                                ),
+                                const SizedBox(height: 4),
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: LinearProgressIndicator(
+                                    value: (entry.value / maxGenreCount).clamp(0.05, 1.0),
+                                    minHeight: 6,
+                                    backgroundColor: AppColors.surfaceHigh,
+                                    color: AppColors.primary,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                     ],

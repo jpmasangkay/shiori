@@ -328,43 +328,48 @@ class _ToggleRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: () => onChanged(!on),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(minHeight: 44),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Expanded(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: AppText.body,
-              ),
-            ),
-            const SizedBox(width: 12),
-            AnimatedContainer(
-              duration: const Duration(milliseconds: 150),
-              width: 36,
-              height: 20,
-              padding: const EdgeInsets.all(2),
-              alignment: on ? Alignment.centerRight : Alignment.centerLeft,
-              decoration: BoxDecoration(
-                color: on ? AppColors.primary : Colors.transparent,
-                border: Border.all(color: on ? AppColors.primary : AppColors.read),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Container(
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  color: on ? AppColors.onPrimary : AppColors.read,
-                  shape: BoxShape.circle,
+    return Semantics(
+      label: label,
+      toggled: on,
+      button: true,
+      child: InkWell(
+        onTap: () => onChanged(!on),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(minHeight: 44),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppText.body,
                 ),
               ),
-            ),
-          ],
+              const SizedBox(width: 12),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 150),
+                width: 36,
+                height: 20,
+                padding: const EdgeInsets.all(2),
+                alignment: on ? Alignment.centerRight : Alignment.centerLeft,
+                decoration: BoxDecoration(
+                  color: on ? AppColors.primary : Colors.transparent,
+                  border: Border.all(color: on ? AppColors.primary : AppColors.read),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Container(
+                  width: 14,
+                  height: 14,
+                  decoration: BoxDecoration(
+                    color: on ? AppColors.onPrimary : AppColors.read,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

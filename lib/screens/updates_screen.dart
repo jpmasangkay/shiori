@@ -117,6 +117,76 @@ class _UpdatesScreenState extends State<UpdatesScreen>
     }
   }
 
+  Future<void> _bulkDownloadUnread(Map<String, List<Map<String, dynamic>>> groups) async {
+    var queued = 0;
+    for (final list in groups.values) {
+      for (final item in list) {
+        final mId = item['mangaId']?.toString() ?? '';
+        final chId = item['id']?.toString() ?? '';
+        if (mId.isEmpty || chId.isEmpty) continue;
+        if (ApiService.instance.isChapterRead(mId, chId)) continue;
+        final status = DownloadService.instance.getStatus(chId);
+        if (status != DownloadStatus.notDownloaded && status != DownloadStatus.failed) continue;
+        final known = ApiService.instance.libraryRepo.knownManga[mId] ??
+            ApiService.instance.libraryRepo.localLibrary[mId];
+        final rawT = item['mangaTitle']?.toString() ?? '';
+        final title = (rawT.isNotEmpty && rawT != 'Untitled')
+            ? rawT
+            : (known?.displayTitle ?? MangaItem.cleanTitleFromIdOrSlug(mId));
+        final manga = known ??
+            MangaItem(id: mId, title: title, cover: item['cover']?.toString() ?? '');
+        final chapter = ChapterItem(
+          id: chId,
+          number: item['chapterNumber']?.toString(),
+          title: item['chapterTitle']?.toString() ?? '',
+        );
+        DownloadService.instance.downloadChapter(manga, chapter);
+        queued++;
+      }
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            queued > 0
+                ? 'Queued $queued unread chapters for download'
+                : 'No unread updates left to download',
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
+  Future<void> _bulkMarkAllRead(Map<String, List<Map<String, dynamic>>> groups) async {
+    final byManga = <String, List<String>>{};
+    for (final list in groups.values) {
+      for (final item in list) {
+        final mId = item['mangaId']?.toString() ?? '';
+        final chId = item['id']?.toString() ?? '';
+        if (mId.isEmpty || chId.isEmpty) continue;
+        if (ApiService.instance.isChapterRead(mId, chId)) continue;
+        byManga.putIfAbsent(mId, () => []).add(chId);
+      }
+    }
+    var count = 0;
+    for (final entry in byManga.entries) {
+      await ApiService.instance.markChaptersRead(entry.key, entry.value, read: true);
+      count += entry.value.length;
+    }
+    if (mounted) {
+      setState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            count > 0 ? 'Marked $count updates as read' : 'All updates are already read',
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final filteredGroups = <String, List<Map<String, dynamic>>>{};
@@ -159,7 +229,91 @@ class _UpdatesScreenState extends State<UpdatesScreen>
                 ),
                 onPressed: () => setState(() => _unreadOnly = !_unreadOnly),
               ),
+            if (hasAnyUpdates)
+              PopupMenuButton<String>(
+                icon: Icon(Icons.more_vert_rounded, size: 22, color: AppColors.muted),
+                color: AppColors.surface,
+                tooltip: 'Update actions',
+                onSelected: (val) {
+                  if (val == 'download_unread') {
+                    _bulkDownloadUnread(filteredGroups);
+                  } else if (val == 'mark_all_read') {
+                    _bulkMarkAllRead(filteredGroups);
+                  }
+                },
+                itemBuilder: (_) => [
+                  PopupMenuItem(
+                    value: 'download_unread',
+                    child: Text('Download all unread', style: AppText.body),
+                  ),
+                  PopupMenuItem(
+                    value: 'mark_all_read',
+                    child: Text('Mark all as read', style: AppText.body),
+                  ),
+                ],
+              ),
           ],
+        ),
+        ValueListenableBuilder<LibraryUpdateProgress>(
+          valueListenable: ApiService.instance.libraryUpdateProgress,
+          builder: (context, prog, _) {
+            if (!prog.isRunning || prog.total <= 0) {
+              return const SizedBox.shrink();
+            }
+            return Container(
+              margin: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.primary.withValues(alpha: .4)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      SizedBox(
+                        width: 13,
+                        height: 13,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: AppColors.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Checking updates (${prog.completed}/${prog.total})${prog.currentTitle != null ? ' • ${prog.currentTitle}' : ''}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.caption.copyWith(
+                            color: AppColors.text,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      if (prog.newChaptersFound > 0)
+                        Text(
+                          '+${prog.newChaptersFound}',
+                          style: AppText.badge.copyWith(color: AppColors.primary),
+                        ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(3),
+                    child: LinearProgressIndicator(
+                      value: prog.fraction,
+                      minHeight: 3,
+                      color: AppColors.primary,
+                      backgroundColor: AppColors.surfaceHigh,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
         ),
         Expanded(
           child: RefreshIndicator(
@@ -199,22 +353,35 @@ class _UpdatesScreenState extends State<UpdatesScreen>
                                   final effTitle = (rawT.isNotEmpty && rawT != 'Untitled' && !rawT.startsWith('ext:') && rawT != mId)
                                       ? rawT
                                       : (known?.displayTitle ?? MangaItem.cleanTitleFromIdOrSlug(mId));
-                                  final cachedChapters = ApiService.instance.getCachedChapters(mId);
-                                  Navigator.of(context).push(
-                                    smoothRoute(
-                                      ReaderScreen(
-                                        chapterId: item['id']?.toString() ?? '',
-                                        mangaId: mId,
-                                        mangaTitle: effTitle,
-                                        chapterTitle: item['chapterTitle'],
-                                        coverUrl: item['cover'],
-                                        chapterNumber: item['chapterNumber']?.toString(),
-                                        chapters: cachedChapters,
-                                        mangaType: known?.type ?? item['type']?.toString(),
-                                        tags: known?.tags,
-                                      ),
-                                    ),
+                                  final cachedChapters = sortChaptersChronologically(
+                                    ApiService.instance.getCachedChapters(mId),
                                   );
+                                  final targetChId = item['id']?.toString() ?? '';
+                                  final initIdx = cachedChapters.indexWhere((c) => c.id == targetChId);
+                                  final savedPage = targetChId.isNotEmpty
+                                      ? ApiService.instance.getSavedPageForChapter(mId, targetChId)
+                                      : null;
+                                  Navigator.of(context)
+                                      .push(
+                                        smoothRoute(
+                                          ReaderScreen(
+                                            chapterId: targetChId,
+                                            mangaId: mId,
+                                            mangaTitle: effTitle,
+                                            chapterTitle: item['chapterTitle'],
+                                            coverUrl: item['cover'],
+                                            chapterNumber: item['chapterNumber']?.toString(),
+                                            chapters: cachedChapters,
+                                            initialIndex: initIdx >= 0 ? initIdx : 0,
+                                            initialPage: savedPage,
+                                            mangaType: known?.type ?? item['type']?.toString(),
+                                            tags: known?.tags,
+                                          ),
+                                        ),
+                                      )
+                                      .then((_) {
+                                        if (mounted) setState(() {});
+                                      });
                                 },
                                 onCoverTap: () {
                                   final mId = item['mangaId']?.toString() ?? '';
@@ -319,7 +486,31 @@ class _ApiUpdateRow extends StatelessWidget {
     void handleDownloadTap() {
       if (chId.isEmpty || mId.isEmpty) return;
       if (dlStatus == DownloadStatus.downloaded) {
-        DownloadService.instance.deleteDownloadedChapter(chId);
+        showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: AppColors.surface,
+            title: Text('Delete $chNum?', style: AppText.sheetTitle),
+            content: Text(
+              'Remove this downloaded chapter from local storage?',
+              style: AppText.body.copyWith(color: AppColors.muted),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+              ),
+              FilledButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  DownloadService.instance.deleteDownloadedChapter(chId);
+                },
+                style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+                child: Text('Delete', style: AppText.bodySemiBold.copyWith(color: Colors.white)),
+              ),
+            ],
+          ),
+        );
         return;
       }
       if (dlStatus == DownloadStatus.downloading || dlStatus == DownloadStatus.queued) {

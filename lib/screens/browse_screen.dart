@@ -37,7 +37,10 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
   int _searchToken = 0;
   int _pendingSourcesCount = 0;
   Map<String, List<MangaItem>> _searchResults = {};
+  Map<String, String> _failedSources = {};
+  List<String> _recentSearches = [];
   final Map<String, ({Map<String, List<MangaItem>> results, DateTime expiresAt})> _queryCache = {};
+  static const _recentSearchesKey = 'shiori_recent_searches_v1';
 
   static const Map<String, String> _langNames = {
     'EN': 'ENGLISH',
@@ -75,10 +78,102 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
 
     SharedPreferences.getInstance().then((prefs) {
       final saved = prefs.getString('browse_selected_source_filter');
-      if (saved != null && mounted) {
-        setState(() => _selectedSourceFilter = saved);
+      final recent = prefs.getStringList(_recentSearchesKey) ?? const <String>[];
+      if (mounted) {
+        setState(() {
+          if (saved != null) _selectedSourceFilter = saved;
+          _recentSearches = List<String>.from(recent);
+        });
       }
     });
+  }
+
+  Future<void> _recordRecentSearch(String query) async {
+    final q = query.trim();
+    if (q.length < 2) return;
+    final next = [
+      q,
+      for (final existing in _recentSearches)
+        if (existing.toLowerCase() != q.toLowerCase()) existing,
+    ].take(8).toList();
+    if (mounted) setState(() => _recentSearches = next);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_recentSearchesKey, next);
+    } catch (_) {}
+  }
+
+  Future<void> _removeRecentSearch(String query) async {
+    final next = _recentSearches.where((s) => s != query).toList();
+    if (mounted) setState(() => _recentSearches = next);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setStringList(_recentSearchesKey, next);
+    } catch (_) {}
+  }
+
+  Future<void> _clearRecentSearches() async {
+    if (mounted) setState(() => _recentSearches = []);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove(_recentSearchesKey);
+    } catch (_) {}
+  }
+
+  Widget _buildRecentSearchesRow() {
+    if (_searchQuery.isNotEmpty || _recentSearches.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.history_rounded, size: 13, color: AppColors.muted),
+              const SizedBox(width: 5),
+              Text('RECENT SEARCHES', style: AppText.badge.copyWith(color: AppColors.muted)),
+              const Spacer(),
+              TextButton(
+                onPressed: _clearRecentSearches,
+                style: TextButton.styleFrom(
+                  minimumSize: Size.zero,
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: Text('Clear', style: AppText.badge.copyWith(color: AppColors.primary)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final term in _recentSearches)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 6),
+                    child: InputChip(
+                      label: Text(term, style: AppText.chip),
+                      onPressed: () {
+                        _searchController.text = term;
+                        _searchController.selection = TextSelection.collapsed(offset: term.length);
+                        _runGlobalSearch(term, bypassCache: false);
+                      },
+                      onDeleted: () => _removeRecentSearch(term),
+                      deleteIconColor: AppColors.muted,
+                      backgroundColor: AppColors.surface,
+                      side: BorderSide(color: AppColors.outline),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -179,6 +274,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
         _searching = false;
         _pendingSourcesCount = 0;
         _searchResults = {};
+        _failedSources = {};
       });
       return;
     }
@@ -240,12 +336,15 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
         _searching = targetIds.isNotEmpty;
         _pendingSourcesCount = targetIds.length;
         _searchResults = {};
+        _failedSources = {};
       });
     }
 
     if (targetIds.isEmpty) return;
 
+    unawaited(_recordRecentSearch(q));
     final Map<String, List<MangaItem>> accumulated = {};
+    final Map<String, String> failed = {};
     int remaining = targetIds.length;
 
     // Cap concurrent source searches so mobile connections aren't saturated
@@ -260,7 +359,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
         try {
           final res = await ApiService.instance
               .searchManga(query: q, source: sourceId)
-              .timeout(const Duration(seconds: 25), onTimeout: () => <MangaItem>[]);
+              .timeout(const Duration(seconds: 25));
           if (!mounted || token != _searchToken) return;
           if (res.isNotEmpty) {
             accumulated[sourceId] = res;
@@ -268,13 +367,14 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               _searchResults = Map<String, List<MangaItem>>.from(accumulated);
             });
           }
-        } catch (_) {
-          // Ignore individual source failures so other sources still complete
+        } catch (err) {
+          failed[sourceId] = err.toString().replaceFirst('Exception: ', '');
         } finally {
           if (mounted && token == _searchToken) {
             remaining--;
             setState(() {
               _pendingSourcesCount = remaining < 0 ? 0 : remaining;
+              _failedSources = Map<String, String>.from(failed);
               if (remaining <= 0) {
                 _searching = false;
                 if (accumulated.isNotEmpty) {
@@ -383,6 +483,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       children: [
         _buildGlobalSearchBar(),
+        _buildRecentSearchesRow(),
         const SizedBox(height: 8),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
@@ -483,6 +584,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         children: [
         _buildGlobalSearchBar(),
+        _buildRecentSearchesRow(),
         if (installedExts.isNotEmpty) ...[
           const SizedBox(height: 8),
           SingleChildScrollView(
@@ -517,10 +619,10 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               _buildExtensionSourceCard(ext, isPinned: true),
             const SizedBox(height: 14),
           ],
-          if (installedExts.isEmpty)
+          if (installedExts.isEmpty) ...[
             Container(
-              padding: const EdgeInsets.all(24),
-              margin: const EdgeInsets.only(top: 12),
+              padding: const EdgeInsets.all(20),
+              margin: const EdgeInsets.only(top: 6),
               decoration: BoxDecoration(
                 color: AppColors.surface,
                 borderRadius: BorderRadius.circular(14),
@@ -528,19 +630,19 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
               ),
               child: Column(
                 children: [
-                  Icon(Icons.extension_off_rounded, color: AppColors.muted, size: 40),
-                  const SizedBox(height: 10),
+                  Icon(Icons.extension_off_rounded, color: AppColors.muted, size: 36),
+                  const SizedBox(height: 8),
                   Text(
                     'No installed extension sources',
                     style: AppText.cardTitle,
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Install Tachiyomi / Keiyoushi extensions from the Extensions tab to browse sources.',
+                    'Install Tachiyomi / Keiyoushi extensions from the Extensions tab, or browse built-in direct sources below.',
                     textAlign: TextAlign.center,
                     style: AppText.caption,
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 12),
                   FilledButton.icon(
                     onPressed: () => _tabController.animateTo(1),
                     icon: const Icon(Icons.extension_rounded, size: 16),
@@ -553,8 +655,26 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                   ),
                 ],
               ),
-            )
-          else
+            ),
+            const SizedBox(height: 16),
+            _sectionHeaderWithBadge(
+              title: 'BUILT-IN DIRECT SOURCES',
+              badgeText: '${SourceManager.directSources.length}',
+              badgeColor: AppColors.primary,
+              icon: Icons.bolt_rounded,
+            ),
+            for (final ds in SourceManager.directSources)
+              _buildSourceCard(
+                id: ds.id,
+                name: ds.name,
+                lang: ds.lang,
+                badge: ds.badge,
+                description: ds.description,
+                iconLetter: ds.iconLetter,
+                iconColor: Color(ds.colorValue),
+                isPinned: _sourceManager.isPinned(ds.id),
+              ),
+          ] else
             for (final langKey in sortedLangKeys) ...[
               _sectionHeaderWithBadge(
                 title: _languageGroupTitle(langKey),
@@ -1126,6 +1246,39 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
           ),
           const SizedBox(height: 16),
         ],
+        if (_failedSources.isNotEmpty && !stillSearching)
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.surface,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.4)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.warning_amber_rounded, size: 16, color: Colors.orangeAccent),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    '${_failedSources.length} source${_failedSources.length == 1 ? '' : 's'} timed out or failed (${_failedSources.keys.take(2).map(_resolveSourceName).join(', ')}${_failedSources.length > 2 ? '…' : ''})',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: AppText.caption.copyWith(color: AppColors.muted),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () => _runGlobalSearch(_searchQuery, bypassCache: true),
+                  style: TextButton.styleFrom(
+                    minimumSize: Size.zero,
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Text('Retry', style: AppText.chip.copyWith(color: AppColors.primary)),
+                ),
+              ],
+            ),
+          ),
         if (stillSearching) ...[
           Padding(
             padding: const EdgeInsets.only(bottom: 10),
@@ -1164,29 +1317,55 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Flexible(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: badgeColor.withValues(alpha: .2),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  sourceName.toUpperCase(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: AppText.badge.copyWith(color: badgeColor),
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () {
+            Navigator.of(context).push(
+              smoothRoute(
+                SourceCatalogScreen(
+                  sourceId: sourceId,
+                  sourceName: sourceName,
+                  initialQuery: _searchQuery,
                 ),
               ),
+            );
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Row(
+              children: [
+                Flexible(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: badgeColor.withValues(alpha: .2),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      sourceName.toUpperCase(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: AppText.badge.copyWith(color: badgeColor),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '${items.length} titles',
+                  style: AppText.caption,
+                ),
+                const Spacer(),
+                Text(
+                  'See all',
+                  style: AppText.caption.copyWith(
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                Icon(Icons.chevron_right_rounded, size: 16, color: AppColors.primary),
+              ],
             ),
-            const SizedBox(width: 8),
-            Text(
-              '${items.length} titles found',
-              style: AppText.caption,
-            ),
-          ],
+          ),
         ),
         const SizedBox(height: 8),
         SizedBox(
@@ -1200,6 +1379,7 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
             separatorBuilder: (_, _) => const SizedBox(width: 8),
             itemBuilder: (_, i) {
               final manga = items[i];
+              final inLibrary = ApiService.instance.isInLibrary(manga.id);
               return InkWell(
                 borderRadius: BorderRadius.circular(8),
                 onTap: () {
@@ -1224,6 +1404,25 @@ class _BrowseScreenState extends State<BrowseScreen> with SingleTickerProviderSt
                                 memCacheWidth: 160,
                                 memCacheHeight: 240,
                               ),
+                              if (inLibrary)
+                                Positioned(
+                                  top: 4,
+                                  left: 4,
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                    decoration: BoxDecoration(
+                                      color: AppColors.primary,
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: Text(
+                                      'IN LIBRARY',
+                                      style: AppText.badge.copyWith(
+                                        color: AppColors.onPrimary,
+                                        fontSize: 9,
+                                      ),
+                                    ),
+                                  ),
+                                ),
                               if (manga.lastChapter != null && manga.lastChapter!.isNotEmpty)
                                 Positioned(
                                   bottom: 4,

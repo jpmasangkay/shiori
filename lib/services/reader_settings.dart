@@ -106,7 +106,7 @@ class ReaderSettings extends ChangeNotifier {
       webtoonTapScroll = _prefs?.getBool(_keyWebtoonTapScroll) ?? false;
       skipDuplicateChapters = _prefs?.getBool(_keySkipDuplicateChapters) ?? true;
       orientation = ReaderOrientation.fromKey(_prefs?.getString(_keyOrientation));
-      brightness = (_prefs?.getDouble(_keyBrightness) ?? 1.0).clamp(0.2, 1.0);
+      brightness = (_prefs?.getDouble(_keyBrightness) ?? 1.0).clamp(0.1, 1.0);
       tint = (_prefs?.getDouble(_keyTint) ?? 0.0).clamp(0.0, 1.0);
       dataSaver = _prefs?.getBool(_keyDataSaver) ?? false;
       immersiveFullscreen = _prefs?.getBool(_keyImmersiveFullscreen) ?? true;
@@ -202,7 +202,7 @@ class ReaderSettings extends ChangeNotifier {
   }
 
   Future<void> setBrightness(double val) async {
-    brightness = val.clamp(0.2, 1.0);
+    brightness = val.clamp(0.1, 1.0);
     notifyListeners();
     try {
       _prefs ??= await SharedPreferences.getInstance();

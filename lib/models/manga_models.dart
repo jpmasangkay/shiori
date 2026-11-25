@@ -350,6 +350,12 @@ class ResumeTarget {
   final bool isInProgress;
   final bool isAfterFinishedChapter;
   final bool isCaughtUp;
+
+  int get chapterIndex {
+    if (chapterId == null || orderedChapters.isEmpty) return 0;
+    final idx = orderedChapters.indexWhere((c) => c.id == chapterId);
+    return idx >= 0 ? idx : 0;
+  }
 }
 
 class ChapterPages {

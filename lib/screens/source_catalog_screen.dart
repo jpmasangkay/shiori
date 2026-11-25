@@ -141,15 +141,19 @@ class _SourceCatalogScreenState extends State<SourceCatalogScreen> {
 
   void _onSearchChanged(String text) {
     _debounce?.cancel();
-    // Show skeleton immediately so typing feels instant and never freezes on stale results
+    // Keep existing grid visible under top progress bar instead of flashing skeletons mid-word
     setState(() {
       _isTyping = true;
-      _loading = true;
+      if (_items.isEmpty) {
+        _loading = true;
+      } else {
+        _refreshing = true;
+      }
       _error = null;
     });
-    _debounce = Timer(const Duration(milliseconds: 140), () {
+    _debounce = Timer(const Duration(milliseconds: 260), () {
       if (!mounted) return;
-      _fetch();
+      _fetch(isRefresh: _items.isNotEmpty);
     });
   }
 

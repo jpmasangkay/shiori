@@ -486,29 +486,7 @@ class _MoreScreenState extends State<MoreScreen> {
                     ),
                   ),
                 ),
-                onTap: () async {
-                  if (tracker.isTrackerAuthenticated('myanimelist')) {
-                    await tracker.logoutTracker('myanimelist');
-                    if (context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Disconnected from MyAnimeList'),
-                        ),
-                      );
-                    }
-                  } else {
-                    final ok = await tracker.startMalOAuthFlow();
-                    if (!ok && context.mounted) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text(
-                            'Could not open browser for MyAnimeList OAuth.',
-                          ),
-                        ),
-                      );
-                    }
-                  }
-                },
+                onTap: _showMalTrackerSheet,
               ),
 
               // Sources & Extensions (Android only; iOS uses built-in Direct Sources in Browse)
@@ -841,46 +819,63 @@ class _MoreScreenState extends State<MoreScreen> {
 
   void _promptSetPin(BuildContext sheetCtx) {
     final pinCtrl = TextEditingController();
+    String? pinError;
     showDialog<void>(
       context: sheetCtx,
-      builder: (dCtx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: Text('Set App Lock PIN', style: AppText.sheetTitle),
-        content: TextField(
-          controller: pinCtrl,
-          keyboardType: TextInputType.number,
-          obscureText: true,
-          maxLength: 8,
-          autofocus: true,
-          style: AppText.body,
-          decoration: const InputDecoration(hintText: '4–8 digits'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dCtx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              final pin = pinCtrl.text.trim();
-              if (pin.length < 4) return;
-              await PrivacyService.instance.setPin(pin);
-              if (dCtx.mounted) Navigator.pop(dCtx);
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('App Lock PIN saved securely.')),
-                );
-              }
+      builder: (dCtx) => StatefulBuilder(
+        builder: (dCtx, setDlg) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          title: Text('Set App Lock PIN', style: AppText.sheetTitle),
+          content: TextField(
+            controller: pinCtrl,
+            keyboardType: TextInputType.number,
+            obscureText: true,
+            maxLength: 8,
+            autofocus: true,
+            style: AppText.body,
+            onChanged: (_) {
+              if (pinError != null) setDlg(() => pinError = null);
             },
-            child: const Text('Save PIN'),
+            decoration: InputDecoration(
+              hintText: '4–8 digits',
+              errorText: pinError,
+            ),
           ),
-        ],
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dCtx),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                final pin = pinCtrl.text.trim();
+                if (pin.length < 4) {
+                  setDlg(() => pinError = 'PIN must be at least 4 digits.');
+                  return;
+                }
+                if (!RegExp(r'^\d+$').hasMatch(pin)) {
+                  setDlg(() => pinError = 'PIN must contain digits only.');
+                  return;
+                }
+                await PrivacyService.instance.setPin(pin);
+                if (dCtx.mounted) Navigator.pop(dCtx);
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('App Lock PIN saved securely.')),
+                  );
+                }
+              },
+              child: const Text('Save PIN'),
+            ),
+          ],
+        ),
       ),
     );
   }
 
   void _showNetworkingSheet() {
     final urlCtrl = TextEditingController(text: ApiService.instance.baseUrl);
+    String? urlError;
     const dohProviders = [
       ('none', 'System Default (Off)'),
       ('cloudflare', 'Cloudflare (1.1.1.1)'),
@@ -896,70 +891,81 @@ class _MoreScreenState extends State<MoreScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => ListenableBuilder(
-        listenable: PrivacyService.instance,
-        builder: (ctx, _) {
-          final p = PrivacyService.instance;
-          return SafeArea(
-            child: SingleChildScrollView(
-              padding: EdgeInsets.fromLTRB(
-                20,
-                20,
-                20,
-                MediaQuery.viewInsetsOf(ctx).bottom + 20,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text('Networking & Sync Server', style: AppText.sheetTitle),
-                  const SizedBox(height: 14),
-                  Text(
-                    'DNS OVER HTTPS (ANDROID EXTENSIONS)',
-                    style: AppText.sectionHeader,
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (final (id, label) in dohProviders)
-                        ChoiceChip(
-                          label: Text(label),
-                          selected: p.dohProvider == id,
-                          onSelected: (_) => p.setDohProvider(id),
-                          selectedColor: AppColors.active,
-                          backgroundColor: AppColors.surfaceHigh,
-                          labelStyle: AppText.chip.copyWith(
-                            color: p.dohProvider == id
-                                ? AppColors.primary
-                                : AppColors.muted,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheet) => ListenableBuilder(
+          listenable: PrivacyService.instance,
+          builder: (ctx, _) {
+            final p = PrivacyService.instance;
+            return SafeArea(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.fromLTRB(
+                  20,
+                  20,
+                  20,
+                  MediaQuery.viewInsetsOf(ctx).bottom + 20,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text('Networking & Sync Server', style: AppText.sheetTitle),
+                    const SizedBox(height: 14),
+                    Text(
+                      'DNS OVER HTTPS (ANDROID EXTENSIONS)',
+                      style: AppText.sectionHeader,
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final (id, label) in dohProviders)
+                          ChoiceChip(
+                            label: Text(label),
+                            selected: p.dohProvider == id,
+                            onSelected: (_) => p.setDohProvider(id),
+                            selectedColor: AppColors.active,
+                            backgroundColor: AppColors.surfaceHigh,
+                            labelStyle: AppText.chip.copyWith(
+                              color: p.dohProvider == id
+                                  ? AppColors.primary
+                                  : AppColors.muted,
+                            ),
+                            showCheckmark: false,
                           ),
-                          showCheckmark: false,
+                      ],
+                    ),
+                    const SizedBox(height: 18),
+                    Text('SYNC BACKEND HOST URL', style: AppText.sectionHeader),
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: urlCtrl,
+                      style: AppText.mono,
+                      onChanged: (_) {
+                        if (urlError != null) setSheet(() => urlError = null);
+                      },
+                      decoration: InputDecoration(
+                        hintText: 'https://your-shiori-server.example/api',
+                        errorText: urlError,
+                        filled: true,
+                        fillColor: AppColors.surfaceHigh,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide.none,
                         ),
-                    ],
-                  ),
-                  const SizedBox(height: 18),
-                  Text('SYNC BACKEND HOST URL', style: AppText.sectionHeader),
-                  const SizedBox(height: 8),
-                  TextField(
-                    controller: urlCtrl,
-                    style: AppText.mono,
-                    decoration: InputDecoration(
-                      hintText: 'https://your-shiori-server.example/api',
-                      filled: true,
-                      fillColor: AppColors.surfaceHigh,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(10),
-                        borderSide: BorderSide.none,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton(
-                    onPressed: () async {
-                      final u = urlCtrl.text.trim();
-                      if (u.startsWith('http://') || u.startsWith('https://')) {
+                    const SizedBox(height: 12),
+                    FilledButton(
+                      onPressed: () async {
+                        final u = urlCtrl.text.trim();
+                        final uri = Uri.tryParse(u);
+                        if ((!u.startsWith('http://') && !u.startsWith('https://')) ||
+                            uri == null ||
+                            uri.host.isEmpty) {
+                          setSheet(() => urlError = 'Enter a valid http:// or https:// host URL.');
+                          return;
+                        }
                         await ApiService.instance.setBaseUrl(u);
                         if (ctx.mounted) Navigator.pop(ctx);
                         if (mounted) {
@@ -971,15 +977,169 @@ class _MoreScreenState extends State<MoreScreen> {
                             ),
                           );
                         }
-                      }
-                    },
-                    style: FilledButton.styleFrom(
-                      backgroundColor: AppColors.primary,
-                      foregroundColor: AppColors.onPrimary,
-                      minimumSize: const Size.fromHeight(44),
+                      },
+                      style: FilledButton.styleFrom(
+                        backgroundColor: AppColors.primary,
+                        foregroundColor: AppColors.onPrimary,
+                        minimumSize: const Size.fromHeight(44),
+                      ),
+                      child: const Text('Save Backend URL'),
                     ),
-                    child: const Text('Save Backend URL'),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  void _showMalTrackerSheet() {
+    final tracker = TrackerService.instance;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final isAuth = tracker.isTrackerAuthenticated('myanimelist');
+          final username = tracker.getTrackerUsername('myanimelist') ?? 'MAL User';
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF2E51A2).withValues(alpha: .22),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: const Icon(
+                          Icons.track_changes_rounded,
+                          color: Color(0xFF4F78D8),
+                          size: 24,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('MyAnimeList Tracking', style: AppText.sheetTitle),
+                            const SizedBox(height: 2),
+                            Text(
+                              'Auto-sync read chapters & scores via OAuth2 PKCE',
+                              style: AppText.caption,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
+                  const SizedBox(height: 18),
+                  if (isAuth) ...[
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceHigh,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          CircleAvatar(
+                            radius: 20,
+                            backgroundColor: const Color(0xFF2E51A2).withValues(alpha: 0.25),
+                            child: const Icon(Icons.person_rounded, color: Color(0xFF4F78D8)),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(username, style: AppText.cardTitle),
+                                const SizedBox(height: 2),
+                                Text(
+                                  'Status: Connected',
+                                  style: AppText.caption.copyWith(color: Colors.greenAccent),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        final confirm = await showDialog<bool>(
+                          context: ctx,
+                          builder: (dCtx) => AlertDialog(
+                            backgroundColor: AppColors.surface,
+                            title: Text('Disconnect MyAnimeList?', style: AppText.sheetTitle),
+                            content: Text(
+                              'Automatic chapter syncing to MyAnimeList will stop until you sign in again.',
+                              style: AppText.body.copyWith(color: AppColors.muted),
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.pop(dCtx, false),
+                                child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+                              ),
+                              FilledButton(
+                                onPressed: () => Navigator.pop(dCtx, true),
+                                style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+                                child: Text('Disconnect', style: AppText.bodySemiBold.copyWith(color: Colors.white)),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (confirm == true) {
+                          await tracker.logoutTracker('myanimelist');
+                          if (ctx.mounted) Navigator.pop(ctx);
+                          if (mounted) {
+                            setState(() {});
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Disconnected from MyAnimeList')),
+                            );
+                          }
+                        }
+                      },
+                      icon: const Icon(Icons.logout_rounded, size: 18, color: Colors.redAccent),
+                      label: Text('Disconnect MyAnimeList', style: AppText.bodySemiBold.copyWith(color: Colors.redAccent)),
+                      style: OutlinedButton.styleFrom(
+                        side: const BorderSide(color: Colors.redAccent),
+                        minimumSize: const Size.fromHeight(44),
+                      ),
+                    ),
+                  ] else
+                    FilledButton.icon(
+                      onPressed: () async {
+                        final ok = await tracker.startMalOAuthFlow();
+                        if (ctx.mounted) Navigator.pop(ctx);
+                        if (!ok && mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Could not open browser for MyAnimeList OAuth.'),
+                            ),
+                          );
+                        }
+                      },
+                      icon: const Icon(Icons.open_in_browser_rounded, size: 18),
+                      label: const Text('Sign in with MyAnimeList'),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFF2E51A2),
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size.fromHeight(46),
+                      ),
+                    ),
                 ],
               ),
             ),

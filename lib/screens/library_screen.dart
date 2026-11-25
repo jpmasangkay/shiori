@@ -6,6 +6,7 @@ import '../models/manga_models.dart';
 import '../services/api_service.dart';
 import '../services/download_service.dart';
 import '../services/extension_service.dart';
+import '../services/reader_settings.dart';
 import '../services/source_manager.dart';
 import '../services/tracker_service.dart';
 import '../theme.dart';
@@ -17,9 +18,14 @@ import 'display_sheet.dart';
 import 'reader_screen.dart';
 
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key, this.isActive = true});
+  const LibraryScreen({
+    super.key,
+    this.isActive = true,
+    this.onBrowseSources,
+  });
 
   final bool isActive;
+  final VoidCallback? onBrowseSources;
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -214,12 +220,20 @@ class _LibraryScreenState extends State<LibraryScreen>
         return ascending ? cmp : -cmp;
       });
     } else if (sort == LibrarySort.lastUpdated) {
+      final updatedMap = <String, DateTime>{
+        for (final m in items)
+          m.id: ApiService.instance.getLatestChapterUpdatedAt(m.id) ??
+              DateTime.fromMillisecondsSinceEpoch(0),
+      };
       final chapterMap = <String, double>{
         for (final m in items)
           m.id: double.tryParse(m.lastChapter ?? '') ?? 0.0,
       };
       items.sort((a, b) {
-        final cmp = chapterMap[a.id]!.compareTo(chapterMap[b.id]!);
+        final dateCmp = updatedMap[a.id]!.compareTo(updatedMap[b.id]!);
+        final cmp = dateCmp != 0
+            ? dateCmp
+            : chapterMap[a.id]!.compareTo(chapterMap[b.id]!);
         return ascending ? cmp : -cmp;
       });
     } else if (sort == LibrarySort.unreadCount) {
@@ -263,42 +277,25 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   void _quickResumeManga(MangaItem manga) {
-    final prog = ApiService.instance.historyRepo.localProgress[manga.id];
-    final cachedChapters = ApiService.instance.getCachedChapters(manga.id);
-    if (prog != null && prog.chapterId.isNotEmpty) {
+    final target = ApiService.instance.resolveResumeTarget(
+      manga.id,
+      skipDuplicateChapters: ReaderSettings.instance.skipDuplicateChapters,
+    );
+    final targetChId = target.chapterId;
+    if (targetChId != null && targetChId.isNotEmpty) {
       Navigator.of(context)
           .push(
             smoothRoute(
               ReaderScreen(
-                chapterId: prog.chapterId,
+                chapterId: targetChId,
                 mangaId: manga.id,
                 mangaTitle: manga.displayTitle,
                 coverUrl: manga.cover,
-                chapterNumber: prog.chapterNumber,
-                chapterTitle: prog.chapterTitle,
-                chapters: cachedChapters,
-                initialPage: prog.completed ? 1 : prog.page,
-                mangaType: manga.type,
-                tags: manga.tags,
-              ),
-            ),
-          )
-          .then((_) => _syncLocalLibrary());
-      return;
-    }
-    if (cachedChapters.isNotEmpty) {
-      final first = cachedChapters.last;
-      Navigator.of(context)
-          .push(
-            smoothRoute(
-              ReaderScreen(
-                chapterId: first.id,
-                mangaId: manga.id,
-                mangaTitle: manga.displayTitle,
-                coverUrl: manga.cover,
-                chapterNumber: first.number,
-                chapterTitle: first.title,
-                chapters: cachedChapters,
+                chapterNumber: target.chapterNumber,
+                chapterTitle: target.chapterTitle,
+                chapters: target.orderedChapters,
+                initialIndex: target.chapterIndex,
+                initialPage: target.page,
                 mangaType: manga.type,
                 tags: manga.tags,
               ),
@@ -322,20 +319,69 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   Future<void> _batchRemoveSelected() async {
-    final ids = _selectedIds.toList();
-    setState(() => _selectedIds.clear());
-    for (final id in ids) {
-      await ApiService.instance.removeFromLibrary(id);
-    }
-    if (mounted) {
-      _syncLocalLibrary();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Removed ${ids.length} titles from library'),
-          duration: const Duration(seconds: 2),
+    final selectedItems = _userLibrary
+        .where((m) => _selectedIds.contains(m.id))
+        .toList();
+    if (selectedItems.isEmpty) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text(
+          'Remove ${selectedItems.length} ${selectedItems.length == 1 ? 'title' : 'titles'}?',
+          style: AppText.sheetTitle,
         ),
-      );
+        content: Text(
+          'Selected titles will be removed from your library. You can undo right after.',
+          style: AppText.body.copyWith(color: AppColors.muted),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: Text('Remove', style: AppText.bodySemiBold.copyWith(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
+    final removedWithCats = <(MangaItem, List<String>)>[
+      for (final m in selectedItems)
+        (m, ApiService.instance.getMangaCategoryIds(m.id)),
+    ];
+    setState(() => _selectedIds.clear());
+    for (final (m, _) in removedWithCats) {
+      await ApiService.instance.removeFromLibrary(m.id);
     }
+    if (!mounted) return;
+    _syncLocalLibrary();
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Removed ${removedWithCats.length} titles from library'),
+        backgroundColor: AppColors.surfaceHigh,
+        duration: const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: 'Undo',
+          textColor: AppColors.primary,
+          onPressed: () async {
+            for (final (m, catIds) in removedWithCats) {
+              await ApiService.instance.addToLibrary(m);
+              if (catIds.isNotEmpty) {
+                await ApiService.instance.setMangaCategories(m.id, catIds, manga: m);
+              }
+            }
+            if (mounted) _syncLocalLibrary();
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _batchAssignCategories() async {
@@ -348,7 +394,25 @@ class _LibraryScreenState extends State<LibraryScreen>
       await _promptCreateCategory();
       return;
     }
-    final chosen = <String>{};
+
+    // Tri-state map: true = add to all, false = remove from all, null = leave unchanged
+    final states = <String, bool?>{};
+    for (final c in cats) {
+      var count = 0;
+      for (final m in selectedItems) {
+        if (ApiService.instance.getMangaCategoryIds(m.id).contains(c.id)) {
+          count++;
+        }
+      }
+      if (count == 0) {
+        states[c.id] = false;
+      } else if (count == selectedItems.length) {
+        states[c.id] = true;
+      } else {
+        states[c.id] = null;
+      }
+    }
+
     final applied = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -362,17 +426,18 @@ class _LibraryScreenState extends State<LibraryScreen>
               itemCount: cats.length,
               itemBuilder: (_, i) {
                 final c = cats[i];
+                final state = states[c.id];
                 return CheckboxListTile(
-                  value: chosen.contains(c.id),
+                  tristate: true,
+                  value: state,
                   activeColor: AppColors.primary,
                   title: Text(c.name, style: AppText.body),
+                  subtitle: state == null
+                      ? Text('Partially assigned (leave unchanged)', style: AppText.caption)
+                      : null,
                   onChanged: (v) {
                     setDlg(() {
-                      if (v == true) {
-                        chosen.add(c.id);
-                      } else {
-                        chosen.remove(c.id);
-                      }
+                      states[c.id] = v;
                     });
                   },
                 );
@@ -391,7 +456,17 @@ class _LibraryScreenState extends State<LibraryScreen>
     );
     if (applied != true || !mounted) return;
     for (final m in selectedItems) {
-      await ApiService.instance.setMangaCategories(m.id, chosen.toList(), manga: m);
+      final current = ApiService.instance.getMangaCategoryIds(m.id).toSet();
+      for (final c in cats) {
+        final st = states[c.id];
+        if (st == true) {
+          current.add(c.id);
+        } else if (st == false) {
+          current.remove(c.id);
+        }
+        // st == null preserves existing assignment for this title
+      }
+      await ApiService.instance.setMangaCategories(m.id, current.toList(), manga: m);
     }
     setState(() => _selectedIds.clear());
     _syncLocalLibrary();
@@ -616,11 +691,15 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   void _showMangaContextMenu(MangaItem manga) {
-    final prog = ApiService.instance.historyRepo.localProgress[manga.id];
-    final cachedChs = ApiService.instance.getCachedChapters(manga.id);
-    final canQuickResume = (prog != null && prog.chapterId.isNotEmpty) || cachedChs.isNotEmpty;
-    final resumeLabel = (prog != null && prog.chapterNumber.isNotEmpty)
-        ? 'Resume Ch. ${prog.chapterNumber}${!prog.completed && prog.page > 1 ? " (Page ${prog.page})" : ""}'
+    final target = ApiService.instance.resolveResumeTarget(
+      manga.id,
+      skipDuplicateChapters: ReaderSettings.instance.skipDuplicateChapters,
+    );
+    final canQuickResume = target.chapterId != null && target.chapterId!.isNotEmpty;
+    final resumeLabel = canQuickResume
+        ? (target.page > 1 && !target.isCaughtUp
+            ? '${target.label} (Page ${target.page})'
+            : target.label)
         : 'Start Reading';
 
     showModalBottomSheet(
@@ -1499,9 +1578,9 @@ class _LibraryScreenState extends State<LibraryScreen>
                     Expanded(
                       child: Text(
                         '${duplicateGroups.length} duplicate title${duplicateGroups.length > 1 ? "s" : ""} in library ($duplicateCount entries)',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
-                          color: Colors.white,
+                          color: AppColors.text,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
@@ -1644,7 +1723,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                                   ),
                                 )
                               : s.mode == DisplayMode.list
-                              ? _list(items)
+                              ? _list(s, items)
                               : _grid(s, items),
                         ),
                 ),
@@ -1734,7 +1813,23 @@ class _LibraryScreenState extends State<LibraryScreen>
             message:
                 'Open any title in Browse and tap "In Library" to bookmark it.',
           ),
-          const SizedBox(height: 12),
+          if (widget.onBrowseSources != null) ...[
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: widget.onBrowseSources,
+              icon: const Icon(Icons.explore_rounded, size: 18),
+              label: Text(
+                'Browse Sources',
+                style: AppText.bodySemiBold.copyWith(color: AppColors.onPrimary),
+              ),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.onPrimary,
+                minimumSize: const Size(180, 44),
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
           TextButton.icon(
             onPressed: _showOnboardingSheet,
             icon: Icon(Icons.help_outline_rounded, size: 18, color: AppColors.primary),
@@ -1872,8 +1967,167 @@ class _LibraryScreenState extends State<LibraryScreen>
       .push(smoothRoute(DetailScreen(manga: manga)))
       .then((_) => _syncLocalLibrary());
 
+  List<(MangaItem, ReadProgress)> _continueReadingItems() {
+    final progressMap = ApiService.instance.historyRepo.localProgress;
+    if (progressMap.isEmpty) return const [];
+    final list = <(MangaItem, ReadProgress)>[];
+    for (final m in _userLibrary) {
+      final p = progressMap[m.id];
+      if (p != null && p.chapterId.isNotEmpty) {
+        list.add((m, p));
+      }
+    }
+    list.sort((a, b) {
+      final ta = a.$2.updatedAt ?? DateTime(1970);
+      final tb = b.$2.updatedAt ?? DateTime(1970);
+      return tb.compareTo(ta);
+    });
+    return list.take(8).toList();
+  }
+
+  Widget _buildContinueReadingRail(List<(MangaItem, ReadProgress)> entries) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+          child: Row(
+            children: [
+              Icon(Icons.play_circle_outline_rounded, size: 15, color: AppColors.primary),
+              const SizedBox(width: 6),
+              Text('CONTINUE READING', style: AppText.sectionHeader),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 82,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            itemCount: entries.length,
+            separatorBuilder: (_, _) => const SizedBox(width: 8),
+            itemBuilder: (_, i) {
+              final (manga, entry) = entries[i];
+              final target = ApiService.instance.resolveResumeTarget(
+                manga.id,
+                skipDuplicateChapters: ReaderSettings.instance.skipDuplicateChapters,
+              );
+              final statusLabel = (target.chapterId != null && target.chapterId!.isNotEmpty)
+                  ? target.label
+                  : (entry.chapterNumber.isNotEmpty
+                      ? 'Ch. ${entry.chapterNumber}'
+                      : 'Continue');
+              final fraction = (!entry.completed && entry.totalPages > 0)
+                  ? (entry.page / entry.totalPages).clamp(0.0, 1.0)
+                  : (entry.completed ? 1.0 : null);
+              return Material(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(10),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: () => _quickResumeManga(manga),
+                  child: Container(
+                    width: 214,
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.outline),
+                    ),
+                    child: Row(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(5),
+                          child: SizedBox(
+                            width: 44,
+                            height: 64,
+                            child: CoverImage(
+                              imageUrl: manga.cover,
+                              mangaId: manga.id,
+                              memCacheWidth: 96,
+                              memCacheHeight: 140,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Text(
+                                manga.displayTitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.bodyMedium.copyWith(fontSize: 13),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                statusLabel,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppText.caption.copyWith(color: AppColors.primary),
+                              ),
+                              if (fraction != null) ...[
+                                const SizedBox(height: 6),
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(2),
+                                  child: LinearProgressIndicator(
+                                    value: fraction,
+                                    minHeight: 3,
+                                    color: AppColors.primary,
+                                    backgroundColor: AppColors.surfaceHigh,
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 4),
+      ],
+    );
+  }
+
   Widget _grid(DisplaySettings s, List<MangaItem> items) {
     final comfortable = s.mode == DisplayMode.comfortableGrid;
+    final showRail = !_isSearching &&
+        !_isSelectionMode &&
+        _searchQuery.isEmpty &&
+        !s.hasActiveFilters &&
+        s.showContinueReadingButton;
+    final continueItems = showRail ? _continueReadingItems() : const <(MangaItem, ReadProgress)>[];
+
+    if (continueItems.isNotEmpty) {
+      return CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          SliverToBoxAdapter(child: _buildContinueReadingRail(continueItems)),
+          SliverPadding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 16),
+            sliver: SliverGrid.builder(
+              addRepaintBoundaries: true,
+              addAutomaticKeepAlives: false,
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: s.columns,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+                childAspectRatio: comfortable ? 2 / 3.55 : 2 / 3,
+              ),
+              itemCount: items.length,
+              itemBuilder: (_, i) => _buildGridCoverCard(s, items[i]),
+            ),
+          ),
+        ],
+      );
+    }
+
     return GridView.builder(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 16),
@@ -1886,43 +2140,45 @@ class _LibraryScreenState extends State<LibraryScreen>
         childAspectRatio: comfortable ? 2 / 3.55 : 2 / 3,
       ),
       itemCount: items.length,
-      itemBuilder: (_, i) {
-        final manga = items[i];
-        final unread = ApiService.instance.getUnreadCount(manga.id);
-        final downloaded = s.showDownloadBadges
-            ? DownloadService.instance.getDownloadedCountForManga(manga.id)
-            : 0;
-        final isSelected = _selectedIds.contains(manga.id);
-        return RepaintBoundary(
-          child: CoverCard(
-            title: manga.displayTitle,
-            imageUrl: manga.cover,
-            mangaId: manga.id,
-            mode: s.mode,
-            unreadCount: unread,
-            downloadedCount: downloaded,
-            isSelected: isSelected,
-            onTap: () {
-              if (_isSelectionMode) {
-                _toggleSelection(manga.id);
-              } else {
-                _openManga(manga);
-              }
-            },
-            onLongPress: () {
-              HapticFeedback.mediumImpact();
-              _showMangaContextMenu(manga);
-            },
-            onQuickResume: (s.showContinueReadingButton && !_isSelectionMode)
-                ? () => _quickResumeManga(manga)
-                : null,
-          ),
-        );
-      },
+      itemBuilder: (_, i) => _buildGridCoverCard(s, items[i]),
     );
   }
 
-  Widget _list(List<MangaItem> items) {
+  Widget _buildGridCoverCard(DisplaySettings s, MangaItem manga) {
+    final unread = ApiService.instance.getUnreadCount(manga.id);
+    final downloaded = s.showDownloadBadges
+        ? DownloadService.instance.getDownloadedCountForManga(manga.id)
+        : 0;
+    final isSelected = _selectedIds.contains(manga.id);
+    return RepaintBoundary(
+      child: CoverCard(
+        title: manga.displayTitle,
+        imageUrl: manga.cover,
+        mangaId: manga.id,
+        mode: s.mode,
+        unreadCount: unread,
+        downloadedCount: downloaded,
+        isSelected: isSelected,
+        enableHero: widget.isActive,
+        onTap: () {
+          if (_isSelectionMode) {
+            _toggleSelection(manga.id);
+          } else {
+            _openManga(manga);
+          }
+        },
+        onLongPress: () {
+          HapticFeedback.mediumImpact();
+          _showMangaContextMenu(manga);
+        },
+        onQuickResume: (s.showContinueReadingButton && !_isSelectionMode)
+            ? () => _quickResumeManga(manga)
+            : null,
+      ),
+    );
+  }
+
+  Widget _list(DisplaySettings s, List<MangaItem> items) {
     return ListView.builder(
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(0, 4, 0, 16),
@@ -1932,77 +2188,127 @@ class _LibraryScreenState extends State<LibraryScreen>
       itemBuilder: (_, i) {
         final manga = items[i];
         final unread = ApiService.instance.getUnreadCount(manga.id);
-        return RepaintBoundary(
-          child: Dismissible(
-            key: ValueKey('lib_dismiss_${manga.id}'),
-          direction: DismissDirection.endToStart,
-          background: Container(
-            alignment: Alignment.centerRight,
-            padding: const EdgeInsets.only(right: 20),
-            color: Colors.red.shade900,
-            child: const Icon(Icons.delete_outline_rounded, color: Colors.white),
-          ),
-          onDismissed: (_) => _removeMangaWithUndo(manga),
-          child: InkWell(
-            onTap: () => _openManga(manga),
-            onLongPress: () => _showMangaContextMenu(manga),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: 44,
-                    height: 58,
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: CoverImage(
-                        imageUrl: manga.cover,
-                        mangaId: manga.id,
-                        saturation: .6,
+        final downloaded = s.showDownloadBadges
+            ? DownloadService.instance.getDownloadedCountForManga(manga.id)
+            : 0;
+        final isSelected = _selectedIds.contains(manga.id);
+
+        final row = InkWell(
+          onTap: () {
+            if (_isSelectionMode) {
+              _toggleSelection(manga.id);
+            } else {
+              _openManga(manga);
+            }
+          },
+          onLongPress: () {
+            HapticFeedback.mediumImpact();
+            _showMangaContextMenu(manga);
+          },
+          child: Container(
+            color: isSelected ? AppColors.primary.withValues(alpha: 0.14) : null,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 44,
+                  height: 58,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      HeroMode(
+                        enabled: widget.isActive,
+                        child: Hero(
+                          tag: 'cover_${manga.id}',
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: CoverImage(
+                              imageUrl: manga.cover,
+                              mangaId: manga.id,
+                              saturation: isSelected ? .35 : .85,
+                            ),
+                          ),
+                        ),
                       ),
+                      if (isSelected)
+                        Container(
+                          decoration: BoxDecoration(
+                            color: AppColors.primary.withValues(alpha: 0.35),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: AppColors.primary, width: 2),
+                          ),
+                          child: Icon(
+                            Icons.check_circle_rounded,
+                            color: AppColors.onPrimary,
+                            size: 20,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        manga.displayTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.bodyMedium,
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        manga.authors.isNotEmpty
+                            ? manga.authors.first
+                            : manga.type.toUpperCase(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: AppText.caption,
+                      ),
+                    ],
+                  ),
+                ),
+                if (downloaded > 0)
+                  Container(
+                    margin: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      downloaded > 99 ? '99+' : '$downloaded',
+                      style: AppText.badge.copyWith(color: Colors.black),
                     ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          manga.displayTitle,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppText.bodyMedium,
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          manga.authors.isNotEmpty
-                              ? manga.authors.first
-                              : manga.type.toUpperCase(),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: AppText.caption,
-                        ),
-                      ],
+                if (unread > 0)
+                  Container(
+                    margin: const EdgeInsets.only(right: 6),
+                    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: AppColors.primary,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      unread > 99 ? '99+' : '$unread',
+                      style: AppText.badge.copyWith(color: AppColors.onPrimary),
                     ),
                   ),
-                  if (unread > 0)
-                    Container(
-                      margin: const EdgeInsets.only(right: 8),
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: AppColors.primary,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        unread > 99 ? '99+' : '$unread',
-                        style: AppText.badge.copyWith(color: AppColors.onPrimary),
-                      ),
-                    ),
+                if (s.showContinueReadingButton && !_isSelectionMode)
                   IconButton(
-                    constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+                    constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                    icon: Icon(
+                      Icons.play_arrow_rounded,
+                      size: 20,
+                      color: AppColors.primary,
+                    ),
+                    tooltip: 'Quick resume',
+                    onPressed: () => _quickResumeManga(manga),
+                  ),
+                if (!_isSelectionMode)
+                  IconButton(
+                    constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
                     icon: Icon(
                       Icons.label_outline_rounded,
                       size: 18,
@@ -2011,15 +2317,32 @@ class _LibraryScreenState extends State<LibraryScreen>
                     tooltip: 'Set categories',
                     onPressed: () => _showMangaCategoryDialog(manga),
                   ),
-                ],
-              ),
+              ],
             ),
           ),
-        ),
-      );
-    },
-  );
-}
+        );
+
+        if (_isSelectionMode) {
+          return RepaintBoundary(child: row);
+        }
+
+        return RepaintBoundary(
+          child: Dismissible(
+            key: ValueKey('lib_dismiss_${manga.id}'),
+            direction: DismissDirection.endToStart,
+            background: Container(
+              alignment: Alignment.centerRight,
+              padding: const EdgeInsets.only(right: 20),
+              color: Colors.red.shade900,
+              child: const Icon(Icons.delete_outline_rounded, color: Colors.white),
+            ),
+            onDismissed: (_) => _removeMangaWithUndo(manga),
+            child: row,
+          ),
+        );
+      },
+    );
+  }
 }
 
 class _Tabs extends StatelessWidget {
@@ -2166,6 +2489,7 @@ class CoverCard extends StatelessWidget {
     this.unreadCount,
     this.downloadedCount,
     this.isSelected = false,
+    this.enableHero = false,
     this.onTap,
     this.onLongPress,
     this.onQuickResume,
@@ -2178,6 +2502,7 @@ class CoverCard extends StatelessWidget {
   final int? unreadCount;
   final int? downloadedCount;
   final bool isSelected;
+  final bool enableHero;
   final VoidCallback? onTap;
   final VoidCallback? onLongPress;
   final VoidCallback? onQuickResume;
@@ -2187,13 +2512,21 @@ class CoverCard extends StatelessWidget {
     final coverOnly = mode == DisplayMode.coverOnlyGrid;
     final comfortable = mode == DisplayMode.comfortableGrid;
 
+    final coverImage = CoverImage(imageUrl: imageUrl, mangaId: mangaId);
+    final heroCover = (enableHero && mangaId != null && mangaId!.isNotEmpty)
+        ? HeroMode(
+            enabled: true,
+            child: Hero(tag: 'cover_$mangaId', child: coverImage),
+          )
+        : coverImage;
+
     final cover = ClipRRect(
       borderRadius: BorderRadius.circular(6),
       child: Stack(
         fit: StackFit.expand,
         children: [
           ColoredBox(color: AppColors.surfaceHigh),
-          CoverImage(imageUrl: imageUrl, mangaId: mangaId),
+          heroCover,
           if (!comfortable && !coverOnly)
             const Align(
               alignment: Alignment.bottomCenter,
@@ -2217,13 +2550,14 @@ class CoverCard extends StatelessWidget {
           if (!comfortable && !coverOnly)
             Positioned(
               left: 7,
-              right: onQuickResume != null ? 36 : 7,
+              right: onQuickResume != null ? 42 : 7,
               bottom: 7,
               child: Text(
                 title,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: AppText.bodyMedium.copyWith(
+                  color: Colors.white,
                   fontSize: 12.5,
                   height: 16 / 12.5,
                 ),
@@ -2231,22 +2565,34 @@ class CoverCard extends StatelessWidget {
             ),
           if (onQuickResume != null && !isSelected)
             Positioned(
-              right: 6,
-              bottom: 6,
-              child: Material(
-                color: AppColors.primary.withValues(alpha: 0.92),
-                shape: const CircleBorder(),
-                elevation: 2,
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: onQuickResume,
-                  child: SizedBox(
-                    width: 26,
-                    height: 26,
-                    child: Icon(
-                      Icons.play_arrow_rounded,
-                      size: 16,
-                      color: AppColors.onPrimary,
+              right: 4,
+              bottom: 4,
+              child: Tooltip(
+                message: 'Quick resume',
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    customBorder: const CircleBorder(),
+                    onTap: onQuickResume,
+                    child: SizedBox(
+                      width: 36,
+                      height: 36,
+                      child: Center(
+                        child: Material(
+                          color: AppColors.primary.withValues(alpha: 0.94),
+                          shape: const CircleBorder(),
+                          elevation: 2,
+                          child: SizedBox(
+                            width: 30,
+                            height: 30,
+                            child: Icon(
+                              Icons.play_arrow_rounded,
+                              size: 18,
+                              color: AppColors.onPrimary,
+                            ),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/extension_service.dart';
 import '../services/source_manager.dart';
@@ -24,7 +25,10 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
   Timer? _searchDebounce;
   String _query = '';
   String _selectedLang = 'ALL';
-  bool _showNsfw = true;
+  bool _showNsfw = false;
+
+  static const _prefShowNsfw = 'extensions_show_nsfw_v1';
+  static const _prefSelectedLang = 'extensions_selected_lang_v1';
 
   final List<String> _commonLangs = ['ALL', 'EN', 'ES', 'JA', 'KO', 'ZH', 'FR', 'ID', 'RU'];
 
@@ -32,8 +36,82 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
   void initState() {
     super.initState();
     _service.addListener(_onServiceUpdate);
+    _loadFilterPrefs();
     if (!SourceManager.isIOSPlatform && _service.extensions.isEmpty && !_service.isLoading) {
       _service.fetchExtensions();
+    }
+  }
+
+  Future<void> _loadFilterPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedNsfw = prefs.getBool(_prefShowNsfw);
+      final savedLang = prefs.getString(_prefSelectedLang);
+      if (mounted) {
+        setState(() {
+          if (savedNsfw != null) _showNsfw = savedNsfw;
+          if (savedLang != null && _commonLangs.contains(savedLang)) {
+            _selectedLang = savedLang;
+          }
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _setShowNsfw(bool val) async {
+    setState(() => _showNsfw = val);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_prefShowNsfw, val);
+    } catch (_) {}
+  }
+
+  Future<void> _setSelectedLang(String lang) async {
+    setState(() => _selectedLang = lang);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefSelectedLang, lang);
+    } catch (_) {}
+  }
+
+  Future<void> _confirmUninstallExtension(
+    MangaExtension ext, {
+    BuildContext? closeSheetCtx,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dCtx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('Uninstall ${ext.name}?', style: AppText.sheetTitle),
+        content: Text(
+          'Your library entries from this extension remain saved, but chapters won\'t load until it is reinstalled or migrated.',
+          style: AppText.body.copyWith(color: AppColors.muted),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dCtx, false),
+            child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dCtx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: Text('Uninstall', style: AppText.bodySemiBold.copyWith(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    _service.uninstallExtension(ext);
+    if (closeSheetCtx != null && closeSheetCtx.mounted) {
+      Navigator.pop(closeSheetCtx);
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Uninstalled ${ext.name}'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
     }
   }
 
@@ -678,13 +756,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton.icon(
-                              onPressed: () {
-                                _service.uninstallExtension(ext);
-                                Navigator.pop(ctx);
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('Uninstalled ${ext.name}')),
-                                );
-                              },
+                              onPressed: () => _confirmUninstallExtension(ext, closeSheetCtx: ctx),
                               icon: const Icon(Icons.delete_outline_rounded, size: 20, color: Colors.redAccent),
                               label: Text('Uninstall', style: AppText.bodySemiBold.copyWith(color: Colors.redAccent)),
                               style: OutlinedButton.styleFrom(
@@ -974,7 +1046,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                 child: FilterChip(
                   label: const Text('18+ NSFW'),
                   selected: _showNsfw,
-                  onSelected: (val) => setState(() => _showNsfw = val),
+                  onSelected: _setShowNsfw,
                   selectedColor: Colors.redAccent.withValues(alpha: .25),
                   backgroundColor: AppColors.surface,
                   labelStyle: AppText.chip.copyWith(
@@ -996,7 +1068,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                     label: Text(lang),
                     selected: _selectedLang == lang,
                     onSelected: (val) {
-                      if (val) setState(() => _selectedLang = lang);
+                      if (val) _setSelectedLang(lang);
                     },
                     selectedColor: AppColors.primary,
                     backgroundColor: AppColors.surface,
@@ -1409,15 +1481,7 @@ class _ExtensionsScreenState extends State<ExtensionsScreen> {
                           constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
                           icon: const Icon(Icons.delete_outline_rounded, size: 18, color: Colors.redAccent),
                           tooltip: 'Uninstall ${ext.name}',
-                          onPressed: () {
-                            _service.uninstallExtension(ext);
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(
-                                content: Text('Uninstalled ${ext.name}'),
-                                duration: const Duration(seconds: 1),
-                              ),
-                            );
-                          },
+                          onPressed: () => _confirmUninstallExtension(ext),
                         ),
                       ],
                     );

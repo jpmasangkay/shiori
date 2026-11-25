@@ -25,6 +25,7 @@ class _AuthModal extends StatefulWidget {
 
 class _AuthModalState extends State<_AuthModal> {
   bool _isRegister = false;
+  bool _obscurePassword = true;
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _nameController = TextEditingController();
@@ -145,52 +146,84 @@ class _AuthModalState extends State<_AuthModal> {
                   style: AppText.chip.copyWith(color: Colors.redAccent),
                 ),
               ),
-            if (_isRegister) ...[
-              TextField(
-                controller: _nameController,
-                style: AppText.body,
-                decoration: InputDecoration(
-                  labelText: 'Display Name (optional)',
-                  labelStyle: AppText.caption,
-                  filled: true,
-                  fillColor: AppColors.surfaceHigh,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide.none,
+            AutofillGroup(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_isRegister) ...[
+                    TextField(
+                      controller: _nameController,
+                      autofillHints: const [AutofillHints.name],
+                      textInputAction: TextInputAction.next,
+                      style: AppText.body,
+                      decoration: InputDecoration(
+                        labelText: 'Display Name (optional)',
+                        labelStyle: AppText.caption,
+                        filled: true,
+                        fillColor: AppColors.surfaceHigh,
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide.none,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+                  TextField(
+                    controller: _emailController,
+                    keyboardType: TextInputType.emailAddress,
+                    autofillHints: const [AutofillHints.email],
+                    textInputAction: TextInputAction.next,
+                    style: AppText.body,
+                    decoration: InputDecoration(
+                      labelText: 'Email Address',
+                      labelStyle: AppText.caption,
+                      filled: true,
+                      fillColor: AppColors.surfaceHigh,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
-            TextField(
-              controller: _emailController,
-              keyboardType: TextInputType.emailAddress,
-              style: AppText.body,
-              decoration: InputDecoration(
-                labelText: 'Email Address',
-                labelStyle: AppText.caption,
-                filled: true,
-                fillColor: AppColors.surfaceHigh,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
-              ),
-            ),
-            const SizedBox(height: 10),
-            TextField(
-              controller: _passwordController,
-              obscureText: true,
-              style: AppText.body,
-              decoration: InputDecoration(
-                labelText: 'Password',
-                labelStyle: AppText.caption,
-                filled: true,
-                fillColor: AppColors.surfaceHigh,
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
-                ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _passwordController,
+                    obscureText: _obscurePassword,
+                    autofillHints: [
+                      _isRegister
+                          ? AutofillHints.newPassword
+                          : AutofillHints.password,
+                    ],
+                    textInputAction: TextInputAction.done,
+                    onSubmitted: (_) {
+                      if (!_submitting) _submit();
+                    },
+                    style: AppText.body,
+                    decoration: InputDecoration(
+                      labelText: 'Password',
+                      labelStyle: AppText.caption,
+                      filled: true,
+                      fillColor: AppColors.surfaceHigh,
+                      suffixIcon: IconButton(
+                        tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+                        icon: Icon(
+                          _obscurePassword
+                              ? Icons.visibility_outlined
+                              : Icons.visibility_off_outlined,
+                          size: 20,
+                          color: AppColors.muted,
+                        ),
+                        onPressed: () =>
+                            setState(() => _obscurePassword = !_obscurePassword),
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 18),

@@ -216,6 +216,14 @@ class ReaderSettingsScreen extends StatelessWidget {
                 ),
                 Divider(color: AppColors.outline, height: 1),
                 SwitchListTile(
+                  value: rs.splitWidePages,
+                  activeThumbColor: AppColors.primary,
+                  title: Text('Split Wide Spreads (Portrait)', style: AppText.bodyMedium),
+                  subtitle: Text('Zoom & pan wide double-page manga spreads half by half in portrait', style: AppText.caption),
+                  onChanged: rs.setSplitWidePages,
+                ),
+                Divider(color: AppColors.outline, height: 1),
+                SwitchListTile(
                   value: rs.cropBorders,
                   activeThumbColor: AppColors.primary,
                   title: Text('Crop Page Margins', style: AppText.bodyMedium),

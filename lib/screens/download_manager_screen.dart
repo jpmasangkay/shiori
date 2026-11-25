@@ -466,7 +466,7 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
                     constraints: const BoxConstraints(minWidth: 40, minHeight: 44),
                     icon: Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.muted),
                     tooltip: 'Delete chapter',
-                    onPressed: () => ds.deleteDownloadedChapter(ch.chapterId),
+                    onPressed: () => _confirmDeleteChapter(ch),
                   ),
                 ],
               ),
@@ -522,14 +522,21 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
   }
 
   void _openReader(DownloadedChapterInfo chapter, List<DownloadedChapterInfo> allChapters) {
-    final chapterItems = allChapters
-        .map((c) => ChapterItem(
-              id: c.chapterId,
-              number: c.chapterNumber,
-              title: c.chapterTitle,
-              pages: c.pageCount,
-            ))
-        .toList();
+    final chapterItems = sortChaptersChronologically(
+      allChapters
+          .map((c) => ChapterItem(
+                id: c.chapterId,
+                number: c.chapterNumber,
+                title: c.chapterTitle,
+                pages: c.pageCount,
+              ))
+          .toList(),
+    );
+    final initIdx = chapterItems.indexWhere((c) => c.id == chapter.chapterId);
+    final savedPage = ApiService.instance.getSavedPageForChapter(
+      chapter.mangaId,
+      chapter.chapterId,
+    );
 
     final known = ApiService.instance.libraryRepo.knownManga[chapter.mangaId] ??
         ApiService.instance.libraryRepo.localLibrary[chapter.mangaId];
@@ -544,9 +551,39 @@ class _DownloadManagerScreenState extends State<DownloadManagerScreen> {
           chapterNumber: chapter.chapterNumber,
           coverUrl: chapter.mangaCover,
           chapters: chapterItems,
+          initialIndex: initIdx >= 0 ? initIdx : 0,
+          initialPage: savedPage,
           mangaType: known?.type,
           tags: known?.tags,
         ),
+      ),
+    );
+  }
+
+  void _confirmDeleteChapter(DownloadedChapterInfo ch) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text('Delete "${ch.chapterTitle}"?', style: AppText.sheetTitle),
+        content: Text(
+          'Remove this downloaded chapter (${DownloadService.instance.formatBytes(ch.totalBytes)}) from your device?',
+          style: AppText.body.copyWith(color: AppColors.muted),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              DownloadService.instance.deleteDownloadedChapter(ch.chapterId);
+            },
+            style: FilledButton.styleFrom(backgroundColor: Colors.redAccent),
+            child: Text('Delete', style: AppText.bodySemiBold.copyWith(color: Colors.white)),
+          ),
+        ],
       ),
     );
   }

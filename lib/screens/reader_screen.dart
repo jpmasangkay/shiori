@@ -144,7 +144,8 @@ class ReaderScreen extends StatefulWidget {
   State<ReaderScreen> createState() => _ReaderScreenState();
 }
 
-class _ReaderScreenState extends State<ReaderScreen> {
+class _ReaderScreenState extends State<ReaderScreen>
+    with SingleTickerProviderStateMixin {
   late List<ChapterItem> _chapters;
   late int _currentChapterIndex;
 
@@ -155,21 +156,31 @@ class _ReaderScreenState extends State<ReaderScreen> {
   final Map<String, String> _chapterErrors = {};
   final Set<String> _prefetchedUrls = {};
 
+  // Strict read-all-pages tracking: 1-based page numbers genuinely viewed by the user.
+  final Map<String, Set<int>> _viewedPagesByChapter = {};
+  final Set<String> _userInteractedChapters = {};
+  final Map<String, int> _lastNaturalWebtoonPage = {};
+
   // Webtoon continuous feed. Always an ascending, contiguous run of chapter
   // indices so chapters can never appear out of order or be skipped.
   final List<int> _webtoonLoadedIndices = [];
   final Map<String, _PageSlot> _pageSlots = {};
   final GlobalKey _listKey = GlobalKey();
   DateTime _trackingPausedUntil = DateTime.fromMillisecondsSinceEpoch(0);
+  double? _webtoonScrollAnchorPx;
 
   int _totalPages = 1;
   int _page = 1;
   late final ValueNotifier<int> _pageNotifier;
+  late final ValueNotifier<String> _clockNotifier;
+  Timer? _clockTimer;
   final Set<String> _finishedChapterIds = {};
   Timer? _progressDebounceTimer;
   DateTime _lastTrackTime = DateTime.fromMillisecondsSinceEpoch(0);
   bool _chrome = true;
   bool _advancing = false;
+  bool _showTapZoneOverlay = false;
+  Timer? _tapZoneOverlayTimer;
 
   ReaderMode _selectedMode = ReaderMode.automatic;
   late ReaderMode _resolvedAutoMode;
@@ -198,6 +209,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   ReaderBackground _background = ReaderSettings.instance.background;
   bool _cropBorders = ReaderSettings.instance.cropBorders;
   bool _dualPageSpread = ReaderSettings.instance.dualPageSpread;
+  bool _splitWidePages = ReaderSettings.instance.splitWidePages;
   double _webtoonSidePadding = ReaderSettings.instance.webtoonSidePadding;
   bool _grayscaleFilter = ReaderSettings.instance.grayscaleFilter;
   bool _invertColors = ReaderSettings.instance.invertColors;
@@ -208,6 +220,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
   StreamSubscription<String>? _volumeKeySub;
   bool _isPageZoomed = false;
   final TransformationController _webtoonTransformController = TransformationController();
+  late final AnimationController _webtoonZoomAnimController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 180),
+  );
+  Animation<Matrix4>? _webtoonZoomAnim;
+  TapDownDetails? _webtoonDoubleTapDetails;
   bool _isWebtoonZoomed = false;
   final DateTime _sessionStartedAt = DateTime.now();
   int _sessionPagesTurned = 0;
@@ -300,10 +318,98 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _trackingPausedUntil = DateTime.now().add(Duration(milliseconds: milliseconds));
   }
 
+  static String _formatClockNow() {
+    final nowTime = TimeOfDay.now();
+    return '${nowTime.hour.toString().padLeft(2, '0')}:${nowTime.minute.toString().padLeft(2, '0')}';
+  }
+
+  void _recordPagesViewed(String chapterId, Iterable<int> pageNumbers) {
+    if (chapterId.isEmpty) return;
+    final pages = _pagesCache[chapterId];
+    final maxPage = pages?.length ?? 0;
+    final set = _viewedPagesByChapter.putIfAbsent(chapterId, () => <int>{});
+    for (final p in pageNumbers) {
+      if (p >= 1 && (maxPage == 0 || p <= maxPage)) {
+        set.add(p);
+      }
+    }
+  }
+
+  /// True ONLY when every single page (1..total) of [chapterId] has been
+  /// genuinely viewed by the user. Prevents premature mark-as-read on 85%,
+  /// skipping chapters, prefetching webtoon chapters, or scrubber jumps.
+  bool _hasReadAllPages(String chapterId) {
+    if (chapterId.isEmpty) return false;
+    final pages = _pagesCache[chapterId];
+    if (pages == null || pages.isEmpty) return false;
+    final viewed = _viewedPagesByChapter[chapterId];
+    if (viewed == null || viewed.length < pages.length) return false;
+    for (var p = 1; p <= pages.length; p++) {
+      if (!viewed.contains(p)) return false;
+    }
+    return true;
+  }
+
+  bool _isDualSpreadActive() {
+    if (!_dualPageSpread || _mode == ReaderMode.webtoon) return false;
+    final size = MediaQuery.sizeOf(context);
+    return size.width >= 720 && size.width > size.height;
+  }
+
+  void _flashTapZoneOverlay() {
+    _tapZoneOverlayTimer?.cancel();
+    setState(() => _showTapZoneOverlay = true);
+    _tapZoneOverlayTimer = Timer(const Duration(milliseconds: 1400), () {
+      if (mounted) setState(() => _showTapZoneOverlay = false);
+    });
+  }
+
+  void _handleWebtoonDoubleTap() {
+    final currentScale = _webtoonTransformController.value.getMaxScaleOnAxis();
+    final Matrix4 target;
+    if (currentScale > 1.08) {
+      target = Matrix4.identity();
+    } else {
+      const targetScale = 2.2;
+      final position = _webtoonDoubleTapDetails?.globalPosition ?? Offset.zero;
+      final size = MediaQuery.sizeOf(context);
+      final tx = (-position.dx * (targetScale - 1.0))
+          .clamp(-(size.width * (targetScale - 1.0)), 0.0);
+      final ty = (-position.dy * (targetScale - 1.0))
+          .clamp(-(size.height * (targetScale - 1.0)), 0.0);
+      target = Matrix4.identity()
+        ..translateByDouble(tx, ty, 0.0, 1.0)
+        ..scaleByDouble(targetScale, targetScale, 1.0, 1.0);
+    }
+    _webtoonZoomAnim = Matrix4Tween(
+      begin: _webtoonTransformController.value,
+      end: target,
+    ).animate(
+      CurvedAnimation(parent: _webtoonZoomAnimController, curve: Curves.easeOutCubic),
+    );
+    _webtoonZoomAnimController
+      ..reset()
+      ..forward();
+  }
+
   @override
   void initState() {
     super.initState();
     _pageNotifier = ValueNotifier<int>(_page);
+    _clockNotifier = ValueNotifier<String>(_formatClockNow());
+    _clockTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted) return;
+      final next = _formatClockNow();
+      if (next != _clockNotifier.value) {
+        _clockNotifier.value = next;
+      }
+    });
+    _webtoonZoomAnimController.addListener(() {
+      final anim = _webtoonZoomAnim;
+      if (anim != null) {
+        _webtoonTransformController.value = anim.value;
+      }
+    });
     _pageController = _newPageController(0);
     SystemChrome.setSystemUIOverlayStyle(SystemUiOverlayStyle.light);
 
@@ -344,6 +450,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _background = ReaderSettings.instance.background;
     _cropBorders = ReaderSettings.instance.cropBorders;
     _dualPageSpread = ReaderSettings.instance.dualPageSpread;
+    _splitWidePages = ReaderSettings.instance.splitWidePages;
     _webtoonSidePadding = ReaderSettings.instance.webtoonSidePadding;
     _grayscaleFilter = ReaderSettings.instance.grayscaleFilter;
     _invertColors = ReaderSettings.instance.invertColors;
@@ -445,15 +552,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }).catchError((_) {});
     }
 
-    // Setup chapters list
+    // Setup chapters list — always normalize to chronological ascending order
+    // so Next/Prev chapter navigation works identically from Library, History,
+    // Updates, Downloads, and Detail screens.
     if (widget.chapters.isNotEmpty) {
-      _chapters = List<ChapterItem>.from(widget.chapters);
-      if (widget.chapterId != null) {
-        final matchIdx = _chapters.indexWhere((c) => c.id == widget.chapterId);
-        _currentChapterIndex = matchIdx >= 0 ? matchIdx : widget.initialIndex.clamp(0, _chapters.length - 1);
-      } else {
-        _currentChapterIndex = widget.initialIndex.clamp(0, _chapters.length - 1);
-      }
+      final requestedId = (widget.chapterId != null && widget.chapterId!.isNotEmpty)
+          ? widget.chapterId!
+          : widget.chapters[widget.initialIndex.clamp(0, widget.chapters.length - 1)].id;
+      _chapters = sortChaptersChronologically(widget.chapters);
+      final matchIdx = _chapters.indexWhere((c) => c.id == requestedId);
+      _currentChapterIndex =
+          matchIdx >= 0 ? matchIdx : widget.initialIndex.clamp(0, _chapters.length - 1);
     } else {
       final fallback = ChapterItem(
         id: widget.chapterId ?? '',
@@ -468,9 +577,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (widget.mangaId.isNotEmpty) {
         ApiService.instance.getChapters(widget.mangaId).then((fetched) {
           if (!mounted || fetched.isEmpty) return;
-          final ordered = List<ChapterItem>.from(fetched)
-            ..sort((a, b) => (double.tryParse(a.number ?? '') ?? 0)
-                .compareTo(double.tryParse(b.number ?? '') ?? 0));
+          final ordered = sortChaptersChronologically(fetched);
           final curId = _currentChapter.id;
           var matchIdx = ordered.indexWhere((c) => c.id == curId);
           if (matchIdx < 0 && _currentChapter.number != null) {
@@ -498,14 +605,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
     // Resolve saved page progress if resuming an unfinished chapter
     int startPage = widget.initialPage ?? 1;
     if (widget.initialPage == null && widget.mangaId.isNotEmpty) {
-      final savedProg = ApiService.instance.historyRepo.localProgress[widget.mangaId];
       final curChId = _currentChapter.id;
-      if (savedProg != null &&
-          curChId.isNotEmpty &&
-          savedProg.chapterId == curChId &&
-          !savedProg.completed &&
-          savedProg.page > 1) {
-        startPage = savedProg.page;
+      final savedPage = ApiService.instance.getSavedPageForChapter(widget.mangaId, curChId);
+      if (savedPage != null && savedPage > 1) {
+        startPage = savedPage;
       }
     }
     if (startPage > 1) {
@@ -520,15 +623,17 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _setEnableTapZones(bool val) {
     setState(() => _enableTapZones = val);
     ReaderSettings.instance.setEnableTapZones(val);
+    if (val) _flashTapZoneOverlay();
   }
 
   void _setInvertTapZones(bool val) {
     setState(() => _invertTapZones = val);
     ReaderSettings.instance.setInvertTapZones(val);
+    if (_enableTapZones) _flashTapZoneOverlay();
   }
 
   void _setBrightness(double val) {
-    final clamped = val.clamp(0.2, 1.0);
+    final clamped = val.clamp(0.1, 1.0);
     setState(() => _brightness = clamped);
     ReaderSettings.instance.setBrightness(clamped);
   }
@@ -616,6 +721,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _showChaptersDrawer() {
+    var descending = false;
+    var didAutoScroll = false;
+
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
@@ -623,71 +731,119 @@ class _ReaderScreenState extends State<ReaderScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.6,
-        minChildSize: 0.35,
-        maxChildSize: 0.88,
-        builder: (_, scrollCtrl) => Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 12, 10),
-              child: Row(
-                children: [
-                  Text('CHAPTERS (${_chapters.length})', style: AppText.sectionHeader),
-                  const Spacer(),
-                  IconButton(
-                    icon: Icon(Icons.close_rounded, color: AppColors.muted),
-                    onPressed: () => Navigator.of(ctx).pop(),
-                  ),
-                ],
-              ),
-            ),
-            Divider(color: AppColors.outline, height: 1),
-            Expanded(
-              child: ListView.builder(
-                controller: scrollCtrl,
-                itemCount: _chapters.length,
-                itemBuilder: (_, idx) {
-                  final ch = _chapters[idx];
-                  final isCurrent = idx == _currentChapterIndex;
-                  final isRead = ApiService.instance.isChapterRead(widget.mangaId, ch.id);
-                  return ListTile(
-                    selected: isCurrent,
-                    selectedTileColor: AppColors.active.withValues(alpha: 0.5),
-                    leading: Icon(
-                      isCurrent
-                          ? Icons.play_arrow_rounded
-                          : (isRead ? Icons.check_circle_outline_rounded : Icons.circle_outlined),
-                      size: 18,
-                      color: isCurrent
-                          ? AppColors.primary
-                          : (isRead ? AppColors.read : AppColors.muted),
-                    ),
-                    title: Text(
-                      ch.displayTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: AppText.bodyMedium.copyWith(
-                        color: isCurrent
-                            ? AppColors.primary
-                            : (isRead ? AppColors.read : AppColors.text),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) => DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.62,
+          minChildSize: 0.35,
+          maxChildSize: 0.88,
+          builder: (_, scrollCtrl) {
+            if (!didAutoScroll && _chapters.length > 6) {
+              didAutoScroll = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!scrollCtrl.hasClients) return;
+                final visualIdx = descending
+                    ? (_chapters.length - 1 - _currentChapterIndex)
+                    : _currentChapterIndex;
+                final targetOffset = ((visualIdx - 2).clamp(0, _chapters.length - 1)) * 58.0;
+                scrollCtrl.jumpTo(
+                  targetOffset.clamp(0.0, scrollCtrl.position.maxScrollExtent),
+                );
+              });
+            }
+            return Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 14, 8, 8),
+                  child: Row(
+                    children: [
+                      Text('CHAPTERS (${_chapters.length})', style: AppText.sectionHeader),
+                      const Spacer(),
+                      IconButton(
+                        tooltip: descending ? 'Sort oldest first' : 'Sort latest first',
+                        icon: Icon(
+                          descending ? Icons.south_rounded : Icons.north_rounded,
+                          size: 18,
+                          color: AppColors.primary,
+                        ),
+                        onPressed: () {
+                          setSheetState(() {
+                            descending = !descending;
+                            didAutoScroll = false;
+                          });
+                        },
                       ),
-                    ),
-                    subtitle: ch.group.isNotEmpty
-                        ? Text(ch.group, style: AppText.caption, maxLines: 1, overflow: TextOverflow.ellipsis)
-                        : null,
-                    onTap: () {
-                      Navigator.of(ctx).pop();
-                      if (idx != _currentChapterIndex) {
-                        _switchToChapter(idx);
-                      }
+                      IconButton(
+                        tooltip: 'Close',
+                        icon: Icon(Icons.close_rounded, color: AppColors.muted),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
+                  ),
+                ),
+                Divider(color: AppColors.outline, height: 1),
+                Expanded(
+                  child: ListView.builder(
+                    controller: scrollCtrl,
+                    itemExtent: 58,
+                    itemCount: _chapters.length,
+                    itemBuilder: (_, visualIdx) {
+                      final idx = descending
+                          ? (_chapters.length - 1 - visualIdx)
+                          : visualIdx;
+                      final ch = _chapters[idx];
+                      final isCurrent = idx == _currentChapterIndex;
+                      final isRead = ApiService.instance.isChapterRead(widget.mangaId, ch.id);
+                      final savedPage = !isRead
+                          ? ApiService.instance.getSavedPageForChapter(widget.mangaId, ch.id)
+                          : null;
+                      return ListTile(
+                        dense: true,
+                        selected: isCurrent,
+                        selectedTileColor: AppColors.active.withValues(alpha: 0.5),
+                        leading: Icon(
+                          isCurrent
+                              ? Icons.play_arrow_rounded
+                              : (isRead ? Icons.check_circle_outline_rounded : Icons.circle_outlined),
+                          size: 18,
+                          color: isCurrent
+                              ? AppColors.primary
+                              : (isRead ? AppColors.read : AppColors.muted),
+                        ),
+                        title: Text(
+                          ch.displayTitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: AppText.bodyMedium.copyWith(
+                            color: isCurrent
+                                ? AppColors.primary
+                                : (isRead ? AppColors.read : AppColors.text),
+                          ),
+                        ),
+                        subtitle: (savedPage != null || ch.group.isNotEmpty)
+                            ? Text(
+                                [
+                                  if (savedPage != null) 'Page $savedPage',
+                                  if (ch.group.isNotEmpty) ch.group,
+                                ].join(' · '),
+                                style: AppText.caption,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              )
+                            : null,
+                        onTap: () {
+                          Navigator.of(ctx).pop();
+                          if (idx != _currentChapterIndex) {
+                            _switchToChapter(idx);
+                          }
+                        },
+                      );
                     },
-                  );
-                },
-              ),
-            ),
-          ],
+                  ),
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -858,9 +1014,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       inactiveTrackColor: AppColors.outline,
                     ),
                     child: Slider(
-                      min: 0.2,
+                      min: 0.1,
                       max: 1.0,
-                      value: _brightness,
+                      value: _brightness.clamp(0.1, 1.0),
                       onChanged: (val) {
                         _setBrightness(val);
                         setSheetState(() {});
@@ -1089,6 +1245,18 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   ),
                   SwitchListTile(
                     contentPadding: EdgeInsets.zero,
+                    value: _splitWidePages,
+                    activeThumbColor: AppColors.primary,
+                    title: Text('Split Wide Spreads (Portrait)', style: AppText.bodyMedium),
+                    subtitle: Text('Fit wide 2-page manga spreads cleanly in portrait', style: AppText.caption),
+                    onChanged: (val) {
+                      setState(() => _splitWidePages = val);
+                      ReaderSettings.instance.setSplitWidePages(val);
+                      setSheetState(() {});
+                    },
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
                     value: _showStatusBar,
                     activeThumbColor: AppColors.primary,
                     title: Text('Show Minimal Status Overlay', style: AppText.bodyMedium),
@@ -1160,9 +1328,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   void dispose() {
+    _clockTimer?.cancel();
+    _tapZoneOverlayTimer?.cancel();
     _autoScrollTimer?.cancel();
     _autoAdvanceTimer?.cancel();
     _volumeKeySub?.cancel();
+    _webtoonZoomAnimController.dispose();
     _webtoonTransformController.removeListener(_onWebtoonTransformChanged);
     _webtoonTransformController.dispose();
     unawaited(PlatformBridge.instance.setKeepScreenOn(false));
@@ -1189,6 +1360,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _scrollController.dispose();
     _pageController.dispose();
     _pageNotifier.dispose();
+    _clockNotifier.dispose();
     super.dispose();
   }
 
@@ -1248,23 +1420,45 @@ class _ReaderScreenState extends State<ReaderScreen> {
           _pageNotifier.value = targetStartPage;
           if (targetStartPage > 1 && _mode != ReaderMode.webtoon) {
             final oldCtrl = _pageController;
-            _pageController = _newPageController(targetStartPage - 1);
+            final initialSpread = _isDualSpreadActive()
+                ? ((targetStartPage - 1) ~/ 2)
+                : (targetStartPage - 1);
+            _pageController = _newPageController(initialSpread);
             WidgetsBinding.instance.addPostFrameCallback((_) => oldCtrl.dispose());
           }
         }
       });
+
+      if (idx == _currentChapterIndex) {
+        final alreadyTracked = _viewedPagesByChapter.containsKey(chapter.id);
+        final initialViewed = alreadyTracked
+            ? <int>[targetStartPage]
+            : <int>[for (var p = 1; p <= targetStartPage; p++) p];
+        if (_isDualSpreadActive() && targetStartPage < primaryPages.length) {
+          initialViewed.add(targetStartPage + 1);
+        }
+        _recordPagesViewed(chapter.id, initialViewed);
+        _lastNaturalWebtoonPage[chapter.id] = targetStartPage;
+      }
+
       _precacheSlidingWindow(primaryPages, targetStartPage - 1, window: prefetchWin);
 
       if (idx == _currentChapterIndex) {
-        if (targetStartPage > 1 && _mode == ReaderMode.webtoon) {
+        if (_mode == ReaderMode.webtoon) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted) _scrollToWebtoonPage(targetStartPage);
+            if (!mounted) return;
+            if (targetStartPage > 1) {
+              _scrollToWebtoonPage(targetStartPage);
+            } else {
+              _recordVisibleWebtoonSlots(allowFinish: false);
+            }
           });
         }
-        _syncProgress(_page);
+        _syncProgress(_page, allowFinish: false);
         _precacheRange(primaryPages, targetStartPage - 1, prefetchWin);
         // Prefetch the next chapter so continuing to read has no loading gap.
-        _loadChapter(idx + 1);
+        final nextIdx = _findAdjacentChapterIndex(idx, 1);
+        if (nextIdx != null) _loadChapter(nextIdx);
       } else if (idx == _currentChapterIndex + 1) {
         _precacheRange(primaryPages, 0, _dataSaver ? 1 : 3);
       }
@@ -1364,16 +1558,18 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _precacheRange(pages, start, count);
   }
 
-  void _syncProgress(int currentPage) {
+  void _syncProgress(int currentPage, {bool allowFinish = true}) {
     if (widget.mangaId.isEmpty) return;
     final chapter = _currentChapter;
     if (chapter.id.isEmpty) return;
 
     final pages = _pagesCache[chapter.id];
     final actualTotal = pages?.length ?? _totalPages;
-    final isFinished = pages != null &&
-        pages.isNotEmpty &&
-        (currentPage >= actualTotal || (actualTotal > 2 && currentPage >= (actualTotal * 0.85).ceil()));
+    // Mark as read ONLY when the user has interacted and genuinely viewed every page.
+    final isFinished = _finishedChapterIds.contains(chapter.id) ||
+        (allowFinish &&
+            _userInteractedChapters.contains(chapter.id) &&
+            _hasReadAllPages(chapter.id));
     if (isFinished) {
       _onChapterFinished(_currentChapterIndex);
     }
@@ -1404,9 +1600,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     final pages = _pagesCache[chapter.id];
     final actualTotal = pages?.length ?? _totalPages;
-    final isFinished = pages != null &&
-        pages.isNotEmpty &&
-        (_page >= actualTotal || (actualTotal > 2 && _page >= (actualTotal * 0.85).ceil()));
+    final isFinished = _finishedChapterIds.contains(chapter.id) ||
+        (_userInteractedChapters.contains(chapter.id) &&
+            _hasReadAllPages(chapter.id));
     if (isFinished) {
       _onChapterFinished(_currentChapterIndex);
     }
@@ -1442,42 +1638,74 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
-  /// Jump to another chapter (bottom bar buttons / transition card). The
-  /// webtoon feed is re-anchored on the new chapter and the page controller is
-  /// replaced, so the new chapter always starts at its first page.
+  /// Jump to another chapter (bottom bar buttons / transition card / drawer).
+  /// Never marks the previous chapter read unless every page was actually read!
   void _switchToChapter(int newIndex) {
     if (newIndex < 0 || newIndex >= _chapters.length || newIndex == _currentChapterIndex) return;
-    final currentPages = _pagesCache[_chapters[_currentChapterIndex].id];
-    final currentTotal = currentPages?.length ?? _totalPages;
-    if (newIndex > _currentChapterIndex ||
-        (currentPages != null && currentPages.isNotEmpty && _page >= (currentTotal * 0.85).ceil())) {
+    final prevChapter = _chapters[_currentChapterIndex];
+    if (_hasReadAllPages(prevChapter.id)) {
       _onChapterFinished(_currentChapterIndex);
     }
+    // Persist where the user left off on the previous chapter before switching
+    _flushProgress();
 
     final chapter = _chapters[newIndex];
     final cached = _pagesCache[chapter.id];
     final oldController = _pageController;
+    final savedPage =
+        ApiService.instance.getSavedPageForChapter(widget.mangaId, chapter.id) ?? 1;
+    final startPage = cached != null
+        ? savedPage.clamp(1, math.max(1, cached.length)).toInt()
+        : savedPage;
+    final initialSpread = _isDualSpreadActive()
+        ? ((startPage - 1) ~/ 2)
+        : (startPage - 1);
 
     _pauseTracking(600);
+    _isPageZoomed = false;
+    _webtoonTransformController.value = Matrix4.identity();
+    _isWebtoonZoomed = false;
+    _webtoonScrollAnchorPx = null;
+
     setState(() {
       _currentChapterIndex = newIndex;
-      _page = 1;
+      _page = startPage;
       _totalPages = cached?.length ?? 1;
+      _pendingInitialPage = cached == null && startPage > 1 ? startPage : null;
       _chapterErrors.remove(chapter.id);
       _webtoonLoadedIndices
         ..clear()
         ..add(newIndex);
       _pageSlots.clear();
-      _pageController = _newPageController(0);
+      _pageController = _newPageController(initialSpread);
     });
-    _pageNotifier.value = 1;
+    _pageNotifier.value = startPage;
     WidgetsBinding.instance.addPostFrameCallback((_) => oldController.dispose());
 
     if (_scrollController.hasClients) _scrollController.jumpTo(0);
 
     if (cached != null) {
-      _syncProgress(1);
-      _precacheRange(cached, 0, 6);
+      final alreadyTracked = _viewedPagesByChapter.containsKey(chapter.id);
+      final initialViewed = alreadyTracked
+          ? <int>[startPage]
+          : <int>[for (var p = 1; p <= startPage; p++) p];
+      if (_isDualSpreadActive() && startPage < cached.length) {
+        initialViewed.add(startPage + 1);
+      }
+      _recordPagesViewed(chapter.id, initialViewed);
+      _lastNaturalWebtoonPage[chapter.id] = startPage;
+      if (_mode == ReaderMode.webtoon) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          if (startPage > 1) {
+            _scrollToWebtoonPage(startPage);
+          } else {
+            _recordVisibleWebtoonSlots(allowFinish: false);
+          }
+        });
+      }
+      _syncProgress(startPage, allowFinish: false);
+      _precacheRange(cached, startPage - 1, 6);
       final nextIdx = _findAdjacentChapterIndex(newIndex, 1);
       if (nextIdx != null) _loadChapter(nextIdx);
     } else {
@@ -1487,15 +1715,56 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   // ---- Webtoon feed tracking ----
 
+  /// Records every mounted webtoon page slot currently visible in (or scrolled
+  /// above) the viewport as viewed, and marks a chapter read ONLY when all of
+  /// its pages have been viewed and [allowFinish] is true.
+  void _recordVisibleWebtoonSlots({bool allowFinish = true}) {
+    final listBox = _listKey.currentContext?.findRenderObject();
+    if (listBox is! RenderBox || !listBox.attached || !listBox.hasSize) return;
+    final listHeight = listBox.size.height;
+    final touchedChapters = <int>{};
+
+    for (final slot in _pageSlots.values) {
+      final box = slot.key.currentContext?.findRenderObject();
+      if (box is! RenderBox || !box.attached || !box.hasSize) continue;
+      final top = box.localToGlobal(Offset.zero, ancestor: listBox).dy;
+      // Visible inside the viewport (or already scrolled above the top)
+      if (top < listHeight) {
+        if (slot.chapterIndex >= 0 && slot.chapterIndex < _chapters.length) {
+          final chId = _chapters[slot.chapterIndex].id;
+          _recordPagesViewed(chId, [slot.pageIndex + 1]);
+          touchedChapters.add(slot.chapterIndex);
+        }
+      }
+    }
+
+    if (allowFinish) {
+      for (final chIdx in touchedChapters) {
+        final ch = _chapters[chIdx];
+        if (_hasReadAllPages(ch.id)) {
+          _userInteractedChapters.add(ch.id);
+          _onChapterFinished(chIdx);
+        }
+      }
+    }
+  }
+
   /// Appends the next chapter to the continuous feed. Never appends past a
   /// chapter that hasn't loaded, otherwise that chapter would be skipped.
-  void _extendWebtoonFeed() {
+  /// Prefetching the next chapter does NOT prematurely mark [last] as read!
+  void _extendWebtoonFeed({bool userTappedTrigger = false}) {
     if (_webtoonLoadedIndices.isEmpty) return;
     final last = _webtoonLoadedIndices.last;
     final next = _findAdjacentChapterIndex(last, 1);
     if (next == null || next >= _chapters.length) return;
     if (!_pagesCache.containsKey(_chapters[last].id)) return;
-    _onChapterFinished(last);
+    if (userTappedTrigger) {
+      _userInteractedChapters.add(_chapters[last].id);
+      _recordVisibleWebtoonSlots(allowFinish: true);
+      if (_hasReadAllPages(_chapters[last].id)) {
+        _onChapterFinished(last);
+      }
+    }
     setState(() => _webtoonLoadedIndices.add(next));
     _loadChapter(next);
   }
@@ -1504,18 +1773,18 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (notif.depth != 0) return false;
     if (notif is! ScrollUpdateNotification && notif is! ScrollEndNotification) return false;
 
-    if (notif.metrics.extentAfter < 2500) _extendWebtoonFeed();
-
-    // Reached bottom of loaded webtoon feed -> mark completed chapters read
-    if (notif.metrics.pixels >= notif.metrics.maxScrollExtent - 400) {
-      for (final idx in _webtoonLoadedIndices) {
-        final ch = _chapters[idx];
-        final pages = _pagesCache[ch.id];
-        if (pages != null && pages.isNotEmpty) {
-          _onChapterFinished(idx);
-        }
+    // Auto-hide reader bars smoothly when user scrolls meaningfully in Webtoon mode
+    if (_chrome && notif is ScrollUpdateNotification && notif.dragDetails != null) {
+      _webtoonScrollAnchorPx ??= notif.metrics.pixels;
+      if ((notif.metrics.pixels - _webtoonScrollAnchorPx!).abs() > 80) {
+        _webtoonScrollAnchorPx = null;
+        _toggleChrome();
       }
+    } else if (notif is ScrollEndNotification) {
+      _webtoonScrollAnchorPx = null;
     }
+
+    if (notif.metrics.extentAfter < 2500) _extendWebtoonFeed();
 
     if (DateTime.now().isBefore(_trackingPausedUntil)) return false;
 
@@ -1534,20 +1803,32 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _trackWebtoonPosition() {
     final listBox = _listKey.currentContext?.findRenderObject();
     if (listBox is! RenderBox || !listBox.attached || !listBox.hasSize) return;
-    final anchor = listBox.size.height * 0.4;
+    final listHeight = listBox.size.height;
+    final anchor = listHeight * 0.4;
 
     _PageSlot? activeSlot;
     for (final slot in _pageSlots.values) {
       final box = slot.key.currentContext?.findRenderObject();
       if (box is! RenderBox || !box.attached || !box.hasSize) continue;
       final top = box.localToGlobal(Offset.zero, ancestor: listBox).dy;
-      if (top <= anchor && anchor < top + box.size.height) {
+      final bottom = top + box.size.height;
+      final chId = _chapters[slot.chapterIndex].id;
+
+      // Record any page intersecting the viewport as viewed
+      if (top < listHeight && bottom > 0) {
+        _recordPagesViewed(chId, [slot.pageIndex + 1]);
+      }
+
+      if (top <= anchor && anchor < bottom) {
         activeSlot = slot;
-        break;
-      } else if (top + box.size.height <= anchor) {
-        // This page is fully above the anchor line (user read past it)
-        final pages = _pagesCache[_chapters[slot.chapterIndex].id];
-        if (pages != null && pages.isNotEmpty && slot.pageIndex >= pages.length - 1) {
+      } else if (bottom <= anchor) {
+        // User scrolled past this page naturally
+        _recordPagesViewed(chId, [slot.pageIndex + 1]);
+        final pages = _pagesCache[chId];
+        if (pages != null &&
+            pages.isNotEmpty &&
+            slot.pageIndex >= pages.length - 1 &&
+            _hasReadAllPages(chId)) {
           _onChapterFinished(slot.chapterIndex);
         }
       }
@@ -1559,29 +1840,47 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _updateWebtoonPosition(int chapterIndex, int pageIndex) {
-    final pages = _pagesCache[_chapters[chapterIndex].id];
+    final ch = _chapters[chapterIndex];
+    final pages = _pagesCache[ch.id];
     if (pages == null || pages.isEmpty) return;
     final newPage = (pageIndex + 1).clamp(1, pages.length);
+    _userInteractedChapters.add(ch.id);
+
+    // Record pages smoothly scrolled through during natural continuous scroll
+    final prevNatural = _lastNaturalWebtoonPage[ch.id];
+    if (prevNatural != null && newPage > prevNatural) {
+      _recordPagesViewed(ch.id, [for (var p = prevNatural; p <= newPage; p++) p]);
+    } else {
+      _recordPagesViewed(ch.id, [newPage]);
+    }
+    _lastNaturalWebtoonPage[ch.id] = newPage;
 
     if (chapterIndex != _currentChapterIndex) {
       final oldIdx = _currentChapterIndex;
-      _onChapterFinished(oldIdx);
+      if (oldIdx >= 0 && oldIdx < _chapters.length) {
+        final oldCh = _chapters[oldIdx];
+        if (_hasReadAllPages(oldCh.id)) {
+          _onChapterFinished(oldIdx);
+        }
+      }
       setState(() {
         _currentChapterIndex = chapterIndex;
         _totalPages = pages.length;
         _page = newPage;
       });
       _pageNotifier.value = newPage;
-      if (newPage >= pages.length || (pages.length > 2 && newPage >= (pages.length * 0.85).ceil())) {
+      if (_hasReadAllPages(ch.id)) {
         _onChapterFinished(chapterIndex);
       }
       _syncProgress(newPage);
       _precacheSlidingWindow(pages, pageIndex, window: 6);
-      _loadChapter(chapterIndex + 1);
+      final nextIdx = _findAdjacentChapterIndex(chapterIndex, 1);
+      if (nextIdx != null) _loadChapter(nextIdx);
     } else if (newPage != _page) {
+      _sessionPagesTurned++;
       _page = newPage;
       _pageNotifier.value = newPage;
-      if (newPage >= pages.length || (pages.length > 2 && newPage >= (pages.length * 0.85).ceil())) {
+      if (_hasReadAllPages(ch.id)) {
         _onChapterFinished(chapterIndex);
       }
       _syncProgress(newPage);
@@ -1626,9 +1925,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
     final target = p.clamp(1, _totalPages);
     _page = target;
     _pageNotifier.value = target;
-    final pages = _pagesCache[_currentChapter.id];
-    final actualTotal = pages?.length ?? _totalPages;
-    if (pages != null && pages.isNotEmpty && target >= actualTotal) {
+    _isPageZoomed = false;
+    final chId = _currentChapter.id;
+    _userInteractedChapters.add(chId);
+    // Jumping via scrubber only marks the destination page viewed, never skipped pages.
+    _lastNaturalWebtoonPage.remove(chId);
+    _recordPagesViewed(chId, [target]);
+    if (_hasReadAllPages(chId)) {
       _onChapterFinished(_currentChapterIndex);
     }
     _syncProgress(target);
@@ -1636,7 +1939,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (_mode == ReaderMode.webtoon) {
       _scrollToWebtoonPage(target);
     } else if (_pageController.hasClients) {
-      _pageController.jumpToPage(target - 1);
+      final pageIdx = _isDualSpreadActive() ? ((target - 1) ~/ 2) : (target - 1);
+      _pageController.jumpToPage(pageIdx);
     }
   }
 
@@ -1680,120 +1984,177 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _showModeSheet() {
+    final hasPerMangaOverride =
+        ReaderSettings.instance.hasPerMangaDirectionOverride(widget.mangaId);
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (_) => SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(vertical: 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                child: Text(
-                  'READING DIRECTION',
-                  style: AppText.sectionHeader,
+      builder: (sheetCtx) => StatefulBuilder(
+        builder: (sheetCtx, setSheet) => SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: Text(
+                    'READING DIRECTION',
+                    style: AppText.sectionHeader,
+                  ),
                 ),
-              ),
-              ListTile(
-                leading: Icon(
-                  Icons.auto_awesome_rounded,
-                  color: _selectedMode == ReaderMode.automatic ? AppColors.primary : AppColors.muted,
+                ListTile(
+                  leading: Icon(
+                    Icons.auto_awesome_rounded,
+                    color: _selectedMode == ReaderMode.automatic ? AppColors.primary : AppColors.muted,
+                  ),
+                  title: Text('Automatic', style: AppText.bodyMedium),
+                  subtitle: Text(
+                    'Auto-detect: Manga → RTL, Manhwa/Manhua → Webtoon, Comics → LTR (${_effectiveMode.label})',
+                    style: AppText.caption,
+                  ),
+                  trailing: _selectedMode == ReaderMode.automatic
+                      ? Icon(Icons.check_rounded, color: AppColors.primary)
+                      : null,
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _setMode(ReaderMode.automatic);
+                  },
                 ),
-                title: Text('Automatic', style: AppText.bodyMedium),
-                subtitle: Text(
-                  'Auto-detect: Manga → RTL, Manhwa/Manhua → Webtoon, Comics → LTR (${_effectiveMode.label})',
-                  style: AppText.caption,
+                ListTile(
+                  leading: Icon(
+                    Icons.arrow_back_rounded,
+                    color: _selectedMode == ReaderMode.rightToLeft ? AppColors.primary : AppColors.muted,
+                  ),
+                  title: Text('Right to Left (Standard Manga 🇯🇵)', style: AppText.bodyMedium),
+                  subtitle: Text('Swipe left for next page, auto-advances to next chapter', style: AppText.caption),
+                  trailing: _selectedMode == ReaderMode.rightToLeft
+                      ? Icon(Icons.check_rounded, color: AppColors.primary)
+                      : null,
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _setMode(ReaderMode.rightToLeft);
+                  },
                 ),
-                trailing: _selectedMode == ReaderMode.automatic
-                    ? Icon(Icons.check_rounded, color: AppColors.primary)
-                    : null,
-                onTap: () {
-                  Navigator.pop(context);
-                  _setMode(ReaderMode.automatic);
-                },
-              ),
-              ListTile(
-                leading: Icon(
-                  Icons.arrow_back_rounded,
-                  color: _selectedMode == ReaderMode.rightToLeft ? AppColors.primary : AppColors.muted,
+                ListTile(
+                  leading: Icon(
+                    Icons.swap_vert_rounded,
+                    color: _selectedMode == ReaderMode.webtoon ? AppColors.primary : AppColors.muted,
+                  ),
+                  title: Text('Webtoon (Manhwa / Manhua 🇰🇷🇨🇳)', style: AppText.bodyMedium),
+                  subtitle: Text('Continuous vertical strip across chapters', style: AppText.caption),
+                  trailing: _selectedMode == ReaderMode.webtoon
+                      ? Icon(Icons.check_rounded, color: AppColors.primary)
+                      : null,
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _setMode(ReaderMode.webtoon);
+                  },
                 ),
-                title: Text('Right to Left (Standard Manga 🇯🇵)', style: AppText.bodyMedium),
-                subtitle: Text('Swipe left for next page, auto-advances to next chapter', style: AppText.caption),
-                trailing: _selectedMode == ReaderMode.rightToLeft
-                    ? Icon(Icons.check_rounded, color: AppColors.primary)
-                    : null,
-                onTap: () {
-                  Navigator.pop(context);
-                  _setMode(ReaderMode.rightToLeft);
-                },
-              ),
-              ListTile(
-                leading: Icon(
-                  Icons.swap_vert_rounded,
-                  color: _selectedMode == ReaderMode.webtoon ? AppColors.primary : AppColors.muted,
+                ListTile(
+                  leading: Icon(
+                    Icons.arrow_forward_rounded,
+                    color: _selectedMode == ReaderMode.leftToRight ? AppColors.primary : AppColors.muted,
+                  ),
+                  title: Text('Left to Right (Western Comics)', style: AppText.bodyMedium),
+                  subtitle: Text('Swipe right for next page, auto-advances to next chapter', style: AppText.caption),
+                  trailing: _selectedMode == ReaderMode.leftToRight
+                      ? Icon(Icons.check_rounded, color: AppColors.primary)
+                      : null,
+                  onTap: () {
+                    Navigator.pop(sheetCtx);
+                    _setMode(ReaderMode.leftToRight);
+                  },
                 ),
-                title: Text('Webtoon (Manhwa / Manhua 🇰🇷🇨🇳)', style: AppText.bodyMedium),
-                subtitle: Text('Continuous vertical strip across chapters', style: AppText.caption),
-                trailing: _selectedMode == ReaderMode.webtoon
-                    ? Icon(Icons.check_rounded, color: AppColors.primary)
-                    : null,
-                onTap: () {
-                  Navigator.pop(context);
-                  _setMode(ReaderMode.webtoon);
-                },
-              ),
-              ListTile(
-                leading: Icon(
-                  Icons.arrow_forward_rounded,
-                  color: _selectedMode == ReaderMode.leftToRight ? AppColors.primary : AppColors.muted,
-                ),
-                title: Text('Left to Right (Western Comics)', style: AppText.bodyMedium),
-                subtitle: Text('Swipe right for next page, auto-advances to next chapter', style: AppText.caption),
-                trailing: _selectedMode == ReaderMode.leftToRight
-                    ? Icon(Icons.check_rounded, color: AppColors.primary)
-                    : null,
-                onTap: () {
-                  Navigator.pop(context);
-                  _setMode(ReaderMode.leftToRight);
-                },
-              ),
-              Divider(color: AppColors.outline, height: 24),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                child: Text(
-                  'NAVIGATION & TOUCH CONTROLS',
-                  style: AppText.sectionHeader,
-                ),
-              ),
-              SwitchListTile(
-                value: _enableTapZones,
-                activeThumbColor: AppColors.primary,
-                title: Text('Tap Zones Navigation', style: AppText.bodyMedium),
-                subtitle: Text('Tap sides to turn page, center for reader menu', style: AppText.caption),
-                onChanged: (val) {
-                  _setEnableTapZones(val);
-                  Navigator.pop(context);
-                },
-              ),
-              SwitchListTile(
-                value: _invertTapZones,
-                activeThumbColor: AppColors.primary,
-                title: Text('Invert Tap Zones', style: AppText.bodyMedium),
-                subtitle: Text('Flips left and right tap zone actions', style: AppText.caption),
-                onChanged: _enableTapZones
-                    ? (val) {
-                        _setInvertTapZones(val);
-                        Navigator.pop(context);
+                if (hasPerMangaOverride)
+                  ListTile(
+                    leading: Icon(Icons.restart_alt_rounded, color: AppColors.muted),
+                    title: Text('Reset to Global Default', style: AppText.bodyMedium),
+                    subtitle: Text(
+                      'Remove this title\'s custom reading direction override',
+                      style: AppText.caption,
+                    ),
+                    onTap: () async {
+                      Navigator.pop(sheetCtx);
+                      await ReaderSettings.instance.clearReadingDirectionOverride(widget.mangaId);
+                      final globalStr = ReaderSettings.instance.defaultDirection;
+                      final globalMode = ReaderMode.values.cast<ReaderMode?>().firstWhere(
+                            (m) => m?.name == globalStr,
+                            orElse: () => ReaderMode.automatic,
+                          ) ??
+                          ReaderMode.automatic;
+                      if (!mounted) return;
+                      final oldEffective = _effectiveMode;
+                      final oldController = _pageController;
+                      setState(() {
+                        _selectedMode = globalMode;
+                        if (_effectiveMode != oldEffective) {
+                          _pageController = _newPageController(_page - 1);
+                          _webtoonLoadedIndices
+                            ..clear()
+                            ..add(_currentChapterIndex);
+                          _pageSlots.clear();
+                        }
+                      });
+                      if (_effectiveMode != oldEffective) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          oldController.dispose();
+                        });
                       }
-                    : null,
-              ),
-            ],
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Reset reading direction to global default'),
+                          duration: Duration(seconds: 1),
+                        ),
+                      );
+                    },
+                  ),
+                Divider(color: AppColors.outline, height: 24),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  child: Text(
+                    'NAVIGATION & TOUCH CONTROLS',
+                    style: AppText.sectionHeader,
+                  ),
+                ),
+                SwitchListTile(
+                  value: _enableTapZones,
+                  activeThumbColor: AppColors.primary,
+                  title: Text('Tap Zones Navigation', style: AppText.bodyMedium),
+                  subtitle: Text('Tap sides to turn page, center for reader menu', style: AppText.caption),
+                  onChanged: (val) {
+                    _setEnableTapZones(val);
+                    setSheet(() {});
+                  },
+                ),
+                SwitchListTile(
+                  value: _invertTapZones,
+                  activeThumbColor: AppColors.primary,
+                  title: Text('Invert Tap Zones', style: AppText.bodyMedium),
+                  subtitle: Text('Flips left and right tap zone actions', style: AppText.caption),
+                  onChanged: _enableTapZones
+                      ? (val) {
+                          _setInvertTapZones(val);
+                          setSheet(() {});
+                        }
+                      : null,
+                ),
+                if (_enableTapZones)
+                  ListTile(
+                    leading: Icon(Icons.touch_app_outlined, color: AppColors.primary),
+                    title: Text('Preview Tap Zones', style: AppText.bodyMedium),
+                    subtitle: Text('Briefly highlight Prev / Menu / Next tap zones on screen', style: AppText.caption),
+                    onTap: () {
+                      Navigator.pop(sheetCtx);
+                      _flashTapZoneOverlay();
+                    },
+                  ),
+              ],
+            ),
           ),
         ),
       ),
@@ -1881,9 +2242,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _nextPage() {
     if (_pageController.hasClients && _pageController.page != null) {
+      _isPageZoomed = false;
       final cur = _pageController.page!.round();
       final pages = _pagesCache[_currentChapter.id];
-      final total = (pages?.length ?? 0) + (_hasNextChapter ? 1 : 0);
+      final pageLen = pages?.length ?? 0;
+      final spreadCount = _isDualSpreadActive() ? (pageLen / 2).ceil() : pageLen;
+      final total = spreadCount + (_hasNextChapter ? 1 : 0);
       if (cur + 1 < total) {
         _pageController.nextPage(
           duration: const Duration(milliseconds: 200),
@@ -1894,6 +2258,207 @@ class _ReaderScreenState extends State<ReaderScreen> {
         if (nextIdx != null) _switchToChapter(nextIdx);
       }
     }
+  }
+
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.escape) {
+      Navigator.of(context).maybePop();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.keyM) {
+      _toggleChrome();
+      return KeyEventResult.handled;
+    }
+    if (_mode == ReaderMode.webtoon) {
+      if (!_scrollController.hasClients) return KeyEventResult.ignored;
+      final step = MediaQuery.sizeOf(context).height * 0.72;
+      final pos = _scrollController.position;
+      if (key == LogicalKeyboardKey.arrowDown ||
+          key == LogicalKeyboardKey.pageDown ||
+          key == LogicalKeyboardKey.space) {
+        _scrollController.animateTo(
+          (pos.pixels + step).clamp(pos.minScrollExtent, pos.maxScrollExtent),
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOutCubic,
+        );
+        return KeyEventResult.handled;
+      }
+      if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.pageUp) {
+        _scrollController.animateTo(
+          (pos.pixels - step).clamp(pos.minScrollExtent, pos.maxScrollExtent),
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeOutCubic,
+        );
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+
+    final isRtl = _mode == ReaderMode.rightToLeft;
+    if (key == LogicalKeyboardKey.arrowRight) {
+      isRtl ? _prevPage() : _nextPage();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowLeft) {
+      isRtl ? _nextPage() : _prevPage();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.pageDown ||
+        key == LogicalKeyboardKey.arrowDown) {
+      _nextPage();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.pageUp || key == LogicalKeyboardKey.arrowUp) {
+      _prevPage();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  Future<void> _showJumpToPageDialog() async {
+    if (_totalPages <= 1) return;
+    final ctrl = TextEditingController(text: '$_page');
+    String? err;
+    final chosen = await showDialog<int>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlg) => AlertDialog(
+          backgroundColor: AppColors.surface,
+          title: Text('Jump to Page', style: AppText.sheetTitle),
+          content: TextField(
+            controller: ctrl,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            style: AppText.body,
+            decoration: InputDecoration(
+              hintText: '1 – $_totalPages',
+              errorText: err,
+            ),
+            onSubmitted: (_) {
+              final n = int.tryParse(ctrl.text.trim());
+              if (n == null || n < 1 || n > _totalPages) {
+                setDlg(() => err = 'Enter a page between 1 and $_totalPages');
+                return;
+              }
+              Navigator.pop(ctx, n);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('Cancel', style: AppText.bodyMedium.copyWith(color: AppColors.muted)),
+            ),
+            FilledButton(
+              onPressed: () {
+                final n = int.tryParse(ctrl.text.trim());
+                if (n == null || n < 1 || n > _totalPages) {
+                  setDlg(() => err = 'Enter a page between 1 and $_totalPages');
+                  return;
+                }
+                Navigator.pop(ctx, n);
+              },
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: AppColors.onPrimary,
+              ),
+              child: const Text('Go'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (chosen != null && mounted) {
+      _go(chosen);
+    }
+  }
+
+  Widget _buildTapZoneGuideOverlay() {
+    if (_mode == ReaderMode.webtoon) {
+      return Column(
+        children: [
+          Expanded(
+            flex: 22,
+            child: Container(
+              color: Colors.blueAccent.withValues(alpha: 0.24),
+              alignment: Alignment.center,
+              child: const Text(
+                'SCROLL UP',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 1),
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 50,
+            child: Container(
+              color: Colors.black.withValues(alpha: 0.22),
+              alignment: Alignment.center,
+              child: const Text(
+                'MENU',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 1),
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 28,
+            child: Container(
+              color: Colors.green.withValues(alpha: 0.24),
+              alignment: Alignment.center,
+              child: const Text(
+                'SCROLL DOWN',
+                style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 1),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+    final isRtl = _mode == ReaderMode.rightToLeft;
+    bool nextOnRight = !isRtl;
+    if (_invertTapZones) nextOnRight = !nextOnRight;
+    final leftLabel = nextOnRight ? 'PREV' : 'NEXT';
+    final rightLabel = nextOnRight ? 'NEXT' : 'PREV';
+    return Row(
+      children: [
+        Expanded(
+          flex: 30,
+          child: Container(
+            color: (nextOnRight ? Colors.blueAccent : Colors.green).withValues(alpha: 0.24),
+            alignment: Alignment.center,
+            child: Text(
+              leftLabel,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 1),
+            ),
+          ),
+        ),
+        Expanded(
+          flex: 40,
+          child: Container(
+            color: Colors.black.withValues(alpha: 0.22),
+            alignment: Alignment.center,
+            child: const Text(
+              'MENU',
+              style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 1),
+            ),
+          ),
+        ),
+        Expanded(
+          flex: 30,
+          child: Container(
+            color: (nextOnRight ? Colors.green : Colors.blueAccent).withValues(alpha: 0.24),
+            alignment: Alignment.center,
+            child: Text(
+              rightLabel,
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, letterSpacing: 1),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   static const ColorFilter _grayscaleColorFilter = ColorFilter.matrix(<double>[
@@ -1923,127 +2488,137 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final nowTime = TimeOfDay.now();
-    final clockStr =
-        '${nowTime.hour.toString().padLeft(2, '0')}:${nowTime.minute.toString().padLeft(2, '0')}';
-
     return PopScope(
       canPop: true,
       onPopInvokedWithResult: (didPop, result) {
         _flushProgress();
       },
-      child: Scaffold(
-      backgroundColor: _background.color,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // Content reader layer
-          LayoutBuilder(
-            builder: (context, constraints) {
-              return GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapUp: (details) => _handleTap(details, constraints),
-                child: _applyColorFilters(_buildReaderBody()),
-              );
-            },
-          ),
-          // Brightness dimming overlay
-          if (_brightness < 0.99)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: ColoredBox(
-                  color: Colors.black.withValues(alpha: (1.0 - _brightness).clamp(0.0, 0.8)),
-                ),
+      child: Focus(
+        autofocus: true,
+        onKeyEvent: _handleKeyEvent,
+        child: Scaffold(
+          backgroundColor: _background.color,
+          body: Stack(
+            fit: StackFit.expand,
+            children: [
+              // Content reader layer
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  return GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: (details) => _handleTap(details, constraints),
+                    child: _applyColorFilters(_buildReaderBody()),
+                  );
+                },
               ),
-            ),
-          // Warm eye-care tint overlay
-          if (_tint > 0.01)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: ColoredBox(
-                  color: const Color(0xFFFFA726).withValues(alpha: (_tint * 0.35).clamp(0.0, 0.45)),
-                ),
-              ),
-            ),
-          // Minimal always-visible reading status bar when chrome is hidden
-          if (!_chrome && _showStatusBar && _totalPages > 0)
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: MediaQuery.paddingOf(context).bottom + 4,
-              child: IgnorePointer(
-                child: Center(
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: Colors.black.withValues(alpha: 0.62),
-                      borderRadius: BorderRadius.circular(12),
+              // Brightness dimming overlay (down to 10% brightness -> up to 0.90 alpha)
+              if (_brightness < 0.99)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: ColoredBox(
+                      color: Colors.black.withValues(alpha: (1.0 - _brightness).clamp(0.0, 0.9)),
                     ),
-                    child: ValueListenableBuilder<int>(
-                      valueListenable: _pageNotifier,
-                      builder: (_, page, _) => Text(
-                        '$_chapterLabel  ·  $page / $_totalPages  ·  $clockStr',
-                        style: const TextStyle(
-                          color: Colors.white70,
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
+                  ),
+                ),
+              // Warm eye-care tint overlay
+              if (_tint > 0.01)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: ColoredBox(
+                      color: const Color(0xFFFFA726).withValues(alpha: (_tint * 0.35).clamp(0.0, 0.45)),
+                    ),
+                  ),
+                ),
+              // Tap-zone visual guide overlay (brief preview when requested)
+              if (_showTapZoneOverlay)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: _buildTapZoneGuideOverlay(),
+                  ),
+                ),
+              // Minimal always-visible reading status bar when chrome is hidden
+              if (!_chrome && _showStatusBar && _totalPages > 0)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: MediaQuery.paddingOf(context).bottom + 4,
+                  child: IgnorePointer(
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.62),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: _pageNotifier,
+                          builder: (_, page, _) => ValueListenableBuilder<String>(
+                            valueListenable: _clockNotifier,
+                            builder: (_, clockStr, _) => Text(
+                              '$_chapterLabel  ·  $page / $_totalPages  ·  $clockStr',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
-            ),
-          // Auto-Scroll floating control pill when active
-          if (_autoScrolling)
-            Positioned(
-              right: 16,
-              bottom: (_chrome ? 148 : 34) + MediaQuery.paddingOf(context).bottom,
-              child: Material(
-                color: AppColors.surfaceHigh.withValues(alpha: 0.92),
-                borderRadius: BorderRadius.circular(24),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(24),
-                  onTap: () => _toggleAutoScroll(false),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.pause_rounded, size: 16, color: AppColors.primary),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Auto ${_autoScrollSpeed.toStringAsFixed(1)}x',
-                          style: AppText.caption.copyWith(color: AppColors.text),
+              // Auto-Scroll floating control pill when active
+              if (_autoScrolling)
+                Positioned(
+                  right: 16,
+                  bottom: (_chrome ? 148 : 34) + MediaQuery.paddingOf(context).bottom,
+                  child: Material(
+                    color: AppColors.surfaceHigh.withValues(alpha: 0.92),
+                    borderRadius: BorderRadius.circular(24),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(24),
+                      onTap: () => _toggleAutoScroll(false),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.pause_rounded, size: 16, color: AppColors.primary),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Auto ${_autoScrollSpeed.toStringAsFixed(1)}x',
+                              style: AppText.caption.copyWith(color: AppColors.text),
+                            ),
+                          ],
                         ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
+              // Top Bar
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                left: 0,
+                right: 0,
+                top: _chrome ? 0 : -(76 + MediaQuery.paddingOf(context).top),
+                child: _topBar(context),
               ),
-            ),
-          // Top Bar
-          AnimatedPositioned(
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeOut,
-            left: 0,
-            right: 0,
-            top: _chrome ? 0 : -(76 + MediaQuery.paddingOf(context).top),
-            child: _topBar(context),
+              // Bottom Bar
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                left: 0,
+                right: 0,
+                bottom: _chrome ? 0 : -(160 + MediaQuery.paddingOf(context).bottom),
+                child: _bottom(context),
+              ),
+            ],
           ),
-          // Bottom Bar
-          AnimatedPositioned(
-            duration: const Duration(milliseconds: 200),
-            curve: Curves.easeOut,
-            left: 0,
-            right: 0,
-            bottom: _chrome ? 0 : -(160 + MediaQuery.paddingOf(context).bottom),
-            child: _bottom(context),
-          ),
-        ],
+        ),
       ),
-    ),
-  );
+    );
   }
 
   Widget _buildReaderBody() =>
@@ -2271,18 +2846,24 @@ class _ReaderScreenState extends State<ReaderScreen> {
             (pageIdx - (_page - 1)).abs() <= 10;
         return _KeepAlivePageWrapper(
           keepAlive: keepAlive,
-          child: _ReaderPageImage(
-            url: url,
-            fallbackUrls: _fallbackUrlsFor(chapterId, pageIdx, url),
-            pageNumber: pageIdx + 1,
-            fit: BoxFit.fitWidth,
-            expandWidth: true,
-            cropBorders: _cropBorders,
-            onReloadChapter: () => _reloadChapterPages(chIdx),
-            onOpenWebView: chapterId.startsWith('ext:')
-                ? () => _openChapterInWebViewAndRetry(chIdx)
-                : null,
-            onLongPress: (reload) => _showPageContextMenu(url, pageIdx + 1, reload),
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onDoubleTapDown: (details) => _webtoonDoubleTapDetails = details,
+            onDoubleTap: _handleWebtoonDoubleTap,
+            child: _ReaderPageImage(
+              url: url,
+              fallbackUrls: _fallbackUrlsFor(chapterId, pageIdx, url),
+              pageNumber: pageIdx + 1,
+              fit: BoxFit.fitWidth,
+              expandWidth: true,
+              // Never scale-crop seamless vertical webtoon strips
+              cropBorders: false,
+              onReloadChapter: () => _reloadChapterPages(chIdx),
+              onOpenWebView: chapterId.startsWith('ext:')
+                  ? () => _openChapterInWebViewAndRetry(chIdx)
+                  : null,
+              onLongPress: (reload) => _showPageContextMenu(url, pageIdx + 1, reload),
+            ),
           ),
         );
 
@@ -2330,7 +2911,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
           padding: const EdgeInsets.symmetric(vertical: 36),
           child: Center(
             child: FilledButton.tonalIcon(
-              onPressed: _extendWebtoonFeed,
+              onPressed: () => _extendWebtoonFeed(userTappedTrigger: true),
               icon: const Icon(Icons.arrow_downward_rounded, size: 18),
               label: Text(
                 'Next: ${item.nextChapter?.displayTitle ?? "Next Chapter"}',
@@ -2411,15 +2992,26 @@ class _ReaderScreenState extends State<ReaderScreen> {
       itemCount: pageCount,
       physics: const PageScrollPhysics(),
       onPageChanged: (idx) {
+        _isPageZoomed = false;
+        _userInteractedChapters.add(curChapter.id);
         if (idx < spreadCount) {
-          final newP = useDualSpread
-              ? math.min((idx * 2) + 2, pages.length)
-              : idx + 1;
+          final List<int> viewedNow;
+          final int newP;
+          if (useDualSpread) {
+            final firstPage = (idx * 2) + 1;
+            final secondPage = firstPage + 1;
+            viewedNow = secondPage <= pages.length ? [firstPage, secondPage] : [firstPage];
+            newP = math.min(secondPage, pages.length);
+          } else {
+            newP = idx + 1;
+            viewedNow = [newP];
+          }
+          _recordPagesViewed(curChapter.id, viewedNow);
           if (_page != newP) {
             _sessionPagesTurned++;
             _page = newP;
             _pageNotifier.value = newP;
-            if (newP >= pages.length || (pages.length > 2 && newP >= pages.length - 1)) {
+            if (_hasReadAllPages(curChapter.id)) {
               _onChapterFinished(chapterIdx);
             }
             _syncProgress(newP);
@@ -2428,9 +3020,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
             if (newP >= pages.length - 4 && nextChapterIdx != null) {
               _loadChapter(nextChapterIdx);
             }
+          } else if (_hasReadAllPages(curChapter.id)) {
+            _onChapterFinished(chapterIdx);
           }
         } else if (hasNext) {
-          _onChapterFinished(chapterIdx);
+          // Only mark chapter read if the user actually read every page!
+          if (_hasReadAllPages(curChapter.id)) {
+            _onChapterFinished(chapterIdx);
+          }
           _scheduleAutoAdvance(chapterIdx, idx);
         }
       },
@@ -2492,6 +3089,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                   fit: _fitMode,
                   expandWidth: false,
                   cropBorders: _cropBorders,
+                  splitWidePages: _splitWidePages,
+                  isRtl: isRtl,
                   onReloadChapter: () => _reloadChapterPages(chapterIdx),
                   onOpenWebView: isExtChapter
                       ? () => _openChapterInWebViewAndRetry(chapterIdx)
@@ -2642,11 +3241,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Widget _bottom(BuildContext context) {
     final bottom = MediaQuery.paddingOf(context).bottom;
+    final isRtl = _mode == ReaderMode.rightToLeft;
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Page Scrubber Slider
+        // Page Scrubber Slider (mirrored naturally for RTL Japanese manga)
         Container(
           constraints: const BoxConstraints(minHeight: 54),
           margin: const EdgeInsets.fromLTRB(12, 0, 12, 8),
@@ -2658,42 +3258,62 @@ class _ReaderScreenState extends State<ReaderScreen> {
           ),
           child: Row(
             children: [
-              _ScrubButton('‹', () => _go(_page - 1)),
-              Expanded(
-                child: ValueListenableBuilder<int>(
-                  valueListenable: _pageNotifier,
-                  builder: (context, page, _) => SliderTheme(
-                    data: SliderTheme.of(context).copyWith(
-                      trackHeight: 3,
-                      activeTrackColor: AppColors.primary,
-                      inactiveTrackColor: AppColors.outline,
-                      thumbColor: AppColors.primary,
-                      overlayColor: AppColors.primary.withValues(alpha: .12),
-                    ),
-                    child: Slider(
-                      min: 1,
-                      max: math.max(1, _totalPages).toDouble(),
-                      value: page.clamp(1, math.max(1, _totalPages)).toDouble(),
-                      onChanged: (v) => _go(v.round()),
-                    ),
-                  ),
-                ),
+              _ScrubButton(
+                '‹',
+                tooltip: isRtl ? 'Next page' : 'Previous page',
+                onTap: () => _go(isRtl ? _page + 1 : _page - 1),
               ),
-              ConstrainedBox(
-                constraints: const BoxConstraints(minWidth: 52),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4),
+              Expanded(
+                child: Directionality(
+                  textDirection: isRtl ? TextDirection.rtl : TextDirection.ltr,
                   child: ValueListenableBuilder<int>(
                     valueListenable: _pageNotifier,
-                    builder: (_, page, _) => Text(
-                      '$page / $_totalPages',
-                      textAlign: TextAlign.center,
-                      style: AppText.caption,
+                    builder: (context, page, _) => SliderTheme(
+                      data: SliderTheme.of(context).copyWith(
+                        trackHeight: 3,
+                        activeTrackColor: AppColors.primary,
+                        inactiveTrackColor: AppColors.outline,
+                        thumbColor: AppColors.primary,
+                        overlayColor: AppColors.primary.withValues(alpha: .12),
+                      ),
+                      child: Slider(
+                        min: 1,
+                        max: math.max(1, _totalPages).toDouble(),
+                        value: page.clamp(1, math.max(1, _totalPages)).toDouble(),
+                        onChanged: (v) => _go(v.round()),
+                      ),
                     ),
                   ),
                 ),
               ),
-              _ScrubButton('›', () => _go(_page + 1)),
+              Tooltip(
+                message: 'Jump to page',
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: _totalPages > 1 ? _showJumpToPageDialog : null,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(minWidth: 52, minHeight: 34),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                      child: Center(
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: _pageNotifier,
+                          builder: (_, page, _) => Text(
+                            '$page / $_totalPages',
+                            textAlign: TextAlign.center,
+                            style: AppText.caption.copyWith(color: AppColors.text),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              _ScrubButton(
+                '›',
+                tooltip: isRtl ? 'Previous page' : 'Next page',
+                onTap: () => _go(isRtl ? _page - 1 : _page + 1),
+              ),
             ],
           ),
         ),
@@ -2847,19 +3467,30 @@ class _ReaderScreenState extends State<ReaderScreen> {
 }
 
 class _ScrubButton extends StatelessWidget {
-  const _ScrubButton(this.glyph, this.onTap);
+  const _ScrubButton(this.glyph, {required this.onTap, required this.tooltip});
   final String glyph;
   final VoidCallback onTap;
+  final String tooltip;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-        width: 44,
-        height: 44,
-        child: InkResponse(
-          onTap: onTap,
-          radius: 22,
-          child: Center(
-            child: Text(glyph, style: TextStyle(fontSize: 28, color: AppColors.primary, height: 1)),
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: tooltip,
+        child: Tooltip(
+          message: tooltip,
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: InkResponse(
+              onTap: onTap,
+              radius: 22,
+              child: Center(
+                child: Text(
+                  glyph,
+                  style: TextStyle(fontSize: 28, color: AppColors.primary, height: 1),
+                ),
+              ),
+            ),
           ),
         ),
       );
@@ -3081,6 +3712,8 @@ class _ReaderPageImage extends StatefulWidget {
     required this.fit,
     required this.expandWidth,
     this.cropBorders = false,
+    this.splitWidePages = false,
+    this.isRtl = false,
     this.onReloadChapter,
     this.onOpenWebView,
     this.onLongPress,
@@ -3092,6 +3725,8 @@ class _ReaderPageImage extends StatefulWidget {
   final BoxFit fit;
   final bool expandWidth;
   final bool cropBorders;
+  final bool splitWidePages;
+  final bool isRtl;
   final VoidCallback? onReloadChapter;
   final VoidCallback? onOpenWebView;
   final void Function(VoidCallback reloadPage)? onLongPress;
@@ -3102,13 +3737,88 @@ class _ReaderPageImage extends StatefulWidget {
 
 class _ReaderPageImageState extends State<_ReaderPageImage> {
   int _localReloadGen = 0;
+  bool _isWideSpread = false;
+  ImageStream? _probeStream;
+  ImageStreamListener? _probeListener;
+
+  @override
+  void initState() {
+    super.initState();
+    _maybeProbeWideImage();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ReaderPageImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url ||
+        oldWidget.splitWidePages != widget.splitWidePages) {
+      _detachProbe();
+      _isWideSpread = false;
+      _maybeProbeWideImage();
+    }
+  }
+
+  @override
+  void dispose() {
+    _detachProbe();
+    super.dispose();
+  }
+
+  void _detachProbe() {
+    if (_probeStream != null && _probeListener != null) {
+      _probeStream!.removeListener(_probeListener!);
+    }
+    _probeStream = null;
+    _probeListener = null;
+  }
+
+  void _maybeProbeWideImage() {
+    if (!widget.splitWidePages) return;
+    final url = widget.url.trim();
+    ImageProvider? provider;
+    if (url.startsWith('file://')) {
+      provider = FileImage(File(url.replaceFirst('file://', '')));
+    } else if (url.startsWith('http') || url.startsWith('//')) {
+      final norm = url.startsWith('//') ? 'https:$url' : url;
+      provider = CachedNetworkImageProvider(norm);
+    }
+    if (provider == null) return;
+    final stream = provider.resolve(ImageConfiguration.empty);
+    final listener = ImageStreamListener(
+      (info, _) {
+        final wide = info.image.width > info.image.height * 1.15;
+        if (mounted && wide != _isWideSpread) {
+          setState(() => _isWideSpread = wide);
+        }
+        _detachProbe();
+      },
+      onError: (_, _) => _detachProbe(),
+    );
+    _probeStream = stream;
+    _probeListener = listener;
+    stream.addListener(listener);
+  }
 
   Widget _wrapPostProcess(Widget child, VoidCallback reloadPage) {
     Widget out = child;
     if (widget.cropBorders) {
+      // Gentle paged-mode margin crop (less aggressive so text near edges stays safe)
       out = ClipRect(
-        child: Transform.scale(scale: 1.08, child: out),
+        child: Transform.scale(scaleX: 1.05, scaleY: 1.02, child: out),
       );
+    }
+    if (widget.splitWidePages && _isWideSpread) {
+      final size = MediaQuery.sizeOf(context);
+      if (size.height > size.width) {
+        out = SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          reverse: widget.isRtl,
+          child: SizedBox(
+            height: size.height,
+            child: out,
+          ),
+        );
+      }
     }
     if (widget.onLongPress != null) {
       out = GestureDetector(
